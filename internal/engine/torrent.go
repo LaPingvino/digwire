@@ -65,6 +65,7 @@ type TorrentStatus struct {
 	Files          []string         `json:"files,omitempty"`
 	AddedAt        int64            `json:"added_at"`
 	SuggestedSwarm *SwarmSuggestion `json:"suggested_swarm,omitempty"`
+	WebSeeds       []string         `json:"webseeds,omitempty"`
 }
 
 type TorrentFileDetail struct {
@@ -459,13 +460,36 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 	}
 
 	// Magnet link or infohash
+	var extractedWebSeeds []string
+	if strings.HasPrefix(uriOrURL, "magnet:?") {
+		if magObj, err := metainfo.ParseMagnetUri(uriOrURL); err == nil {
+			extractedWebSeeds = magObj.Params["ws"]
+		}
+	}
+
 	uriOrURL = SuperchargeMagnet(uriOrURL)
 	t, err := e.client.AddMagnet(uriOrURL)
 	if err != nil {
 		return nil, err
 	}
-	go func(tor *torrent.Torrent) {
+
+	hash := t.InfoHash().HexString()
+	e.mu.Lock()
+	if len(extractedWebSeeds) > 0 {
+		e.webSeedsMap[hash] = append(e.webSeedsMap[hash], extractedWebSeeds...)
+	}
+	wsList := e.webSeedsMap[hash]
+	e.mu.Unlock()
+
+	if len(wsList) > 0 {
+		t.AddWebSeeds(wsList)
+	}
+
+	go func(tor *torrent.Torrent, seeds []string) {
 		<-tor.GotInfo()
+		if len(seeds) > 0 {
+			tor.AddWebSeeds(seeds)
+		}
 		tor.DownloadAll()
 		if e.dhtIndexer != nil && tor.Info() != nil {
 			var fileNames []string
@@ -484,8 +508,8 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 		e.mu.Lock()
 		e.saveSessionLocked()
 		e.mu.Unlock()
-	}(t)
-	e.initTracker(t.InfoHash().HexString())
+	}(t, wsList)
+	e.initTracker(hash)
 	e.saveSessionLocked()
 	return t, nil
 }
@@ -810,7 +834,9 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 		}
 
 		stats := t.Stats()
+		webseeds := e.webSeedsMap[hash]
 		magURI := fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", hash, url.QueryEscape(name))
+		magURI = AppendWebSeedsToMagnet(SuperchargeMagnet(magURI), webseeds)
 		webConns := t.WebseedPeerConns()
 
 		statuses = append(statuses, TorrentStatus{
@@ -828,6 +854,7 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 			Peers:          stats.ActivePeers + len(webConns),
 			Files:          files,
 			AddedAt:        addedAt,
+			WebSeeds:       webseeds,
 		})
 	}
 

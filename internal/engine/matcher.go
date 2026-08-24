@@ -534,8 +534,11 @@ func (e *Engine) UpgradeHTTPToSwarm(httpTaskID string) (*torrent.Torrent, error)
 	hash := t.InfoHash().HexString()
 	e.webSeedsMap[hash] = allMirrors
 
-	go func(tor *torrent.Torrent, isPartial bool, matchedIdx int, matchedFile string) {
+	go func(tor *torrent.Torrent, seeds []string, isPartial bool, matchedIdx int, matchedFile string) {
 		<-tor.GotInfo()
+		if len(seeds) > 0 {
+			tor.AddWebSeeds(seeds)
+		}
 		info := tor.Info()
 		if info != nil {
 			var destFile string
@@ -573,7 +576,7 @@ func (e *Engine) UpgradeHTTPToSwarm(httpTaskID string) (*torrent.Torrent, error)
 		e.mu.Lock()
 		e.saveSessionLocked()
 		e.mu.Unlock()
-	}(t, sugg.IsPartial, sugg.MatchedFileIndex, sugg.MatchedFileName)
+	}(t, allMirrors, sugg.IsPartial, sugg.MatchedFileIndex, sugg.MatchedFileName)
 
 	e.initTracker(hash)
 	e.saveSessionLocked()

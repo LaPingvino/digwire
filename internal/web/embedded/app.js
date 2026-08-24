@@ -158,6 +158,9 @@ function renderTorrents() {
       metaString += ` • ↑ ${formatSpeed(t.upload_rate)}`;
     }
     metaString += ` • ${t.peers} peers`;
+    if (t.webseeds && t.webseeds.length > 0) {
+      metaString += ` • <span style="color: #57e389; font-weight: 600;">🌐 ${t.webseeds.length} WebSeed${t.webseeds.length > 1 ? 's' : ''}</span>`;
+    }
 
     let swarmBanner = '';
     if (t.suggested_swarm) {
