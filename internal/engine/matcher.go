@@ -542,18 +542,20 @@ func (e *Engine) UpgradeHTTPToSwarm(httpTaskID string) (*torrent.Torrent, error)
 		return nil, fmt.Errorf("failed to add swarm: %w", err)
 	}
 
-	t.AddWebSeeds(allMirrors)
-
+	cleanMirrors := SanitizeWebSeeds(allMirrors, false)
 	hash := t.InfoHash().HexString()
-	e.webSeedsMap[hash] = allMirrors
+	e.webSeedsMap[hash] = cleanMirrors
 
 	go func(tor *torrent.Torrent, seeds []string, isPartial bool, matchedIdx int, matchedFile string) {
 		<-tor.GotInfo()
-		if len(seeds) > 0 {
-			tor.AddWebSeeds(seeds)
-		}
 		info := tor.Info()
 		if info != nil {
+			if len(seeds) > 0 {
+				clean := SanitizeWebSeeds(seeds, info.IsDir())
+				if len(clean) > 0 {
+					tor.AddWebSeeds(clean)
+				}
+			}
 			var destFile string
 			if isPartial && matchedFile != "" {
 				destFile = filepath.Join(e.cfg.DownloadDir, info.BestName(), matchedFile)

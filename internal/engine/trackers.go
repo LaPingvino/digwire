@@ -53,6 +53,10 @@ func AppendWebSeedsToMagnet(magnetURI string, webseeds []string) string {
 	}
 
 	for _, ws := range webseeds {
+		ws = strings.TrimSpace(ws)
+		if ws == "" {
+			continue
+		}
 		wsEsc := url.QueryEscape(ws)
 		if !strings.Contains(magnetURI, "ws="+wsEsc) && !strings.Contains(magnetURI, "ws="+ws) {
 			magnetURI += "&ws=" + wsEsc
@@ -60,4 +64,24 @@ func AppendWebSeedsToMagnet(magnetURI string, webseeds []string) string {
 	}
 
 	return magnetURI
+}
+
+// SanitizeWebSeeds deduplicates and validates WebSeed URLs for single-file and multi-file torrents
+func SanitizeWebSeeds(urls []string, isDir bool) []string {
+	seen := make(map[string]bool)
+	var clean []string
+	for _, u := range urls {
+		u = strings.TrimSpace(u)
+		if u == "" || (!strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://")) {
+			continue
+		}
+		if isDir && !strings.HasSuffix(u, "/") {
+			u += "/"
+		}
+		if !seen[u] {
+			seen[u] = true
+			clean = append(clean, u)
+		}
+	}
+	return clean
 }

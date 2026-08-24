@@ -302,18 +302,23 @@ func (e *Engine) loadSession() {
 		}
 
 		if len(item.WebSeeds) > 0 {
-			t.AddWebSeeds(item.WebSeeds)
-			e.webSeedsMap[hash] = item.WebSeeds
+			e.webSeedsMap[hash] = SanitizeWebSeeds(item.WebSeeds, false)
 		}
 
 		if !item.IsPaused {
-			go func(tor *torrent.Torrent) {
+			go func(tor *torrent.Torrent, seeds []string) {
 				<-tor.GotInfo()
+				if len(seeds) > 0 && tor.Info() != nil {
+					clean := SanitizeWebSeeds(seeds, tor.Info().IsDir())
+					if len(clean) > 0 {
+						tor.AddWebSeeds(clean)
+					}
+				}
 				tor.DownloadAll()
 				e.mu.Lock()
 				e.saveSessionLocked()
 				e.mu.Unlock()
-			}(t)
+			}(t, item.WebSeeds)
 		} else {
 			t.DisallowDataDownload()
 		}
@@ -476,19 +481,18 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 	hash := t.InfoHash().HexString()
 	e.mu.Lock()
 	if len(extractedWebSeeds) > 0 {
-		e.webSeedsMap[hash] = append(e.webSeedsMap[hash], extractedWebSeeds...)
+		e.webSeedsMap[hash] = SanitizeWebSeeds(append(e.webSeedsMap[hash], extractedWebSeeds...), false)
 	}
 	wsList := e.webSeedsMap[hash]
 	e.mu.Unlock()
 
-	if len(wsList) > 0 {
-		t.AddWebSeeds(wsList)
-	}
-
 	go func(tor *torrent.Torrent, seeds []string) {
 		<-tor.GotInfo()
-		if len(seeds) > 0 {
-			tor.AddWebSeeds(seeds)
+		if len(seeds) > 0 && tor.Info() != nil {
+			clean := SanitizeWebSeeds(seeds, tor.Info().IsDir())
+			if len(clean) > 0 {
+				tor.AddWebSeeds(clean)
+			}
 		}
 		tor.DownloadAll()
 		if e.dhtIndexer != nil && tor.Info() != nil {
@@ -636,21 +640,27 @@ func (e *Engine) CreateWebBridgeTorrent(ctx context.Context, fileURL string, mir
 		var allMirrors []string
 		allMirrors = append(allMirrors, fileURL)
 		allMirrors = append(allMirrors, mirrors...)
-		t.AddWebSeeds(allMirrors)
+		cleanMirrors := SanitizeWebSeeds(allMirrors, false)
 		hash := t.InfoHash().HexString()
 
 		e.mu.Lock()
-		e.webSeedsMap[hash] = allMirrors
+		e.webSeedsMap[hash] = cleanMirrors
 		e.initTracker(hash)
 		e.saveSessionLocked()
 		e.mu.Unlock()
 
-		go func(tor *torrent.Torrent) {
+		go func(tor *torrent.Torrent, seeds []string) {
 			<-tor.GotInfo()
+			if len(seeds) > 0 && tor.Info() != nil {
+				clean := SanitizeWebSeeds(seeds, tor.Info().IsDir())
+				if len(clean) > 0 {
+					tor.AddWebSeeds(clean)
+				}
+			}
 			tor.DownloadAll()
-		}(t)
+		}(t, cleanMirrors)
 
-		mag := AppendWebSeedsToMagnet(SuperchargeMagnet(sugg.MagnetURI), allMirrors)
+		mag := AppendWebSeedsToMagnet(SuperchargeMagnet(sugg.MagnetURI), cleanMirrors)
 		return hash, mag, nil
 	}
 
