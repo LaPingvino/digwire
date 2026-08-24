@@ -231,64 +231,55 @@ func buildSearchQueries(filename string) []string {
 }
 
 func probeHostTorrent(ctx context.Context, fileURL string, task *HTTPTask) (*SwarmSuggestion, error) {
-	probeURLs := []string{
-		fileURL + ".torrent",
-		"https://torrent.fedoraproject.org/torrents/" + task.Name + ".torrent",
-		"https://torrents.fedoraproject.org/torrents/" + task.Name + ".torrent",
-		"https://releases.ubuntu.com/" + task.Name + ".torrent",
+	torrentURL := fileURL + ".torrent"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, torrentURL, nil)
+	if err != nil {
+		return nil, err
 	}
+	req.Header.Set("User-Agent", "Digwire/1.0")
 
 	client := &http.Client{Timeout: 4 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
 
-	for _, torrentURL := range probeURLs {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, torrentURL, nil)
-		if err != nil {
-			continue
-		}
-		req.Header.Set("User-Agent", "Digwire/1.0")
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("status %d", resp.StatusCode)
+	}
 
-		resp, err := client.Do(req)
-		if err != nil {
-			continue
-		}
-		if resp.StatusCode != 200 {
-			resp.Body.Close()
-			continue
-		}
+	mi, err := metainfo.Load(resp.Body)
+	if err != nil {
+		return nil, err
+	}
 
-		mi, err := metainfo.Load(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			continue
-		}
+	info, err := mi.UnmarshalInfo()
+	if err != nil {
+		return nil, err
+	}
 
-		info, err := mi.UnmarshalInfo()
-		if err != nil {
-			continue
-		}
-
-		// Verify size match
-		if info.TotalLength() == task.TotalBytes {
-			ok, err := VerifyRandomPieces(ctx, task.URL, &info)
-			if err == nil && ok {
-				hash := mi.HashInfoBytes().HexString()
-				mag := fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", hash, url.QueryEscape(info.BestName()))
-				for _, tier := range mi.AnnounceList {
-					for _, tr := range tier {
-						mag += "&tr=" + url.QueryEscape(tr)
-					}
+	// Verify size match
+	if info.TotalLength() == task.TotalBytes {
+		ok, err := VerifyRandomPieces(ctx, task.URL, &info)
+		if err == nil && ok {
+			hash := mi.HashInfoBytes().HexString()
+			mag := fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", hash, url.QueryEscape(info.BestName()))
+			for _, tier := range mi.AnnounceList {
+				for _, tr := range tier {
+					mag += "&tr=" + url.QueryEscape(tr)
 				}
-				return &SwarmSuggestion{
-					InfoHash:   hash,
-					MagnetURI:  mag,
-					Name:       info.BestName(),
-					Seeders:    25,
-					Peers:      5,
-					TotalBytes: info.TotalLength(),
-					Provider:   "Official Host (.torrent)",
-					IsPartial:  false,
-				}, nil
 			}
+			return &SwarmSuggestion{
+				InfoHash:   hash,
+				MagnetURI:  mag,
+				Name:       info.BestName(),
+				Seeders:    25,
+				Peers:      5,
+				TotalBytes: info.TotalLength(),
+				Provider:   "Source Host (.torrent)",
+				IsPartial:  false,
+			}, nil
 		}
 	}
 
