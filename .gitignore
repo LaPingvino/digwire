@@ -1,0 +1,18 @@
+# Root Binary
+/digwire
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test and coverage artifacts
+*.out
+*.test
+
+# OS & IDE
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~

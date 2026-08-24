@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Digwire
+Comment=Modern BitTorrent Client with DHT & TorrentsCSV Search
+Exec=/home/ikojba/digwire/digwire
+Icon=utilities-terminal
+Terminal=false
+Type=Application
+Categories=Network;FileTransfer;P2P;GTK;
+StartupWMClass=digwire
