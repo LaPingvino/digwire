@@ -400,9 +400,6 @@ func (e *Engine) monitorLoop() {
 }
 
 func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
 	uriOrURL = strings.TrimSpace(uriOrURL)
 
 	// Support adding by raw 40-character hex infohash or 32-character base32 infohash
@@ -437,8 +434,10 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 			return nil, err
 		}
 		t.DownloadAll()
+		e.mu.Lock()
 		e.initTracker(t.InfoHash().HexString())
 		e.saveSessionLocked()
+		e.mu.Unlock()
 		return t, nil
 	}
 
@@ -448,7 +447,9 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 		if err != nil {
 			return nil, err
 		}
+		e.mu.Lock()
 		e.saveSessionLocked()
+		e.mu.Unlock()
 
 		// Background swarm discovery with multi-piece random sampling verification
 		if e.searchMgr != nil {
@@ -486,6 +487,8 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 		e.webSeedsMap[hash] = SanitizeWebSeeds(append(e.webSeedsMap[hash], extractedWebSeeds...), false)
 	}
 	wsList := e.webSeedsMap[hash]
+	e.initTracker(hash)
+	e.saveSessionLocked()
 	e.mu.Unlock()
 
 	go func(tor *torrent.Torrent, seeds []string) {
@@ -515,8 +518,7 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 		e.saveSessionLocked()
 		e.mu.Unlock()
 	}(t, wsList)
-	e.initTracker(hash)
-	e.saveSessionLocked()
+
 	return t, nil
 }
 
