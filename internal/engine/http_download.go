@@ -165,7 +165,7 @@ func (hm *HTTPManager) StartDownload(rawURL string) (*HTTPTask, error) {
 		SupportsRange: supportsRange,
 		AddedAt:       time.Now().Unix(),
 		lastTime:      time.Now(),
-		client:        client,
+		client:        &http.Client{Timeout: 0},
 	}
 
 	hm.tasks[id] = task
