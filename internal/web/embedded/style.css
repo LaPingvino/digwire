@@ -381,6 +381,30 @@ body {
   border: 1px solid rgba(53, 132, 228, 0.3);
 }
 
+.tag-btdig, .tag-bitsearch, .tag-dht {
+  background: rgba(230, 97, 0, 0.18);
+  color: #ff9e3b;
+  border: 1px solid rgba(230, 97, 0, 0.35);
+}
+
+.tag-apibay {
+  background: rgba(224, 27, 36, 0.18);
+  color: #ff7b63;
+  border: 1px solid rgba(224, 27, 36, 0.35);
+}
+
+.tag-yts, .tag-eztv {
+  background: rgba(145, 65, 172, 0.18);
+  color: #dc8add;
+  border: 1px solid rgba(145, 65, 172, 0.35);
+}
+
+.tag-solidtorrents, .tag-limetorrents, .tag-torlock {
+  background: rgba(46, 194, 126, 0.18);
+  color: #57e389;
+  border: 1px solid rgba(46, 194, 126, 0.35);
+}
+
 .tag-archiveorg {
   background: rgba(229, 165, 10, 0.18);
   color: #f6d32d;
@@ -388,21 +412,21 @@ body {
 }
 
 .tag-torznab {
-  background: rgba(145, 65, 172, 0.18);
+  background: rgba(154, 99, 212, 0.18);
   color: #c061cb;
-  border: 1px solid rgba(145, 65, 172, 0.3);
-}
-
-.tag-dht {
-  background: rgba(46, 194, 126, 0.18);
-  color: #57e389;
-  border: 1px solid rgba(46, 194, 126, 0.3);
+  border: 1px solid rgba(154, 99, 212, 0.3);
 }
 
 .tag-dht_local {
   background: rgba(53, 132, 228, 0.22);
   color: #78aeed;
   border: 1px solid rgba(53, 132, 228, 0.45);
+}
+
+.tag-generic_json, .tag-generic_html, .tag-custom {
+  background: rgba(0, 168, 204, 0.18);
+  color: #00d2d3;
+  border: 1px solid rgba(0, 168, 204, 0.35);
 }
 
 .score-badge {

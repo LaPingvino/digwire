@@ -78,7 +78,7 @@
     <section id="view-search" style="display: none;">
       <div class="search-box-wrapper">
         <form onsubmit="handleSearchSubmit(event)" class="search-input-group">
-          <input type="text" id="search-input" class="input-text" placeholder="Search across TorrentsCSV, Archive.org, Torznab..." autocomplete="off">
+          <input type="text" id="search-input" class="input-text" placeholder="Search across BTDigg, BitSearch, The Pirate Bay, EZTV, YTS, TorrentsCSV..." autocomplete="off">
           <button type="submit" class="btn btn-primary" id="search-submit-btn">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
             <span>Search</span>
@@ -89,11 +89,7 @@
       <!-- Source Filters and Sorting -->
       <div class="search-controls-bar" id="search-controls" style="display: none;">
         <div class="source-chips-group" id="source-filter-chips">
-          <button class="source-chip active" onclick="setSourceFilter('all')">All Sources</button>
-          <button class="source-chip" onclick="setSourceFilter('dht_local')">Local DHT</button>
-          <button class="source-chip" onclick="setSourceFilter('torrentscsv')">TorrentsCSV</button>
-          <button class="source-chip" onclick="setSourceFilter('archiveorg')">Archive.org</button>
-          <button class="source-chip" onclick="setSourceFilter('torznab')">Torznab</button>
+          <!-- Dynamically populated from active providers and search result counts -->
         </div>
         <div style="display: flex; align-items: center; gap: 8px;">
           <span style="font-size: 12px; color: var(--adw-dim-label);">Sort:</span>

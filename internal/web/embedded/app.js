@@ -775,22 +775,62 @@ async function handleSearchSubmit(e) {
       return;
     }
 
+    currentSourceFilter = 'all';
     controls.style.display = 'flex';
+    renderSourceFilterChips();
     renderSearchResults();
   } catch (err) {
     spinner.style.display = 'none';
-    alert("Search failed: " + err.message);
+    showToast("Search failed: " + err.message, "error", 3500);
   }
+}
+
+function renderSourceFilterChips() {
+  const chipsGroup = document.getElementById('source-filter-chips');
+  if (!chipsGroup) return;
+
+  if (!rawSearchResults || rawSearchResults.length === 0) {
+    chipsGroup.innerHTML = '';
+    return;
+  }
+
+  // Aggregate counts per provider_type
+  const counts = { all: rawSearchResults.length };
+  const providerNames = {};
+
+  rawSearchResults.forEach(r => {
+    const pType = r.provider_type || 'other';
+    counts[pType] = (counts[pType] || 0) + 1;
+    if (r.provider && !providerNames[pType]) {
+      providerNames[pType] = r.provider;
+    }
+  });
+
+  const types = Object.keys(counts).filter(t => t !== 'all');
+
+  let chipsHTML = `
+    <button class="source-chip ${currentSourceFilter === 'all' ? 'active' : ''}" onclick="setSourceFilter('all')">
+      All Sources <span style="opacity: 0.75; font-size: 10px; margin-left: 3px; font-weight: 700;">(${counts.all})</span>
+    </button>
+  `;
+
+  types.forEach(t => {
+    const name = providerNames[t] || t.toUpperCase();
+    const count = counts[t];
+    const isActive = currentSourceFilter === t;
+    chipsHTML += `
+      <button class="source-chip ${isActive ? 'active' : ''}" onclick="setSourceFilter('${escapeHtml(t)}')">
+        ${escapeHtml(name)} <span style="opacity: 0.75; font-size: 10px; margin-left: 3px; font-weight: 700;">(${count})</span>
+      </button>
+    `;
+  });
+
+  chipsGroup.innerHTML = chipsHTML;
 }
 
 function setSourceFilter(source) {
   currentSourceFilter = source;
-  const chips = document.querySelectorAll('#source-filter-chips .source-chip');
-  chips.forEach(c => {
-    const isThis = (source === 'all' && c.textContent.includes('All')) ||
-                   (source !== 'all' && c.getAttribute('onclick').includes(`'${source}'`));
-    c.classList.toggle('active', isThis);
-  });
+  renderSourceFilterChips();
   renderSearchResults();
 }
 
