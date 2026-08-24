@@ -867,23 +867,29 @@ function renderSearchResults() {
     return 0;
   });
 
-  container.innerHTML = sorted.map(r => {
+  container.innerHTML = sorted.map((r, idx) => {
     const tagClass = `tag-${r.provider_type || 'torrentscsv'}`;
     const scoreText = r.score > 0 ? `<span class="score-badge">Relevance: ${r.score.toFixed(0)}</span>` : '';
+    const fileCountBadge = (r.files && r.files.length > 0) ? `<span style="font-size: 11px; opacity: 0.85;">📁 ${r.files.length} ${r.files.length === 1 ? 'file' : 'files'}</span>` : '';
 
     return `
       <div class="search-card">
         <div class="search-info">
-          <div class="search-title" title="${r.title}">${r.title}</div>
+          <div class="search-title" title="${escapeHtml(r.title)}">${escapeHtml(r.title)}</div>
           <div class="search-sub">
             <span>${ICONS.package}${formatBytes(r.size_bytes)}</span>
             <span style="color: var(--adw-success); font-weight: 600;">${ICONS.arrowUp}${r.seeders} seeds</span>
             <span>${ICONS.arrowDown}${r.leechers} peers</span>
-            <span class="provider-badge ${tagClass}">${r.provider}</span>
+            <span class="provider-badge ${tagClass}">${escapeHtml(r.provider)}</span>
+            ${fileCountBadge}
             ${scoreText}
           </div>
         </div>
-        <div style="display: flex; gap: 6px;">
+        <div style="display: flex; gap: 6px; align-items: center;">
+          <button class="btn" title="Inspect files inside this torrent" onclick="openInspectModal(${idx})">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -1px; margin-right: 3px;"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline></svg>
+            <span>Files</span>
+          </button>
           <button class="btn btn-icon" title="Copy Magnet" onclick="copyToClipboard('${encodeURI(r.magnet_uri)}', this)">${ICONS.magnet}</button>
           <button class="btn btn-primary" onclick="downloadFromSearch('${encodeURIComponent(r.magnet_uri)}', this)">
             ${ICONS.download}
@@ -893,6 +899,157 @@ function renderSearchResults() {
       </div>
     `;
   }).join('');
+}
+
+let currentInspectData = null;
+let currentInspectFiles = [];
+
+async function openInspectModal(resultIdx) {
+  const result = rawSearchResults[resultIdx];
+  if (!result) return;
+
+  const modal = document.getElementById('modal-inspect');
+  const titleEl = document.getElementById('inspect-title');
+  const sizeEl = document.getElementById('inspect-size');
+  const countEl = document.getElementById('inspect-file-count');
+  const hashEl = document.getElementById('inspect-hash');
+  const filesContainer = document.getElementById('inspect-files-container');
+  const filterInput = document.getElementById('inspect-file-filter');
+  if (filterInput) filterInput.value = '';
+
+  modal.classList.add('open');
+
+  titleEl.textContent = result.title || 'Unknown Torrent';
+  sizeEl.textContent = `Total Size: ${formatBytes(result.size_bytes)}`;
+  countEl.textContent = 'Files: ...';
+  hashEl.textContent = `Hash: ${result.info_hash || '—'}`;
+  hashEl.dataset.hash = result.info_hash || '';
+
+  currentInspectData = result;
+
+  // If the search result already contains files list
+  if (result.files && result.files.length > 0) {
+    currentInspectFiles = result.files.map((f, i) => ({
+      index: i,
+      path: f.path || f,
+      length: f.size_bytes || 0
+    }));
+    renderInspectFiles(currentInspectFiles);
+    countEl.textContent = `Files: ${currentInspectFiles.length}`;
+    return;
+  }
+
+  // Otherwise, query live BEP 9 metadata / DHT inspect endpoint
+  filesContainer.innerHTML = `
+    <div style="text-align: center; padding: 40px; color: var(--adw-dim-label);">
+      <div style="font-size: 24px; margin-bottom: 8px;">⏳</div>
+      <div style="font-weight: 600; margin-bottom: 4px; color: var(--adw-fg-color);">Resolving torrent metadata...</div>
+      <div style="font-size: 11.5px;">Fetching file directory structure from DHT swarm peers</div>
+    </div>
+  `;
+
+  try {
+    const res = await fetch(`/api/torrents/inspect?hash=${encodeURIComponent(result.info_hash)}&magnet=${encodeURIComponent(result.magnet_uri)}`);
+    if (!res.ok) {
+      throw new Error("Metadata resolution timed out (no DHT peers responded in 8s). You can still start the download directly.");
+    }
+    const data = await res.json();
+    currentInspectData = {
+      ...result,
+      magnet_uri: data.magnet_uri || result.magnet_uri,
+      title: data.name || result.title,
+      size_bytes: data.total_size || result.size_bytes
+    };
+
+    titleEl.textContent = currentInspectData.title;
+    sizeEl.textContent = `Total Size: ${formatBytes(currentInspectData.size_bytes)}`;
+    countEl.textContent = `Files: ${data.files ? data.files.length : 0}`;
+
+    currentInspectFiles = (data.files || []).map((f, i) => ({
+      index: f.index !== undefined ? f.index : i,
+      path: f.path,
+      length: f.length
+    }));
+
+    // Cache files on the search result item so subsequent inspect clicks are instant!
+    result.files = currentInspectFiles;
+
+    renderInspectFiles(currentInspectFiles);
+  } catch (err) {
+    filesContainer.innerHTML = `
+      <div style="text-align: center; padding: 35px 20px; color: var(--adw-dim-label);">
+        <div style="font-size: 22px; margin-bottom: 6px; color: var(--adw-warning);">⚠️</div>
+        <div style="font-size: 13px; font-weight: 600; color: var(--adw-fg-color); margin-bottom: 4px;">Live Metadata Swarm Lookup</div>
+        <div style="font-size: 12px; margin-bottom: 12px;">${escapeHtml(err.message)}</div>
+        <div style="font-size: 11.5px; opacity: 0.8;">Single file torrent: <strong style="color: var(--adw-fg-color);">${escapeHtml(result.title)}</strong> (${formatBytes(result.size_bytes)})</div>
+      </div>
+    `;
+    countEl.textContent = 'Files: 1';
+  }
+}
+
+function renderInspectFiles(files) {
+  const container = document.getElementById('inspect-files-container');
+  if (!container) return;
+
+  if (!files || files.length === 0) {
+    container.innerHTML = '<div style="text-align: center; color: var(--adw-dim-label); padding: 30px;">No files found.</div>';
+    return;
+  }
+
+  const getIconForFile = (path) => {
+    const ext = path.split('.').pop().toLowerCase();
+    if (['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v', 'ts'].includes(ext)) return '🎬';
+    if (['mp3', 'flac', 'wav', 'aac', 'ogg', 'm4a', 'opus', 'wma'].includes(ext)) return '🎵';
+    if (['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'iso'].includes(ext)) return '📦';
+    if (['pdf', 'epub', 'mobi', 'doc', 'docx', 'txt', 'rtf'].includes(ext)) return '📄';
+    if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp'].includes(ext)) return '🖼️';
+    if (['exe', 'msi', 'deb', 'rpm', 'apk', 'dmg', 'AppImage'].includes(ext)) return '⚙️';
+    return '📄';
+  };
+
+  container.innerHTML = files.map(f => {
+    const sizeStr = f.length > 0 ? formatBytes(f.length) : '';
+    const icon = getIconForFile(f.path);
+    return `
+      <div style="display: flex; justify-content: space-between; align-items: center; padding: 7px 12px; border-bottom: 1px solid rgba(128,128,128,0.1); font-size: 12px;">
+        <div style="display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; padding-right: 12px;">
+          <span style="font-size: 14px;">${icon}</span>
+          <span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(f.path)}">${escapeHtml(f.path)}</span>
+        </div>
+        <div style="color: var(--adw-dim-label); font-weight: 500; font-size: 11.5px; white-space: nowrap;">${sizeStr}</div>
+      </div>
+    `;
+  }).join('');
+}
+
+function filterInspectFiles(query) {
+  query = (query || '').toLowerCase().trim();
+  if (!query) {
+    renderInspectFiles(currentInspectFiles);
+    return;
+  }
+  const filtered = currentInspectFiles.filter(f => f.path.toLowerCase().includes(query));
+  renderInspectFiles(filtered);
+}
+
+function closeInspectModal() {
+  document.getElementById('modal-inspect').classList.remove('open');
+  currentInspectData = null;
+  currentInspectFiles = [];
+}
+
+function copyInspectMagnet(btn) {
+  if (currentInspectData && currentInspectData.magnet_uri) {
+    copyToClipboard(currentInspectData.magnet_uri, btn);
+  }
+}
+
+async function startDownloadFromInspect(btn) {
+  if (!currentInspectData || !currentInspectData.magnet_uri) return;
+  const uri = currentInspectData.magnet_uri;
+  closeInspectModal();
+  await downloadFromSearch(encodeURIComponent(uri), btn);
 }
 
 async function downloadFromSearch(encodedURI, btn) {

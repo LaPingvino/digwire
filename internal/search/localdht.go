@@ -47,6 +47,13 @@ func (p *LocalDHTProvider) Search(ctx context.Context, query string) ([]Result, 
 		magURI := fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s&tr=udp%%3A%%2F%%2Ftracker.opentrackr.org%%3A1337%%2Fannounce&tr=udp%%3A%%2F%%2Fopen.stealth.si%%3A80%%2Fannounce&tr=http%%3A%%2F%%2Ftorrent.ubuntu.com%%3A6969%%2Fannounce",
 			rec.InfoHash, url.QueryEscape(rec.Name))
 
+		var fileEntries []FileEntry
+		for _, f := range rec.Files {
+			fileEntries = append(fileEntries, FileEntry{
+				Path: f,
+			})
+		}
+
 		results = append(results, Result{
 			Title:        rec.Name,
 			InfoHash:     rec.InfoHash,
@@ -57,6 +64,7 @@ func (p *LocalDHTProvider) Search(ctx context.Context, query string) ([]Result, 
 			Provider:     p.name,
 			ProviderType: "dht_local",
 			PublishDate:  rec.DiscoveredAt,
+			Files:        fileEntries,
 		})
 	}
 

@@ -268,6 +268,52 @@
     </div>
   </div>
 
+  <!-- Modal: Torrent Files Preview / Inspection -->
+  <div class="modal-backdrop" id="modal-inspect" onclick="if(event.target===this) closeInspectModal()">
+    <div class="modal-box" style="max-width: 680px; max-height: 85vh; display: flex; flex-direction: column;">
+      <div class="modal-header">
+        <div class="modal-title" style="display: flex; align-items: center; gap: 8px;">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline></svg>
+          <span>Torrent Contents Preview</span>
+        </div>
+        <button class="btn btn-icon" onclick="closeInspectModal()">✕</button>
+      </div>
+
+      <div id="inspect-header-info" style="margin-bottom: 12px; background: rgba(0,0,0,0.2); padding: 12px 14px; border-radius: var(--adw-radius-sm); border: 1px solid var(--adw-border);">
+        <div id="inspect-title" style="font-size: 14px; font-weight: 600; word-break: break-all; margin-bottom: 6px;">Loading torrent metadata...</div>
+        <div style="display: flex; gap: 16px; font-size: 12px; color: var(--adw-dim-label); flex-wrap: wrap;">
+          <span id="inspect-size">Total Size: —</span>
+          <span id="inspect-file-count">Files: —</span>
+          <span id="inspect-hash" style="font-family: monospace; cursor: pointer;" title="Click to copy infohash" onclick="copyToClipboard(this.dataset.hash, this)">Hash: —</span>
+        </div>
+      </div>
+
+      <!-- Quick Filter for files -->
+      <div id="inspect-filter-container" style="margin-bottom: 10px; display: flex; gap: 8px;">
+        <input type="text" id="inspect-file-filter" class="input-text" placeholder="Filter files in this torrent..." oninput="filterInspectFiles(this.value)" style="font-size: 12px; padding: 6px 10px; width: 100%;">
+      </div>
+
+      <!-- Scrollable Files List -->
+      <div id="inspect-files-container" style="flex: 1; overflow-y: auto; max-height: 380px; min-height: 180px; border: 1px solid var(--adw-border); border-radius: var(--adw-radius-sm); background: rgba(0,0,0,0.15);">
+        <!-- File rows dynamically populated -->
+      </div>
+
+      <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--adw-border); padding-top: 12px; margin-top: 12px;">
+        <button class="btn" id="inspect-copy-magnet-btn" onclick="copyInspectMagnet(this)">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -1px; margin-right: 3px;"><path d="M6 15v-4a6 6 0 1 1 12 0v4"></path><path d="M6 11H2"></path><path d="M22 11h-4"></path><path d="M2 15h4"></path><path d="M18 15h4"></path></svg>
+          <span>Copy Magnet</span>
+        </button>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn" onclick="closeInspectModal()">Close</button>
+          <button class="btn btn-primary" id="inspect-download-btn" onclick="startDownloadFromInspect(this)">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="vertical-align: -1px; margin-right: 3px;"><path d="M12 2v14m0 0l-4-4m4 4l4-4M4 20h16"></path></svg>
+            <span>Download Torrent</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Modal: Delete Confirmation (Distinguish Torrent vs Torrent + Data) -->
   <div class="modal-backdrop" id="modal-delete" onclick="if(event.target===this) closeDeleteModal()">
     <div class="modal-box" style="max-width: 440px;">

@@ -134,6 +134,16 @@ func (idx *Indexer) addRecordInMemory(rec *DHTRecord) {
 	}
 }
 
+// GetRecord returns a cached DHT record by infohash if present
+func (idx *Indexer) GetRecord(infoHashHex string) *DHTRecord {
+	if idx == nil {
+		return nil
+	}
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.records[strings.ToLower(strings.TrimSpace(infoHashHex))]
+}
+
 // AddRecord adds or updates a record and persists to disk
 func (idx *Indexer) AddRecord(rec *DHTRecord) {
 	if rec == nil || rec.InfoHash == "" || rec.Name == "" {

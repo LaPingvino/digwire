@@ -52,6 +52,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/torrents/create", s.handleCreateTorrent)
 	s.mux.HandleFunc("POST /api/torrents/create-bridge", s.handleCreateBridgeTorrent)
 	s.mux.HandleFunc("GET /api/torrents/{hash}/details", s.handleGetTorrentDetails)
+	s.mux.HandleFunc("GET /api/torrents/inspect", s.handleInspectTorrent)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/files/{index}/priority", s.handleSetFilePriority)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/webseeds", s.handleAddWebSeed)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/upgrade-to-swarm", s.handleUpgradeToSwarm)
@@ -365,6 +366,29 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	results := s.search.SearchAll(r.Context(), query)
 	_ = json.NewEncoder(w).Encode(results)
+}
+
+func (s *Server) handleInspectTorrent(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	magOrHash := r.URL.Query().Get("magnet")
+	if magOrHash == "" {
+		magOrHash = r.URL.Query().Get("hash")
+	}
+	if magOrHash == "" {
+		http.Error(w, `{"error":"missing magnet or hash parameter"}`, http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+
+	res, err := s.engine.InspectMagnetMetadata(ctx, magOrHash)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusGatewayTimeout)
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(res)
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {

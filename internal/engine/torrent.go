@@ -1219,3 +1219,151 @@ func (e *Engine) Close() {
 		e.client.Close()
 	})
 }
+
+type InspectResult struct {
+	Name      string              `json:"name"`
+	InfoHash  string              `json:"info_hash"`
+	MagnetURI string              `json:"magnet_uri"`
+	TotalSize int64               `json:"total_size"`
+	NumFiles  int                 `json:"num_files"`
+	Files     []TorrentFileDetail `json:"files"`
+}
+
+func extractInfoHash(input string) string {
+	input = strings.TrimSpace(input)
+	if len(input) == 40 {
+		return input
+	}
+	lower := strings.ToLower(input)
+	idx := strings.Index(lower, "urn:btih:")
+	if idx != -1 {
+		part := input[idx+9:]
+		end := strings.IndexAny(part, ";&/")
+		if end != -1 {
+			part = part[:end]
+		}
+		return strings.TrimSpace(part)
+	}
+	return ""
+}
+
+// InspectMagnetMetadata resolves or retrieves the file list and metadata of any magnet link or infohash
+func (e *Engine) InspectMagnetMetadata(ctx context.Context, uriOrHash string) (*InspectResult, error) {
+	hash := extractInfoHash(uriOrHash)
+	if hash == "" {
+		return nil, fmt.Errorf("invalid magnet link or infohash")
+	}
+	hash = strings.ToLower(hash)
+
+	// 1. Check if loaded in active torrents
+	e.mu.RLock()
+	for _, t := range e.client.Torrents() {
+		if strings.EqualFold(t.InfoHash().HexString(), hash) {
+			if info := t.Info(); info != nil {
+				e.mu.RUnlock()
+				var files []TorrentFileDetail
+				for idx, f := range info.UpvertedFiles() {
+					files = append(files, TorrentFileDetail{
+						Index:  idx,
+						Path:   f.DisplayPath(info),
+						Length: f.Length,
+					})
+				}
+				return &InspectResult{
+					Name:      info.BestName(),
+					InfoHash:  hash,
+					MagnetURI: uriOrHash,
+					TotalSize: t.Length(),
+					NumFiles:  len(files),
+					Files:     files,
+				}, nil
+			}
+		}
+	}
+	e.mu.RUnlock()
+
+	// 2. Check if cached in DHT Indexer
+	if e.dhtIndexer != nil {
+		if rec := e.dhtIndexer.GetRecord(hash); rec != nil && len(rec.Files) > 0 {
+			var files []TorrentFileDetail
+			for idx, f := range rec.Files {
+				files = append(files, TorrentFileDetail{
+					Index:  idx,
+					Path:   f,
+					Length: 0,
+				})
+			}
+			return &InspectResult{
+				Name:      rec.Name,
+				InfoHash:  hash,
+				MagnetURI: uriOrHash,
+				TotalSize: rec.SizeBytes,
+				NumFiles:  len(rec.Files),
+				Files:     files,
+			}, nil
+		}
+	}
+
+	// 3. Resolve metadata live over BEP 9 DHT swarm
+	mag := uriOrHash
+	if !strings.HasPrefix(mag, "magnet:?") {
+		mag = fmt.Sprintf("magnet:?xt=urn:btih:%s", hash)
+	}
+	mag = SuperchargeMagnet(mag)
+
+	t, err := e.client.AddMagnet(mag)
+	if err != nil {
+		return nil, err
+	}
+
+	defer func() {
+		e.mu.RLock()
+		_, isUserDl := e.rateMap[hash]
+		e.mu.RUnlock()
+		if !isUserDl {
+			t.Drop()
+		}
+	}()
+
+	select {
+	case <-t.GotInfo():
+		info := t.Info()
+		if info == nil {
+			return nil, fmt.Errorf("failed to extract metadata")
+		}
+		var files []TorrentFileDetail
+		var fileNames []string
+		for idx, f := range info.UpvertedFiles() {
+			displayPath := f.DisplayPath(info)
+			fileNames = append(fileNames, displayPath)
+			files = append(files, TorrentFileDetail{
+				Index:  idx,
+				Path:   displayPath,
+				Length: f.Length,
+			})
+		}
+
+		if e.dhtIndexer != nil {
+			e.dhtIndexer.AddRecord(&dhtindex.DHTRecord{
+				InfoHash:     hash,
+				Name:         info.BestName(),
+				SizeBytes:    t.Length(),
+				NumFiles:     len(files),
+				DiscoveredAt: time.Now().Unix(),
+				Files:        fileNames,
+			})
+		}
+
+		return &InspectResult{
+			Name:      info.BestName(),
+			InfoHash:  hash,
+			MagnetURI: mag,
+			TotalSize: t.Length(),
+			NumFiles:  len(files),
+			Files:     files,
+		}, nil
+
+	case <-ctx.Done():
+		return nil, fmt.Errorf("metadata lookup timed out")
+	}
+}
