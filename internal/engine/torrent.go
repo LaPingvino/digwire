@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -184,6 +186,39 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 	tConfig.DataDir = cfg.DownloadDir
 	tConfig.NoDHT = !cfg.EnableDHT
 	tConfig.ListenPort = cfg.ListenPort
+
+	// 1/1 Gbps High-Throughput & Low-Latency Tuning
+	tConfig.EstablishedConnsPerTorrent = 200
+	tConfig.HalfOpenConnsPerTorrent = 50
+	tConfig.TotalHalfOpenConns = 120
+	tConfig.TorrentPeersHighWater = 1500
+	tConfig.TorrentPeersLowWater = 150
+	tConfig.HandshakesTimeout = 4 * time.Second
+	tConfig.NominalDialTimeout = 4 * time.Second
+	tConfig.MinDialTimeout = 1 * time.Second
+
+	numCPU := runtime.NumCPU()
+	if numCPU < 4 {
+		numCPU = 4
+	}
+	tConfig.PieceHashersPerTorrent = numCPU
+
+	tConfig.WebTransport = &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   8 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          128,
+		MaxIdleConnsPerHost:   32,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   8 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		DisableCompression:   true,
+		ReadBufferSize:        128 * 1024,
+		WriteBufferSize:       64 * 1024,
+	}
 
 	client, err := torrent.NewClient(tConfig)
 	if err != nil && tConfig.ListenPort != 0 {

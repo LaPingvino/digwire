@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -165,7 +166,25 @@ func (hm *HTTPManager) StartDownload(rawURL string) (*HTTPTask, error) {
 		SupportsRange: supportsRange,
 		AddedAt:       time.Now().Unix(),
 		lastTime:      time.Now(),
-		client:        &http.Client{Timeout: 0},
+		client: &http.Client{
+			Timeout: 0,
+			Transport: &http.Transport{
+				Proxy: http.ProxyFromEnvironment,
+				DialContext: (&net.Dialer{
+					Timeout:   10 * time.Second,
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
+				ForceAttemptHTTP2:     true,
+				MaxIdleConns:          128,
+				MaxIdleConnsPerHost:   32,
+				IdleConnTimeout:       90 * time.Second,
+				TLSHandshakeTimeout:   10 * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
+				DisableCompression:   true,
+				ReadBufferSize:        128 * 1024,
+				WriteBufferSize:       64 * 1024,
+			},
+		},
 	}
 
 	hm.tasks[id] = task
@@ -196,9 +215,9 @@ func (t *HTTPTask) runDownload() {
 	defer file.Close()
 
 	if totalBytes > 0 && supportsRange {
-		// Multi-mirror Segmented Downloader
-		// Chunk size: 2MB to 8MB
-		const chunkSize int64 = 4 * 1024 * 1024
+		// Multi-mirror Segmented Downloader for Gigabit lines
+		// Chunk size: 8MB for high-speed TCP window saturation
+		const chunkSize int64 = 8 * 1024 * 1024
 		numChunks := (totalBytes + chunkSize - 1) / chunkSize
 		t.chunkQueue = make(chan ChunkSpec, numChunks)
 
@@ -221,9 +240,13 @@ func (t *HTTPTask) runDownload() {
 		copy(mirrors, t.Mirrors)
 		t.mu.RUnlock()
 
-		// Launch 2 parallel worker routines per mirror URL
+		// Launch 4 parallel worker routines per mirror URL (up to 16 concurrent streams)
+		workersPerMirror := 4
+		if len(mirrors) > 4 {
+			workersPerMirror = 2
+		}
 		for _, m := range mirrors {
-			for w := 0; w < 2; w++ {
+			for w := 0; w < workersPerMirror; w++ {
 				t.activeWorkers.Add(1)
 				go t.mirrorWorker(ctx, m)
 			}
@@ -255,7 +278,7 @@ func (t *HTTPTask) runDownload() {
 func (t *HTTPTask) mirrorWorker(ctx context.Context, mirrorURL string) {
 	defer t.activeWorkers.Done()
 
-	buf := make([]byte, 64*1024)
+	buf := make([]byte, 128*1024)
 	for {
 		select {
 		case <-ctx.Done():
