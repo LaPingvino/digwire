@@ -39,6 +39,16 @@ function formatBytes(bytes, decimals = 1) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
 }
 
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
 function formatSpeed(bytesPerSec) {
   return formatBytes(bytesPerSec) + '/s';
 }
@@ -945,19 +955,36 @@ let activeSettingsTab = 'providers';
 let editingProviderIndex = -1; // -1 for new provider
 
 async function openSettingsModal() {
-  const res = await fetch('/api/config');
-  activeConfig = await res.json();
+  try {
+    const res = await fetch('/api/config');
+    activeConfig = await res.json();
 
-  document.getElementById('cfg-download-dir').value = activeConfig.download_dir || '';
-  document.getElementById('cfg-dl-limit').value = activeConfig.download_limit_kb || '';
-  document.getElementById('cfg-ul-limit').value = activeConfig.upload_limit_kb || '';
-  document.getElementById('cfg-enable-dht').checked = activeConfig.enable_dht !== false;
-  document.getElementById('cfg-enable-upnp').checked = activeConfig.enable_upnp !== false;
-  document.getElementById('cfg-fallback-dns').value = (activeConfig.fallback_dns || ['8.8.8.8:53', '1.1.1.1:53', '8.8.4.4:53', '9.9.9.9:53']).join(', ');
+    const dlDirEl = document.getElementById('cfg-download-dir');
+    if (dlDirEl) dlDirEl.value = activeConfig.download_dir || '';
 
-  renderProvidersList();
-  switchSettingsTab('providers');
-  document.getElementById('modal-settings').classList.add('open');
+    const dlLimEl = document.getElementById('cfg-dl-limit');
+    if (dlLimEl) dlLimEl.value = activeConfig.download_limit_kb || '';
+
+    const ulLimEl = document.getElementById('cfg-ul-limit');
+    if (ulLimEl) ulLimEl.value = activeConfig.upload_limit_kb || '';
+
+    const dhtEl = document.getElementById('cfg-enable-dht');
+    if (dhtEl) dhtEl.checked = activeConfig.enable_dht !== false;
+
+    const upnpEl = document.getElementById('cfg-enable-upnp');
+    if (upnpEl) upnpEl.checked = activeConfig.enable_upnp !== false;
+
+    const dnsEl = document.getElementById('cfg-fallback-dns');
+    if (dnsEl) dnsEl.value = (activeConfig.fallback_dns || ['8.8.8.8:53', '1.1.1.1:53', '8.8.4.4:53', '9.9.9.9:53']).join(', ');
+
+    renderProvidersList();
+    switchSettingsTab('providers');
+    const modal = document.getElementById('modal-settings');
+    if (modal) modal.classList.add('open');
+  } catch (err) {
+    console.error('Error opening settings modal:', err);
+    showToast('Failed to open settings: ' + err.message, 'error', 3500);
+  }
 }
 
 function closeSettingsModal() {
