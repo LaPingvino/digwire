@@ -211,6 +211,7 @@ func (idx *Indexer) crawlerWorker() {
 			if err != nil {
 				continue
 			}
+			t.DisallowDataDownload()
 
 			select {
 			case <-t.GotInfo():

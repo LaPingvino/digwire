@@ -450,6 +450,7 @@ func (e *Engine) FindSuggestedSwarm(ctx context.Context, task *HTTPTask, searchM
 		if err != nil {
 			continue
 		}
+		t.DisallowDataDownload()
 
 		select {
 		case <-t.GotInfo():
@@ -459,6 +460,7 @@ func (e *Engine) FindSuggestedSwarm(ctx context.Context, task *HTTPTask, searchM
 				if t.Length() == task.TotalBytes {
 					ok, _ := VerifyRandomPieces(ctx, task.URL, info)
 					if ok {
+						t.Drop()
 						return &SwarmSuggestion{
 							InfoHash:   t.InfoHash().HexString(),
 							MagnetURI:  magURI,
@@ -479,6 +481,7 @@ func (e *Engine) FindSuggestedSwarm(ctx context.Context, task *HTTPTask, searchM
 						fLen := f.Length
 						if fLen == task.TotalBytes {
 							if VerifyFileInMultiTorrent(ctx, task.URL, fileOffset, fLen, info) {
+								t.Drop()
 								return &SwarmSuggestion{
 									InfoHash:         t.InfoHash().HexString(),
 									MagnetURI:        magURI,

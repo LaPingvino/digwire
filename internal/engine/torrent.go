@@ -198,6 +198,10 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 	tConfig.HandshakesTimeout = 5 * time.Second
 	tConfig.NominalDialTimeout = 5 * time.Second
 	tConfig.MinDialTimeout = 1 * time.Second
+	tConfig.HeaderObfuscationPolicy = torrent.HeaderObfuscationPolicy{
+		Preferred:        true,
+		RequirePreferred: false,
+	}
 
 	numCPU := runtime.NumCPU()
 	if numCPU < 4 {
@@ -402,13 +406,8 @@ func (e *Engine) monitorLoop() {
 				hash := t.InfoHash().HexString()
 				tracker, exists := e.rateMap[hash]
 				if !exists {
-					tracker = &rateTracker{
-						lastBytesRead:    t.BytesCompleted(),
-						lastBytesWritten: 0,
-						lastTime:         now,
-						addedAt:          time.Now().Unix(),
-					}
-					e.rateMap[hash] = tracker
+					// Ignore temporary probing/inspecting torrents
+					continue
 				}
 
 				stats := t.Stats()
@@ -1363,6 +1362,7 @@ func (e *Engine) InspectMagnetMetadata(ctx context.Context, uriOrHash string) (*
 	if err != nil {
 		return nil, err
 	}
+	t.DisallowDataDownload()
 
 	t.AddTrackers(GetTier1TrackerList())
 	peerInfos := ConvertToPeerInfos(extractedPeers)

@@ -82,9 +82,10 @@ func ConvertToPeerInfos(peerStrings []string) []torrent.PeerInfo {
 		tcpAddr, err := net.ResolveTCPAddr("tcp", p)
 		if err == nil && tcpAddr != nil {
 			infos = append(infos, torrent.PeerInfo{
-				Addr:    tcpAddr,
-				Source:  torrent.PeerSourceIncoming,
-				Trusted: true,
+				Addr:               tcpAddr,
+				Source:             torrent.PeerSourceIncoming,
+				SupportsEncryption: true,
+				Trusted:            true,
 			})
 		}
 	}
