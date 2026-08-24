@@ -68,6 +68,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/config/yaml", s.handleSaveConfigYAML)
 	s.mux.HandleFunc("POST /api/providers/test", s.handleTestProvider)
 	s.mux.HandleFunc("POST /api/providers/reset", s.handleResetProviders)
+	s.mux.HandleFunc("POST /api/dht/preseed", s.handlePreseedDHT)
 	s.mux.HandleFunc("GET /api/events", s.handleEventsSSE)
 	s.mux.HandleFunc("POST /api/open-folder", s.handleOpenFolder)
 	s.mux.HandleFunc("GET /api/system/pick-path", s.handlePickPath)
@@ -508,6 +509,27 @@ func (s *Server) handleResetProviders(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":    "reset",
 		"providers": s.cfg.SearchProviders,
+	})
+}
+
+func (s *Server) handlePreseedDHT(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	indexer := s.engine.DHTIndexer()
+	if indexer == nil {
+		http.Error(w, `{"error":"DHT indexer is not active"}`, http.StatusBadRequest)
+		return
+	}
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		_, _ = indexer.PreseedFromTorrentsCSV(ctx)
+	}()
+
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":  "preseeding_started",
+		"message": "TorrentsCSV pre-seeding started in background",
+		"current_size": indexer.Size(),
 	})
 }
 

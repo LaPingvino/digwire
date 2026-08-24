@@ -30,9 +30,7 @@ func NewArchiveOrgProvider(name, baseURL string, enabled bool, weight float64) *
 		baseURL: baseURL,
 		enabled: enabled,
 		weight:  weight,
-		client: &http.Client{
-			Timeout: 10 * time.Second,
-		},
+		client:  NewResilientHTTPClient(10 * time.Second),
 	}
 }
 

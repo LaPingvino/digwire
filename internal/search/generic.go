@@ -22,10 +22,8 @@ type GenericProvider struct {
 
 func NewGenericProvider(pCfg config.SearchProviderConfig) *GenericProvider {
 	return &GenericProvider{
-		cfg: pCfg,
-		client: &http.Client{
-			Timeout: 10 * time.Second,
-		},
+		cfg:    pCfg,
+		client: NewResilientHTTPClient(10 * time.Second),
 	}
 }
 

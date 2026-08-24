@@ -38,9 +38,7 @@ func NewBTDigProvider(name, rawURL string, enabled bool, weight float64) *BTDigP
 		url:     strings.TrimRight(rawURL, "/"),
 		enabled: enabled,
 		weight:  weight,
-		client: &http.Client{
-			Timeout: 10 * time.Second,
-		},
+		client:  NewResilientHTTPClient(10 * time.Second),
 	}
 }
 

@@ -953,6 +953,7 @@ async function openSettingsModal() {
   document.getElementById('cfg-ul-limit').value = activeConfig.upload_limit_kb || '';
   document.getElementById('cfg-enable-dht').checked = activeConfig.enable_dht !== false;
   document.getElementById('cfg-enable-upnp').checked = activeConfig.enable_upnp !== false;
+  document.getElementById('cfg-fallback-dns').value = (activeConfig.fallback_dns || ['8.8.8.8:53', '1.1.1.1:53', '8.8.4.4:53', '9.9.9.9:53']).join(', ');
 
   renderProvidersList();
   switchSettingsTab('providers');
@@ -1298,6 +1299,11 @@ async function saveSettings() {
       activeConfig.enable_dht = document.getElementById('cfg-enable-dht').checked;
       activeConfig.enable_upnp = document.getElementById('cfg-enable-upnp').checked;
 
+      const rawDNS = document.getElementById('cfg-fallback-dns').value.trim();
+      if (rawDNS) {
+        activeConfig.fallback_dns = rawDNS.split(',').map(s => s.trim()).filter(Boolean);
+      }
+
       await fetch('/api/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1311,6 +1317,19 @@ async function saveSettings() {
   } finally {
     btn.textContent = origText;
     btn.disabled = false;
+  }
+}
+
+async function triggerPreseedDHT() {
+  showToast("Initiating background DHT pre-seeding from TorrentsCSV...", "info", 3500);
+  try {
+    const res = await fetch('/api/dht/preseed', { method: 'POST' });
+    const data = await res.json();
+    if (data.status) {
+      showToast(`⚡ TorrentsCSV pre-seed started! Current local cache: ${data.current_size || 0} torrents.`, "success", 4000);
+    }
+  } catch (err) {
+    showToast("Pre-seeding error: " + err.message, "error", 3000);
   }
 }
 

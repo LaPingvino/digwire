@@ -40,6 +40,9 @@ type Config struct {
 	UploadLimitKB   int                    `yaml:"upload_limit_kb" json:"upload_limit_kb"`
 	EnableDHT       bool                   `yaml:"enable_dht" json:"enable_dht"`
 	EnableUPnP      bool                   `yaml:"enable_upnp" json:"enable_upnp"`
+	FallbackDNS     []string               `yaml:"fallback_dns" json:"fallback_dns"`
+	AutoPreseedDHT  bool                   `yaml:"auto_preseed_dht" json:"auto_preseed_dht"`
+	DHTCrawlWorkers int                    `yaml:"dht_crawl_workers" json:"dht_crawl_workers"`
 	SearchProviders []SearchProviderConfig `yaml:"search_providers" json:"search_providers"`
 	configPath      string                 `yaml:"-" json:"-"`
 }
@@ -59,6 +62,15 @@ func DefaultConfig() *Config {
 		UploadLimitKB:   0, // unlimited
 		EnableDHT:       true,
 		EnableUPnP:      true,
+		FallbackDNS: []string{
+			"8.8.8.8:53",
+			"1.1.1.1:53",
+			"8.8.4.4:53",
+			"1.0.0.1:53",
+			"9.9.9.9:53",
+		},
+		AutoPreseedDHT:  true,
+		DHTCrawlWorkers: 8,
 		SearchProviders: []SearchProviderConfig{
 			{
 				Name:    "BTDigg (DHT)",

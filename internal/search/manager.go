@@ -36,6 +36,10 @@ func (m *Manager) UpdateProviders(cfg *config.Config) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if len(cfg.FallbackDNS) > 0 {
+		SetFallbackDNSServers(cfg.FallbackDNS)
+	}
+
 	m.providers = nil
 	for _, pCfg := range cfg.SearchProviders {
 		weight := pCfg.Weight
@@ -179,6 +183,26 @@ func (m *Manager) SearchAll(ctx context.Context, query string) []Result {
 		}
 		return combined[i].Score > combined[j].Score
 	})
+
+	// Auto-index discovered torrents into local DHT database
+	m.mu.RLock()
+	locDHT := m.localDHT
+	m.mu.RUnlock()
+	if locDHT != nil && locDHT.indexer != nil {
+		go func(items []Result) {
+			for _, item := range items {
+				if item.InfoHash != "" && item.Title != "" {
+					locDHT.indexer.AddRecord(&dhtindex.DHTRecord{
+						InfoHash:     item.InfoHash,
+						Name:         item.Title,
+						SizeBytes:    item.SizeBytes,
+						NumFiles:     1,
+						DiscoveredAt: time.Now().Unix(),
+					})
+				}
+			}
+		}(combined)
+	}
 
 	return combined
 }

@@ -30,9 +30,7 @@ func NewTorznabProvider(name, baseURL, apiKey string, enabled bool, weight float
 		apiKey:  apiKey,
 		enabled: enabled,
 		weight:  weight,
-		client: &http.Client{
-			Timeout: 12 * time.Second,
-		},
+		client:  NewResilientHTTPClient(12 * time.Second),
 	}
 }
 
