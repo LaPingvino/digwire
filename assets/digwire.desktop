@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Digwire
+GenericName=BitTorrent & Web Downloader
+Comment=Modern hybrid BitTorrent swarm and multi-source web download manager
+Exec=digwire %U
+Icon=digwire
+Terminal=false
+Categories=Network;FileTransfer;P2P;GTK;
+MimeType=x-scheme-handler/magnet;application/x-bittorrent;
+Keywords=torrent;bittorrent;magnet;download;p2p;webseed;frostwire;transmission;fragments;
+StartupNotify=true
+StartupWMClass=digwire
