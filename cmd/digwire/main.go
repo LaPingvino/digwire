@@ -1,11 +1,19 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"mime/multipart"
+	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -15,7 +23,61 @@ import (
 	"digwire/internal/web"
 )
 
+func sendToRunningInstance(port int, arg string) bool {
+	client := &http.Client{Timeout: 1200 * time.Millisecond}
+	apiURL := fmt.Sprintf("http://127.0.0.1:%d/api/torrents/add", port)
 
+	// Case 1: Check if file exists on disk (.torrent)
+	if info, err := os.Stat(arg); err == nil && !info.IsDir() {
+		f, err := os.Open(arg)
+		if err == nil {
+			defer f.Close()
+			var b bytes.Buffer
+			w := multipart.NewWriter(&b)
+			fw, err := w.CreateFormFile("torrent_file", filepath.Base(arg))
+			if err == nil {
+				_, _ = io.Copy(fw, f)
+				_ = w.Close()
+				req, err := http.NewRequest(http.MethodPost, apiURL, &b)
+				if err == nil {
+					req.Header.Set("Content-Type", w.FormDataContentType())
+					resp, err := client.Do(req)
+					if err == nil && resp.StatusCode == http.StatusOK {
+						resp.Body.Close()
+						return true
+					}
+					if resp != nil {
+						resp.Body.Close()
+					}
+				}
+			}
+		}
+	}
+
+	// Case 2: URL / Magnet / InfoHash
+	body, _ := json.Marshal(map[string]string{"url": arg})
+	req, err := http.NewRequest(http.MethodPost, apiURL, bytes.NewReader(body))
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err == nil && resp.StatusCode == http.StatusOK {
+		resp.Body.Close()
+		return true
+	}
+	if resp != nil {
+		resp.Body.Close()
+	}
+	return false
+}
+
+func registerMimeTypes() {
+	go func() {
+		_ = exec.Command("xdg-mime", "default", "digwire.desktop", "x-scheme-handler/magnet").Run()
+		_ = exec.Command("xdg-mime", "default", "digwire.desktop", "application/x-bittorrent").Run()
+	}()
+}
 
 func main() {
 	portFlag := flag.Int("port", 0, "Web interface port (overrides config)")
@@ -23,14 +85,10 @@ func main() {
 	headlessFlag := flag.Bool("headless", false, "Do not automatically launch web browser")
 	flag.Parse()
 
-	log.Println("⚡ Starting Digwire BitTorrent Client...")
-
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		log.Printf("Warning: failed to load config, using defaults: %v\n", err)
 		cfg = config.DefaultConfig()
 	}
-
 	if *portFlag > 0 {
 		cfg.WebPort = *portFlag
 	}
@@ -38,10 +96,50 @@ func main() {
 		cfg.DownloadDir = *dirFlag
 	}
 
+	// Check for CLI positional arguments (magnet links, .torrent files, or URLs)
+	cliArgs := flag.Args()
+	if len(cliArgs) > 0 {
+		allSent := true
+		for _, arg := range cliArgs {
+			arg = strings.TrimSpace(arg)
+			if arg == "" {
+				continue
+			}
+			if sendToRunningInstance(cfg.WebPort, arg) {
+				log.Printf("✓ Forwarded '%s' to running Digwire instance.\n", arg)
+			} else {
+				allSent = false
+				break
+			}
+		}
+		if allSent {
+			return
+		}
+	}
+
+	log.Println("⚡ Starting Digwire BitTorrent Client...")
+	registerMimeTypes()
+
 	// Initialize Torrent Engine
 	eng, err := engine.NewEngine(cfg)
 	if err != nil {
 		log.Fatalf("Fatal: failed to initialize torrent engine: %v\n", err)
+	}
+
+	// Queue any CLI arguments provided at initial launch
+	for _, arg := range cliArgs {
+		arg = strings.TrimSpace(arg)
+		if arg == "" {
+			continue
+		}
+		if info, err := os.Stat(arg); err == nil && !info.IsDir() {
+			if f, err := os.Open(arg); err == nil {
+				_, _ = eng.AddTorrentFile(f)
+				f.Close()
+			}
+		} else {
+			_, _ = eng.Add(arg)
+		}
 	}
 
 	// Initialize Search Manager
