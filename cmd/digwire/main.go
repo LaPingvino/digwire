@@ -79,11 +79,20 @@ func registerMimeTypes() {
 	}()
 }
 
+var Version = "0.1.0"
+
 func main() {
 	portFlag := flag.Int("port", 0, "Web interface port (overrides config)")
 	dirFlag := flag.String("dir", "", "Download directory (overrides config)")
 	headlessFlag := flag.Bool("headless", false, "Do not automatically launch web browser")
+	versionFlag := flag.Bool("version", false, "Print version and exit")
+	vFlag := flag.Bool("v", false, "Print version and exit")
 	flag.Parse()
+
+	if *versionFlag || *vFlag {
+		fmt.Printf("Digwire v%s\n", Version)
+		return
+	}
 
 	cfg, err := config.LoadConfig()
 	if err != nil {

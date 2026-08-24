@@ -1,0 +1,196 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag name (e.g. v0.1.0)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            ext: ''
+            archive_type: tar.gz
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            ext: ''
+            archive_type: tar.gz
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm
+            goarm: '7'
+            ext: ''
+            archive_type: tar.gz
+
+          # Windows
+          - os: ubuntu-latest
+            goos: windows
+            goarch: amd64
+            ext: .exe
+            archive_type: zip
+          - os: ubuntu-latest
+            goos: windows
+            goarch: arm64
+            ext: .exe
+            archive_type: zip
+
+          # macOS (Darwin)
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+            ext: ''
+            archive_type: tar.gz
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            ext: ''
+            archive_type: tar.gz
+
+          # FreeBSD
+          - os: ubuntu-latest
+            goos: freebsd
+            goarch: amd64
+            ext: ''
+            archive_type: tar.gz
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: true
+
+      - name: Determine Version Tag
+        id: vars
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="${{ github.ref_name }}"
+          fi
+          if [ -z "$TAG" ] || [ "$TAG" = "main" ]; then
+            TAG="v0.1.0"
+          fi
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "clean_tag=${TAG#v}" >> $GITHUB_OUTPUT
+
+      - name: Build Binary
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          CGO_ENABLED: 0
+        run: |
+          OUTDIR="dist_pkg"
+          mkdir -p "$OUTDIR"
+          BINNAME="digwire${{ matrix.ext }}"
+          
+          go build -trimpath -ldflags="-s -w -X main.Version=${{ steps.vars.outputs.clean_tag }}" -o "${OUTDIR}/${BINNAME}" ./cmd/digwire
+
+          # Copy extra assets
+          cp README.md "${OUTDIR}/" 2>/dev/null || true
+          mkdir -p "${OUTDIR}/assets"
+          cp -r assets/* "${OUTDIR}/assets/" 2>/dev/null || true
+
+      - name: Package Archive
+        id: pack
+        shell: bash
+        run: |
+          TAG="${{ steps.vars.outputs.tag }}"
+          ARCH_NAME="${{ matrix.goarch }}"
+          if [ -n "${{ matrix.goarm }}" ]; then
+            ARCH_NAME="${{ matrix.goarch }}v${{ matrix.goarm }}"
+          fi
+          PKG_NAME="digwire-${TAG}-${{ matrix.goos }}-${ARCH_NAME}"
+          
+          mkdir -p release_out
+          mv dist_pkg "$PKG_NAME"
+
+          if [ "${{ matrix.archive_type }}" = "zip" ]; then
+            zip -r "release_out/${PKG_NAME}.zip" "$PKG_NAME"
+            echo "archive_file=${PKG_NAME}.zip" >> $GITHUB_OUTPUT
+          else
+            tar -czf "release_out/${PKG_NAME}.tar.gz" "$PKG_NAME"
+            echo "archive_file=${PKG_NAME}.tar.gz" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pack.outputs.archive_file }}
+          path: release_out/*
+          if-no-files-found: error
+
+  publish:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download all built binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: release_assets
+          merge-multiple: true
+
+      - name: Determine Version Tag
+        id: vars
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="${{ github.ref_name }}"
+          fi
+          if [ -z "$TAG" ] || [ "$TAG" = "main" ]; then
+            TAG="v0.1.0"
+          fi
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Generate Checksums
+        shell: bash
+        run: |
+          cd release_assets
+          sha256sum * > checksums.txt
+          cat checksums.txt
+
+      - name: Create or Update GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.vars.outputs.tag }}"
+          
+          # Check if release exists
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists, uploading assets..."
+            gh release upload "$TAG" release_assets/* --clobber
+          else
+            echo "Creating release $TAG..."
+            gh release create "$TAG" release_assets/* \
+              --title "Digwire ${TAG}" \
+              --generate-notes
+          fi

@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Test & Build Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: true
+
+      - name: Install GTK / WebKit Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Run Tests
+        run: go test -v ./...
+
+      - name: Test Build (Pure Go / Cross-Platform)
+        env:
+          CGO_ENABLED: 0
+        run: |
+          GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/digwire
+          GOOS=darwin GOARCH=arm64 go build -o /dev/null ./cmd/digwire
+          GOOS=linux GOARCH=amd64 go build -o /dev/null ./cmd/digwire
+
+      - name: Test Build (Linux Native GTK3/WebKit)
+        env:
+          CGO_ENABLED: 1
+        run: |
+          go build -o /dev/null ./cmd/digwire
