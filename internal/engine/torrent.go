@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -886,6 +887,14 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 		task.mu.Unlock()
 	}
 	e.httpManager.mu.RUnlock()
+
+	// Sort deterministically: newest first, then alphabetical by name
+	sort.Slice(statuses, func(i, j int) bool {
+		if statuses[i].AddedAt != statuses[j].AddedAt {
+			return statuses[i].AddedAt > statuses[j].AddedAt
+		}
+		return statuses[i].Name < statuses[j].Name
+	})
 
 	return statuses
 }

@@ -126,12 +126,20 @@ function renderTorrents() {
   const container = document.getElementById('torrent-list-container');
   const emptyState = document.getElementById('torrents-empty');
 
-  let filtered = torrentsData;
+  let filtered = [...torrentsData];
   if (currentFilter === 'downloading') {
-    filtered = torrentsData.filter(t => t.state === 'downloading' || t.state === 'metadata');
+    filtered = filtered.filter(t => t.state === 'downloading' || t.state === 'metadata');
   } else if (currentFilter === 'completed') {
-    filtered = torrentsData.filter(t => t.state === 'seeding' || t.state === 'completed' || t.progress >= 100);
+    filtered = filtered.filter(t => t.state === 'seeding' || t.state === 'completed' || t.progress >= 100);
   }
+
+  // Deterministic sort: newest first, then alphabetical by name
+  filtered.sort((a, b) => {
+    if ((b.added_at || 0) !== (a.added_at || 0)) {
+      return (b.added_at || 0) - (a.added_at || 0);
+    }
+    return (a.name || '').localeCompare(b.name || '');
+  });
 
   if (filtered.length === 0) {
     container.innerHTML = '';
