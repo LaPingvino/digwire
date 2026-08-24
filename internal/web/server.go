@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -29,11 +30,11 @@ type Server struct {
 	mux     *http.ServeMux
 }
 
-func NewServer(cfg *config.Config, eng *engine.Engine, sm *search.Manager) *Server {
+func NewServer(cfg *config.Config, engine *engine.Engine, search *search.Manager) *Server {
 	s := &Server{
 		cfg:    cfg,
-		engine: eng,
-		search: sm,
+		engine: engine,
+		search: search,
 		mux:    http.NewServeMux(),
 	}
 	s.routes()
@@ -61,6 +62,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/config", s.handleSaveConfig)
 	s.mux.HandleFunc("GET /api/events", s.handleEventsSSE)
 	s.mux.HandleFunc("POST /api/open-folder", s.handleOpenFolder)
+	s.mux.HandleFunc("GET /api/system/pick-path", s.handlePickPath)
+	s.mux.HandleFunc("GET /api/system/browse-dir", s.handleBrowseDir)
 
 	// Embedded Static UI files
 	subFS, err := fs.Sub(embeddedFiles, "embedded")
@@ -401,6 +404,106 @@ func (s *Server) handleOpenFolder(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "opened"})
+}
+
+func (s *Server) handlePickPath(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	targetType := r.URL.Query().Get("type") // "file" or "folder"
+
+	// 1. Check if zenity is available
+	if zenityPath, err := exec.LookPath("zenity"); err == nil {
+		args := []string{"--file-selection", "--title=Select File or Folder to Seed"}
+		if targetType == "folder" || targetType == "directory" {
+			args = append(args, "--directory")
+		}
+		cmd := exec.Command(zenityPath, args...)
+		out, err := cmd.Output()
+		if err == nil {
+			selected := strings.TrimSpace(string(out))
+			if selected != "" {
+				_ = json.NewEncoder(w).Encode(map[string]string{"path": selected})
+				return
+			}
+		}
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			_ = json.NewEncoder(w).Encode(map[string]string{"path": "", "cancelled": "true"})
+			return
+		}
+	}
+
+	// 2. Check if kdialog is available
+	if kdialogPath, err := exec.LookPath("kdialog"); err == nil {
+		var cmd *exec.Cmd
+		if targetType == "folder" || targetType == "directory" {
+			cmd = exec.Command(kdialogPath, "--getexistingdirectory")
+		} else {
+			cmd = exec.Command(kdialogPath, "--getopenfilename")
+		}
+		out, err := cmd.Output()
+		if err == nil {
+			selected := strings.TrimSpace(string(out))
+			if selected != "" {
+				_ = json.NewEncoder(w).Encode(map[string]string{"path": selected})
+				return
+			}
+		}
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			_ = json.NewEncoder(w).Encode(map[string]string{"path": "", "cancelled": "true"})
+			return
+		}
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": "no native dialog available", "fallback": "inapp"})
+}
+
+func (s *Server) handleBrowseDir(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	dirPath := r.URL.Query().Get("path")
+	if dirPath == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			home = "/"
+		}
+		dirPath = home
+	}
+	dirPath = filepath.Clean(dirPath)
+
+	entries, err := os.ReadDir(dirPath)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+
+	type fileItem struct {
+		Name  string `json:"name"`
+		Path  string `json:"path"`
+		IsDir bool   `json:"is_dir"`
+		Size  int64  `json:"size"`
+	}
+
+	var items []fileItem
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".") && e.Name() != ".." {
+			continue
+		}
+		info, err := e.Info()
+		var sz int64
+		if err == nil {
+			sz = info.Size()
+		}
+		items = append(items, fileItem{
+			Name:  e.Name(),
+			Path:  filepath.Join(dirPath, e.Name()),
+			IsDir: e.IsDir(),
+			Size:  sz,
+		})
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"current": dirPath,
+		"parent":  filepath.Dir(dirPath),
+		"items":   items,
+	})
 }
 
 // Server-Sent Events for real-time reactive UI updates

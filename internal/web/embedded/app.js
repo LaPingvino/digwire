@@ -997,6 +997,122 @@ async function saveSettings() {
   closeSettingsModal();
 }
 
+// File & Folder Picker integration
+let browserCurrentPath = '';
+let browserParentPath = '';
+let browserSelectedPath = '';
+let browserPickerType = 'file'; // 'file' or 'folder'
+
+async function openFilePicker(type = 'file') {
+  browserPickerType = type;
+  try {
+    const res = await fetch(`/api/system/pick-path?type=${type}`);
+    const data = await res.json();
+    if (data.path) {
+      document.getElementById('send-path-input').value = data.path;
+      showToast("Selected: " + data.path, "info", 2000);
+      return;
+    }
+    if (data.cancelled) {
+      return; // User cancelled
+    }
+    openInAppFileBrowser(type);
+  } catch (err) {
+    openInAppFileBrowser(type);
+  }
+}
+
+async function openInAppFileBrowser(type = 'file', initialPath = '') {
+  browserPickerType = type;
+  document.getElementById('browser-modal-title').textContent = type === 'folder' ? 'Choose Folder to Seed' : 'Choose File to Seed';
+  document.getElementById('modal-file-browser').classList.add('open');
+  await loadBrowserDir(initialPath);
+}
+
+function closeFileBrowser() {
+  document.getElementById('modal-file-browser').classList.remove('open');
+}
+
+async function loadBrowserDir(dirPath = '') {
+  const listEl = document.getElementById('browser-items-list');
+  listEl.innerHTML = '<div style="text-align: center; color: var(--adw-dim-label); padding: 20px;">Loading directory...</div>';
+  
+  try {
+    const res = await fetch(`/api/system/browse-dir?path=${encodeURIComponent(dirPath)}`);
+    const data = await res.json();
+    if (data.error) {
+      listEl.innerHTML = `<div style="color: var(--adw-error); padding: 15px;">Error: ${data.error}</div>`;
+      return;
+    }
+
+    browserCurrentPath = data.current;
+    browserParentPath = data.parent;
+    browserSelectedPath = browserPickerType === 'folder' ? data.current : '';
+
+    document.getElementById('browser-current-path').value = data.current;
+    document.getElementById('browser-selected-hint').textContent = browserSelectedPath ? `Selected: ${browserSelectedPath}` : 'Select an item below';
+
+    if (!data.items || data.items.length === 0) {
+      listEl.innerHTML = '<div style="text-align: center; color: var(--adw-dim-label); padding: 20px;">(Empty folder)</div>';
+      return;
+    }
+
+    // Sort folders first, then alphabetical
+    data.items.sort((a, b) => {
+      if (a.is_dir && !b.is_dir) return -1;
+      if (!a.is_dir && b.is_dir) return 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    listEl.innerHTML = data.items.map(item => `
+      <div class="browser-item" onclick="onBrowserItemClick('${encodeURIComponent(item.path)}', ${item.is_dir}, this)" ondblclick="onBrowserItemDblClick('${encodeURIComponent(item.path)}', ${item.is_dir})" style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; border-radius: 6px; cursor: pointer; user-select: none;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          ${item.is_dir ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--adw-accent);"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>` : `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--adw-dim-label);"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline></svg>`}
+          <span style="font-size: 12.5px; font-weight: ${item.is_dir ? '600' : 'normal'};">${item.name}</span>
+        </div>
+        ${!item.is_dir ? `<span style="font-size: 11px; color: var(--adw-dim-label);">${formatBytes(item.size)}</span>` : ''}
+      </div>
+    `).join('');
+  } catch (err) {
+    listEl.innerHTML = `<div style="color: var(--adw-error); padding: 15px;">Failed to load: ${err.message}</div>`;
+  }
+}
+
+function onBrowserItemClick(encodedPath, isDir, element) {
+  const path = decodeURIComponent(encodedPath);
+  browserSelectedPath = path;
+  document.querySelectorAll('.browser-item').forEach(el => el.style.background = 'transparent');
+  if (element) {
+    element.style.background = 'rgba(53, 132, 228, 0.25)';
+  }
+  document.getElementById('browser-selected-hint').textContent = `Selected: ${path}`;
+}
+
+function onBrowserItemDblClick(encodedPath, isDir) {
+  const path = decodeURIComponent(encodedPath);
+  if (isDir) {
+    loadBrowserDir(path);
+  } else {
+    browserSelectedPath = path;
+    confirmFileBrowserSelection();
+  }
+}
+
+function browserNavigateParent() {
+  if (browserParentPath && browserParentPath !== browserCurrentPath) {
+    loadBrowserDir(browserParentPath);
+  }
+}
+
+function confirmFileBrowserSelection() {
+  const selected = browserSelectedPath || browserCurrentPath;
+  if (selected) {
+    document.getElementById('send-path-input').value = selected;
+    showToast("Selected: " + selected, "info", 2000);
+    closeFileBrowser();
+  }
+}
+
 // Initialize on page load
 window.addEventListener('DOMContentLoaded', () => {
   initEventStream();
