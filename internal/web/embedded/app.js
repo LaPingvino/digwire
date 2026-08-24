@@ -123,7 +123,11 @@ function renderGlobalStats(stats) {
   document.getElementById('stat-download-rate').textContent = `↓ ${formatSpeed(stats.download_rate)}`;
   document.getElementById('stat-upload-rate').textContent = `↑ ${formatSpeed(stats.upload_rate)}`;
   document.getElementById('stat-active-count').textContent = `${stats.active_count} active / ${stats.total_count} total`;
-  document.getElementById('stat-dht-nodes').textContent = `DHT: ${stats.dht_nodes} nodes`;
+  let dhtText = `DHT: ${stats.dht_nodes} nodes`;
+  if (stats.dht_indexed_count !== undefined && stats.dht_indexed_count > 0) {
+    dhtText += ` • ${stats.dht_indexed_count} indexed`;
+  }
+  document.getElementById('stat-dht-nodes').textContent = dhtText;
 }
 
 // Torrent Rendering

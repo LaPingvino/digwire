@@ -104,11 +104,12 @@ type TorrentDetails struct {
 }
 
 type GlobalStats struct {
-	DownloadRate int64 `json:"download_rate"`
-	UploadRate   int64 `json:"upload_rate"`
-	ActiveCount  int   `json:"active_count"`
-	TotalCount   int   `json:"total_count"`
-	DHTNodes     int   `json:"dht_nodes"`
+	DownloadRate    int64 `json:"download_rate"`
+	UploadRate      int64 `json:"upload_rate"`
+	ActiveCount     int   `json:"active_count"`
+	TotalCount      int   `json:"total_count"`
+	DHTNodes        int   `json:"dht_nodes"`
+	DHTIndexedCount int   `json:"dht_indexed_count"`
 }
 
 type rateTracker struct {
@@ -1153,12 +1154,18 @@ func (e *Engine) GetGlobalStats() GlobalStats {
 		}
 	}
 
+	indexedCount := 0
+	if e.dhtIndexer != nil {
+		indexedCount = e.dhtIndexer.Size()
+	}
+
 	return GlobalStats{
-		DownloadRate: totalDL,
-		UploadRate:   totalUL,
-		ActiveCount:  activeCount,
-		TotalCount:   len(e.client.Torrents()) + len(e.httpManager.tasks),
-		DHTNodes:     dhtNodes,
+		DownloadRate:    totalDL,
+		UploadRate:      totalUL,
+		ActiveCount:     activeCount,
+		TotalCount:      len(e.rateMap) + len(e.httpManager.tasks),
+		DHTNodes:        dhtNodes,
+		DHTIndexedCount: indexedCount,
 	}
 }
 
