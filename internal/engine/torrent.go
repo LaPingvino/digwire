@@ -122,6 +122,7 @@ type rateTracker struct {
 	uploadRate       int64
 	addedAt          int64
 	isPaused         bool
+	displayName      string
 }
 
 type Engine struct {
@@ -185,16 +186,17 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 	tConfig := torrent.NewDefaultClientConfig()
 	tConfig.DataDir = cfg.DownloadDir
 	tConfig.NoDHT = !cfg.EnableDHT
+	tConfig.PeriodicallyAnnounceTorrentsToDht = true
 	tConfig.ListenPort = cfg.ListenPort
 
 	// 1/1 Gbps High-Throughput & Low-Latency Tuning
-	tConfig.EstablishedConnsPerTorrent = 200
-	tConfig.HalfOpenConnsPerTorrent = 50
-	tConfig.TotalHalfOpenConns = 120
-	tConfig.TorrentPeersHighWater = 1500
-	tConfig.TorrentPeersLowWater = 150
-	tConfig.HandshakesTimeout = 4 * time.Second
-	tConfig.NominalDialTimeout = 4 * time.Second
+	tConfig.EstablishedConnsPerTorrent = 250
+	tConfig.HalfOpenConnsPerTorrent = 60
+	tConfig.TotalHalfOpenConns = 150
+	tConfig.TorrentPeersHighWater = 2000
+	tConfig.TorrentPeersLowWater = 200
+	tConfig.HandshakesTimeout = 5 * time.Second
+	tConfig.NominalDialTimeout = 5 * time.Second
 	tConfig.MinDialTimeout = 1 * time.Second
 
 	numCPU := runtime.NumCPU()
@@ -504,10 +506,14 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 
 	// Magnet link or infohash
 	var extractedWebSeeds []string
+	var extractedPeers []string
+	var displayName string
 	if strings.HasPrefix(uriOrURL, "magnet:?") {
 		if magObj, err := metainfo.ParseMagnetUri(uriOrURL); err == nil {
 			extractedWebSeeds = magObj.Params["ws"]
+			displayName = magObj.DisplayName
 		}
+		extractedPeers = ExtractPeersFromMagnet(uriOrURL)
 	}
 
 	uriOrURL = SuperchargeMagnet(uriOrURL)
@@ -516,17 +522,48 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 		return nil, err
 	}
 
+	// Immediately inject Tier-1 Trackers
+	t.AddTrackers(GetTier1TrackerList())
+
+	// Immediately inject direct peers (e.g. from x.pe)
+	peerInfos := ConvertToPeerInfos(extractedPeers)
+	if len(peerInfos) > 0 {
+		t.AddPeers(peerInfos)
+	}
+
 	hash := t.InfoHash().HexString()
 	e.mu.Lock()
 	if len(extractedWebSeeds) > 0 {
 		e.webSeedsMap[hash] = SanitizeWebSeeds(append(e.webSeedsMap[hash], extractedWebSeeds...), false)
 	}
 	wsList := e.webSeedsMap[hash]
-	e.initTracker(hash)
+	e.initTracker(hash, displayName)
 	e.saveSessionLocked()
 	e.mu.Unlock()
 
-	go func(tor *torrent.Torrent, seeds []string) {
+	go func(tor *torrent.Torrent, seeds []string, directPeers []torrent.PeerInfo) {
+		// Active peer and tracker retry loop while waiting for metadata
+		if tor.Info() == nil {
+			ticker := time.NewTicker(3 * time.Second)
+			defer ticker.Stop()
+			stopRetry := time.After(45 * time.Second)
+
+		retryLoop:
+			for {
+				select {
+				case <-tor.GotInfo():
+					break retryLoop
+				case <-stopRetry:
+					break retryLoop
+				case <-ticker.C:
+					if len(directPeers) > 0 {
+						tor.AddPeers(directPeers)
+					}
+					tor.AddTrackers(GetTier1TrackerList())
+				}
+			}
+		}
+
 		<-tor.GotInfo()
 		if len(seeds) > 0 && tor.Info() != nil {
 			clean := SanitizeWebSeeds(seeds, tor.Info().IsDir())
@@ -552,7 +589,7 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 		e.mu.Lock()
 		e.saveSessionLocked()
 		e.mu.Unlock()
-	}(t, wsList)
+	}(t, wsList, peerInfos)
 
 	return t, nil
 }
@@ -706,12 +743,19 @@ func (e *Engine) CreateWebBridgeTorrent(ctx context.Context, fileURL string, mir
 	return "", "", fmt.Errorf("could not find or verify swarm for %s", filename)
 }
 
-func (e *Engine) initTracker(hash string) {
-	if _, ok := e.rateMap[hash]; !ok {
+func (e *Engine) initTracker(hash string, displayName ...string) {
+	name := ""
+	if len(displayName) > 0 {
+		name = displayName[0]
+	}
+	if tr, ok := e.rateMap[hash]; !ok {
 		e.rateMap[hash] = &rateTracker{
-			lastTime: time.Now(),
-			addedAt:  time.Now().Unix(),
+			lastTime:    time.Now(),
+			addedAt:     time.Now().Unix(),
+			displayName: name,
 		}
+	} else if name != "" && tr.displayName == "" {
+		tr.displayName = name
 	}
 }
 
@@ -868,7 +912,10 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 				files = append(files, strings.Join(f.Path, "/"))
 			}
 		} else {
-			name = t.Name()
+			name = tracker.displayName
+			if name == "" {
+				name = t.Name()
+			}
 			if name == "" {
 				name = "Resolving metadata (" + hash[:8] + "...)"
 			}
@@ -1304,16 +1351,23 @@ func (e *Engine) InspectMagnetMetadata(ctx context.Context, uriOrHash string) (*
 		}
 	}
 
-	// 3. Resolve metadata live over BEP 9 DHT swarm
+	// 3. Resolve metadata live over BEP 9 DHT swarm and direct peers
 	mag := uriOrHash
 	if !strings.HasPrefix(mag, "magnet:?") {
 		mag = fmt.Sprintf("magnet:?xt=urn:btih:%s", hash)
 	}
+	extractedPeers := ExtractPeersFromMagnet(mag)
 	mag = SuperchargeMagnet(mag)
 
 	t, err := e.client.AddMagnet(mag)
 	if err != nil {
 		return nil, err
+	}
+
+	t.AddTrackers(GetTier1TrackerList())
+	peerInfos := ConvertToPeerInfos(extractedPeers)
+	if len(peerInfos) > 0 {
+		t.AddPeers(peerInfos)
 	}
 
 	defer func() {
@@ -1325,45 +1379,56 @@ func (e *Engine) InspectMagnetMetadata(ctx context.Context, uriOrHash string) (*
 		}
 	}()
 
-	select {
-	case <-t.GotInfo():
-		info := t.Info()
-		if info == nil {
-			return nil, fmt.Errorf("failed to extract metadata")
-		}
-		var files []TorrentFileDetail
-		var fileNames []string
-		for idx, f := range info.UpvertedFiles() {
-			displayPath := f.DisplayPath(info)
-			fileNames = append(fileNames, displayPath)
-			files = append(files, TorrentFileDetail{
-				Index:  idx,
-				Path:   displayPath,
-				Length: f.Length,
-			})
-		}
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
 
-		if e.dhtIndexer != nil {
-			e.dhtIndexer.AddRecord(&dhtindex.DHTRecord{
-				InfoHash:     hash,
-				Name:         info.BestName(),
-				SizeBytes:    t.Length(),
-				NumFiles:     len(files),
-				DiscoveredAt: time.Now().Unix(),
-				Files:        fileNames,
-			})
+	for {
+		select {
+		case <-t.GotInfo():
+			info := t.Info()
+			if info == nil {
+				return nil, fmt.Errorf("failed to extract metadata")
+			}
+			var files []TorrentFileDetail
+			var fileNames []string
+			for idx, f := range info.UpvertedFiles() {
+				displayPath := f.DisplayPath(info)
+				fileNames = append(fileNames, displayPath)
+				files = append(files, TorrentFileDetail{
+					Index:  idx,
+					Path:   displayPath,
+					Length: f.Length,
+				})
+			}
+
+			if e.dhtIndexer != nil {
+				e.dhtIndexer.AddRecord(&dhtindex.DHTRecord{
+					InfoHash:     hash,
+					Name:         info.BestName(),
+					SizeBytes:    t.Length(),
+					NumFiles:     len(files),
+					DiscoveredAt: time.Now().Unix(),
+					Files:        fileNames,
+				})
+			}
+
+			return &InspectResult{
+				Name:      info.BestName(),
+				InfoHash:  hash,
+				MagnetURI: mag,
+				TotalSize: t.Length(),
+				NumFiles:  len(files),
+				Files:     files,
+			}, nil
+
+		case <-ticker.C:
+			if len(peerInfos) > 0 {
+				t.AddPeers(peerInfos)
+			}
+			t.AddTrackers(GetTier1TrackerList())
+
+		case <-ctx.Done():
+			return nil, fmt.Errorf("metadata lookup timed out (swarm peers not responding)")
 		}
-
-		return &InspectResult{
-			Name:      info.BestName(),
-			InfoHash:  hash,
-			MagnetURI: mag,
-			TotalSize: t.Length(),
-			NumFiles:  len(files),
-			Files:     files,
-		}, nil
-
-	case <-ctx.Done():
-		return nil, fmt.Errorf("metadata lookup timed out")
 	}
 }
