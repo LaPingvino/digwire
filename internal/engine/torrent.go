@@ -564,6 +564,10 @@ func (e *Engine) CreateTorrent(sourcePath, comment string) (string, string, erro
 	hash := t.InfoHash().HexString()
 	h := t.InfoHash()
 	magnetObj := mi.Magnet(&h, &info)
+	magnetURI := magnetObj.String()
+	if magnetURI == "" {
+		magnetURI = fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", hash, url.QueryEscape(torrentName))
+	}
 	magnetURI = AppendWebSeedsToMagnet(SuperchargeMagnet(magnetURI), nil)
 
 	if e.dhtIndexer != nil {
