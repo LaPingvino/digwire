@@ -10,6 +10,12 @@
 *.out
 *.test
 
+# Arch Linux makepkg artifacts
+*.pkg.tar.*
+/pkg/
+/src/
+/*-src/
+
 # OS & IDE
 .DS_Store
 .idea/
