@@ -35,6 +35,8 @@ func (m *Manager) UpdateProviders(cfg *config.Config) {
 		switch pCfg.Type {
 		case "torrentscsv":
 			m.providers = append(m.providers, NewTorrentsCSVProvider(pCfg.Name, pCfg.URL, pCfg.Enabled, weight))
+		case "dht", "apibay":
+			m.providers = append(m.providers, NewApibayProvider(pCfg.Name, pCfg.URL, pCfg.Enabled, weight))
 		case "archiveorg":
 			m.providers = append(m.providers, NewArchiveOrgProvider(pCfg.Name, pCfg.URL, pCfg.Enabled, weight))
 		case "torznab":

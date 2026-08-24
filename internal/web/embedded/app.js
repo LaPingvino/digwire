@@ -208,6 +208,23 @@ function renderTorrents() {
   }).join('');
 }
 
+// Toast Notification System
+function showToast(message, type = 'info', duration = 4000) {
+  const container = document.getElementById('toast-container');
+  if (!container) return;
+
+  const toast = document.createElement('div');
+  toast.className = `toast ${type === 'accent' ? 'toast-accent' : type === 'error' ? 'toast-error' : ''}`;
+  toast.innerHTML = message;
+  container.appendChild(toast);
+
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateY(12px)';
+    setTimeout(() => toast.remove(), 300);
+  }, duration);
+}
+
 // Torrent Actions
 async function pauseTorrent(hash) {
   await fetch(`/api/torrents/${hash}/pause`, { method: 'POST' });
@@ -224,11 +241,15 @@ async function triggerFindSwarm(hash, btn) {
     btn.disabled = true;
     btn.innerHTML = '<span style="font-size: 11px;">🔍</span>';
   }
+
+  showToast("🔍 Scanning indexers & official host mirrors in background...", "info", 3000);
+
   try {
     const res = await fetch(`/api/torrents/${hash}/find-swarm`, { method: 'POST' });
     const data = await res.json();
     if (data.status === 'ok') {
       if (btn) btn.innerHTML = '✓';
+      showToast("⚡ Equivalent BitTorrent swarm verified! Click 'Upgrade to Swarm' on card.", "accent", 5000);
       if (document.getElementById('modal-details').classList.contains('open')) {
         const dRes = await fetch(`/api/torrents/${hash}/details`);
         if (dRes.ok) {
@@ -237,11 +258,11 @@ async function triggerFindSwarm(hash, btn) {
         }
       }
     } else {
-      alert("No verified BitTorrent swarm found on indexers for this file.");
+      showToast("No equivalent BitTorrent swarm found on indexers for this file.", "info", 4000);
       if (btn) btn.innerHTML = orig;
     }
   } catch (err) {
-    alert("Search failed: " + err.message);
+    showToast("Swarm search error: " + err.message, "error", 4000);
     if (btn) btn.innerHTML = orig;
   }
   if (btn) btn.disabled = false;
@@ -252,14 +273,15 @@ async function upgradeToSwarm(hash) {
     const res = await fetch(`/api/torrents/${hash}/upgrade-to-swarm`, { method: 'POST' });
     const data = await res.json();
     if (data.status === 'ok') {
+      showToast("🚀 Upgraded to hybrid P2P swarm with WebSeed acceleration!", "accent", 4000);
       if (document.getElementById('modal-details').classList.contains('open')) {
         closeDetailsModal();
       }
     } else {
-      alert("Upgrade failed: " + (data.error || 'Unknown error'));
+      showToast("Upgrade failed: " + (data.error || 'Unknown error'), "error", 4000);
     }
   } catch (err) {
-    alert("Error upgrading to swarm: " + err.message);
+    showToast("Error upgrading: " + err.message, "error", 4000);
   }
 }
 

@@ -52,6 +52,13 @@ func DefaultConfig() *Config {
 				Weight:  1.2,
 			},
 			{
+				Name:    "DHT / Open Indexer",
+				Type:    "dht",
+				URL:     "https://apibay.org",
+				Enabled: true,
+				Weight:  1.3,
+			},
+			{
 				Name:    "Archive.org",
 				Type:    "archiveorg",
 				URL:     "https://archive.org",
