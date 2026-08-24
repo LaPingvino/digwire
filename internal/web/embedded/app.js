@@ -953,12 +953,21 @@ async function openInspectModal(resultIdx) {
     if (!res.ok) {
       throw new Error("Metadata resolution timed out (no DHT peers responded in 8s). You can still start the download directly.");
     }
-    const data = await res.json();
+    if (data.name && data.name.trim() !== '') {
+      result.title = data.name;
+    }
+    if (data.total_size && data.total_size > 0) {
+      result.size_bytes = data.total_size;
+    }
+    if (data.magnet_uri) {
+      result.magnet_uri = data.magnet_uri;
+    }
+
     currentInspectData = {
       ...result,
       magnet_uri: data.magnet_uri || result.magnet_uri,
-      title: data.name || result.title,
-      size_bytes: data.total_size || result.size_bytes
+      title: result.title,
+      size_bytes: result.size_bytes
     };
 
     titleEl.textContent = currentInspectData.title;
@@ -975,6 +984,8 @@ async function openInspectModal(resultIdx) {
     result.files = currentInspectFiles;
 
     renderInspectFiles(currentInspectFiles);
+    // Refresh search results list to reflect resolved title and file count
+    renderSearchResults();
   } catch (err) {
     filesContainer.innerHTML = `
       <div style="text-align: center; padding: 35px 20px; color: var(--adw-dim-label);">
