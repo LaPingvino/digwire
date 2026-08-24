@@ -51,6 +51,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/torrents/{hash}/webseeds", s.handleAddWebSeed)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/upgrade-to-swarm", s.handleUpgradeToSwarm)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/find-swarm", s.handleTriggerFindSwarm)
+	s.mux.HandleFunc("POST /api/torrents/{hash}/verify", s.handleVerifyTorrent)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/pause", s.handlePauseTorrent)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/resume", s.handleResumeTorrent)
 	s.mux.HandleFunc("DELETE /api/torrents/{hash}", s.handleDeleteTorrent)
@@ -312,6 +313,16 @@ func (s *Server) handleTriggerFindSwarm(w http.ResponseWriter, r *http.Request) 
 		"status":          "ok",
 		"suggested_swarm": sugg,
 	})
+}
+
+func (s *Server) handleVerifyTorrent(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	hash := r.PathValue("hash")
+	if err := s.engine.VerifyTorrentData(hash); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusNotFound)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 func (s *Server) handlePauseTorrent(w http.ResponseWriter, r *http.Request) {

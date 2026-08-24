@@ -243,7 +243,10 @@
       </div>
 
       <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--adw-border); padding-top: 12px; margin-top: 8px;">
-        <button class="btn" onclick="copyCurrentMagnet()">📋 Copy Magnet Link</button>
+        <div style="display: flex; gap: 6px;">
+          <button class="btn" onclick="copyCurrentMagnet()">📋 Copy Magnet Link</button>
+          <button class="btn" onclick="if(currentDetailData) verifyTorrent(currentDetailData.info_hash, this)">🔄 Verify Local Data</button>
+        </div>
         <button class="btn" onclick="closeDetailsModal()">Close</button>
       </div>
     </div>

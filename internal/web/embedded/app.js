@@ -19,6 +19,7 @@ const ICONS = {
   play: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>`,
   pause: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>`,
   trash: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>`,
+  verify: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>`,
   copy: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>`,
   download: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v14m0 0l-4-4m4 4l4-4M4 20h16"></path></svg>`
 };
@@ -191,8 +192,8 @@ function renderTorrents() {
         <div class="card-footer">
           <div class="torrent-meta">${metaString}</div>
           <div class="card-actions">
-            ${isWebDownload && !t.suggested_swarm ? 
-              `<button class="btn btn-icon" style="color: #e5a50a;" title="Scan BitTorrent Indexers for Swarm" onclick="triggerFindSwarm('${t.info_hash}', this)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg></button>` : ''
+            ${!isWebDownload ? 
+              `<button class="btn btn-icon" title="Verify Local Data (Recheck)" onclick="verifyTorrent('${t.info_hash}', this)">${ICONS.verify}</button>` : ''
             }
             <button class="btn btn-icon" title="Copy Magnet / URL" onclick="copyToClipboard('${encodeURI(t.magnet_uri || '')}', this)">${ICONS.magnet}</button>
             <button class="btn btn-icon" title="Inspect Details & Peers" onclick="openDetailsModal('${t.info_hash}')">${ICONS.info}</button>
@@ -206,6 +207,23 @@ function renderTorrents() {
       </div>
     `;
   }).join('');
+}
+
+async function verifyTorrent(hash, btn) {
+  showToast("🔄 Rechecking and verifying local piece hashes...", "info", 3000);
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch(`/api/torrents/${hash}/verify`, { method: 'POST' });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      showToast("✓ Hash verification triggered! Rechecking data...", "accent", 3500);
+    } else {
+      showToast("Verification failed: " + (data.error || 'Unknown error'), "error", 4000);
+    }
+  } catch (err) {
+    showToast("Error verifying: " + err.message, "error", 4000);
+  }
+  if (btn) btn.disabled = false;
 }
 
 // Toast Notification System
@@ -423,6 +441,13 @@ function switchDetailTab(tab) {
 
         <span class="detail-label">Storage Path:</span>
         <span class="detail-val" style="font-family: monospace;">${currentDetailData.download_dir}</span>
+
+        <span class="detail-label">Data Integrity:</span>
+        <div>
+          <button class="btn" style="padding: 3px 10px; font-size: 11px;" onclick="verifyTorrent('${currentDetailData.info_hash}', this)">
+            🔄 Force Recheck & Verify Pieces
+          </button>
+        </div>
       </div>
     `;
   } else if (tab === 'files') {

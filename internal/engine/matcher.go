@@ -516,51 +516,64 @@ func (e *Engine) UpgradeHTTPToSwarm(httpTaskID string) (*torrent.Torrent, error)
 	task.pause()
 	delete(e.httpManager.tasks, httpTaskID)
 
-	// Add torrent to client
-	t, err := e.client.AddMagnet(sugg.MagnetURI)
+	partPath := task.DestPath + ".part"
+
+	// Add torrent to client with Supercharge & WebSeeds
+	var allMirrors []string
+	allMirrors = append(allMirrors, task.URL)
+	allMirrors = append(allMirrors, task.Mirrors...)
+	magURI := AppendWebSeedsToMagnet(SuperchargeMagnet(sugg.MagnetURI), allMirrors)
+
+	t, err := e.client.AddMagnet(magURI)
 	if err != nil {
 		return nil, fmt.Errorf("failed to add swarm: %w", err)
 	}
 
-	// Move downloaded .part file if exists
-	partPath := task.DestPath + ".part"
-	targetPath := filepath.Join(e.cfg.DownloadDir, task.Name)
-	if _, err := os.Stat(partPath); err == nil {
-		_ = os.Rename(partPath, targetPath)
-	}
-
-	// Inject all HTTP mirrors as WebSeeds
-	var mirrors []string
-	mirrors = append(mirrors, task.URL)
-	mirrors = append(mirrors, task.Mirrors...)
-	t.AddWebSeeds(mirrors)
+	t.AddWebSeeds(allMirrors)
 
 	hash := t.InfoHash().HexString()
-	e.webSeedsMap[hash] = mirrors
+	e.webSeedsMap[hash] = allMirrors
 
-	if sugg.IsPartial {
-		go func(tor *torrent.Torrent, matchedIdx int) {
-			<-tor.GotInfo()
-			for i, f := range tor.Files() {
-				if i == matchedIdx {
-					f.Download()
-				} else {
-					f.Cancel()
-				}
+	go func(tor *torrent.Torrent, isPartial bool, matchedIdx int, matchedFile string) {
+		<-tor.GotInfo()
+		info := tor.Info()
+		if info != nil {
+			var destFile string
+			if isPartial && matchedFile != "" {
+				destFile = filepath.Join(e.cfg.DownloadDir, info.BestName(), matchedFile)
+			} else if info.IsDir() {
+				destFile = filepath.Join(e.cfg.DownloadDir, info.BestName(), task.Name)
+			} else {
+				destFile = filepath.Join(e.cfg.DownloadDir, info.BestName())
 			}
-			e.mu.Lock()
-			e.saveSessionLocked()
-			e.mu.Unlock()
-		}(t, sugg.MatchedFileIndex)
-	} else {
-		go func(tor *torrent.Torrent) {
-			<-tor.GotInfo()
-			tor.DownloadAll()
-			e.mu.Lock()
-			e.saveSessionLocked()
-			e.mu.Unlock()
-		}(t)
-	}
+
+			_ = os.MkdirAll(filepath.Dir(destFile), 0755)
+
+			// Move .part file if exists
+			if _, err := os.Stat(partPath); err == nil {
+				_ = os.Rename(partPath, destFile)
+			}
+
+			// Cryptographically verify existing local data on disk
+			_ = tor.VerifyData()
+
+			if isPartial {
+				for i, f := range tor.Files() {
+					if i == matchedIdx {
+						f.Download()
+					} else {
+						f.Cancel()
+					}
+				}
+			} else {
+				tor.DownloadAll()
+			}
+		}
+
+		e.mu.Lock()
+		e.saveSessionLocked()
+		e.mu.Unlock()
+	}(t, sugg.IsPartial, sugg.MatchedFileIndex, sugg.MatchedFileName)
 
 	e.initTracker(hash)
 	e.saveSessionLocked()

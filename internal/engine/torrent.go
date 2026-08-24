@@ -642,6 +642,23 @@ func (e *Engine) initTracker(hash string) {
 	}
 }
 
+func (e *Engine) VerifyTorrentData(infoHashHex string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	torrents := e.client.Torrents()
+	for _, t := range torrents {
+		if strings.EqualFold(t.InfoHash().HexString(), infoHashHex) {
+			go func(tor *torrent.Torrent) {
+				<-tor.GotInfo()
+				_ = tor.VerifyData()
+			}(t)
+			return nil
+		}
+	}
+	return fmt.Errorf("torrent not found: %s", infoHashHex)
+}
+
 func (e *Engine) Pause(infoHashHex string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
