@@ -520,13 +520,27 @@ func (hm *HTTPManager) Resume(id string) error {
 func (hm *HTTPManager) Remove(id string, deleteFiles bool) error {
 	hm.mu.Lock()
 	task, exists := hm.tasks[id]
+	if !exists {
+		for k, t := range hm.tasks {
+			if t.URL == id || t.ID == id {
+				task = t
+				exists = true
+				id = k
+				break
+			}
+		}
+	}
 	if exists {
 		task.pause()
 		delete(hm.tasks, id)
 	}
 	hm.mu.Unlock()
 
-	if exists && deleteFiles {
+	if !exists {
+		return fmt.Errorf("task not found: %s", id)
+	}
+
+	if deleteFiles {
 		_ = os.Remove(task.DestPath)
 		_ = os.Remove(task.DestPath + ".part")
 	}
