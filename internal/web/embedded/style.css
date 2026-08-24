@@ -399,6 +399,12 @@ body {
   border: 1px solid rgba(46, 194, 126, 0.3);
 }
 
+.tag-dht_local {
+  background: rgba(53, 132, 228, 0.22);
+  color: #78aeed;
+  border: 1px solid rgba(53, 132, 228, 0.45);
+}
+
 .score-badge {
   font-size: 10.5px;
   color: var(--adw-dim-label);

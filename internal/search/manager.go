@@ -9,17 +9,27 @@ import (
 	"time"
 
 	"digwire/internal/config"
+	"digwire/internal/dhtindex"
 )
 
 type Manager struct {
 	mu        sync.RWMutex
 	providers []Provider
+	localDHT  *LocalDHTProvider
 }
 
 func NewManager(cfg *config.Config) *Manager {
 	m := &Manager{}
 	m.UpdateProviders(cfg)
 	return m
+}
+
+func (m *Manager) SetLocalDHTIndexer(idx *dhtindex.Indexer) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if idx != nil {
+		m.localDHT = NewLocalDHTProvider("Local DHT Cache", idx, true, 1.5)
+	}
 }
 
 func (m *Manager) UpdateProviders(cfg *config.Config) {
@@ -95,6 +105,9 @@ func (m *Manager) SearchAll(ctx context.Context, query string) []Result {
 	m.mu.RLock()
 	providers := make([]Provider, len(m.providers))
 	copy(providers, m.providers)
+	if m.localDHT != nil && m.localDHT.IsEnabled() {
+		providers = append(providers, m.localDHT)
+	}
 	m.mu.RUnlock()
 
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)

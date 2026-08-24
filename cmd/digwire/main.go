@@ -46,6 +46,7 @@ func main() {
 
 	// Initialize Search Manager
 	searchMgr := search.NewManager(cfg)
+	searchMgr.SetLocalDHTIndexer(eng.DHTIndexer())
 	eng.SetSearchManager(searchMgr)
 
 	// Initialize Web Server

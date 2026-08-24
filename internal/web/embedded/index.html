@@ -159,18 +159,38 @@
   <div class="modal-backdrop" id="modal-send" onclick="if(event.target===this) closeSendModal()">
     <div class="modal-box" style="max-width: 580px;">
       <div class="modal-header">
-        <div class="modal-title">Send as Torrent (Create & Share)</div>
+        <div class="modal-title">Create & Seed Torrent</div>
         <button class="btn btn-icon" onclick="closeSendModal()">✕</button>
       </div>
+
+      <div class="view-switcher" style="align-self: flex-start; margin-bottom: 12px;">
+        <button class="view-btn active" id="send-tab-local" onclick="switchSendTab('local')">Local File / Folder</button>
+        <button class="view-btn" id="send-tab-bridge" onclick="switchSendTab('bridge')">🌐 Web URL Bridge (Zero-Disk)</button>
+      </div>
+
       <div id="send-form-view">
-        <div class="form-group">
-          <label class="form-label">File or Directory Absolute Path</label>
-          <input type="text" id="send-path-input" class="input-text" placeholder="/path/to/file/or/folder">
+        <div id="send-view-local">
+          <div class="form-group">
+            <label class="form-label">File or Directory Absolute Path</label>
+            <input type="text" id="send-path-input" class="input-text" placeholder="/path/to/file/or/folder">
+          </div>
         </div>
-        <div class="form-group" style="margin-top: 8px;">
+
+        <div id="send-view-bridge" style="display: none;">
+          <div class="form-group">
+            <label class="form-label">Direct HTTP/HTTPS File URL to Seed</label>
+            <input type="text" id="send-url-input" class="input-text" placeholder="https://releases.ubuntu.com/24.04.1/ubuntu-24.04.1-desktop-amd64.iso">
+          </div>
+          <div style="font-size: 11.5px; color: var(--adw-dim-label); margin-top: 4px;">
+            Digwire bridges the web mirror as an active BEP 19 WebSeed to the DHT network without needing the full file on your local disk.
+          </div>
+        </div>
+
+        <div class="form-group" style="margin-top: 10px;">
           <label class="form-label">Optional Description / Comment</label>
           <input type="text" id="send-comment-input" class="input-text" placeholder="Shared via Digwire">
         </div>
+
         <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px;">
           <button class="btn" onclick="closeSendModal()">Cancel</button>
           <button class="btn btn-primary" id="btn-create-torrent" onclick="submitCreateTorrent()">Create & Start Seeding</button>

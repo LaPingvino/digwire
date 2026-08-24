@@ -579,11 +579,25 @@ function copyCurrentMagnet() {
 }
 
 // Send as Torrent (Create & Share)
+let currentSendTab = 'local';
+
+function switchSendTab(tab) {
+  currentSendTab = tab;
+  document.getElementById('send-tab-local').classList.toggle('active', tab === 'local');
+  document.getElementById('send-tab-bridge').classList.toggle('active', tab === 'bridge');
+  document.getElementById('send-view-local').style.display = tab === 'local' ? 'block' : 'none';
+  document.getElementById('send-view-bridge').style.display = tab === 'bridge' ? 'block' : 'none';
+  const btn = document.getElementById('btn-create-torrent');
+  btn.textContent = tab === 'local' ? "Create & Start Seeding" : "Bridge & Seed to Swarm";
+}
+
 function openSendModal() {
   document.getElementById('send-form-view').style.display = 'block';
   document.getElementById('send-result-view').style.display = 'none';
   document.getElementById('send-path-input').value = '';
+  document.getElementById('send-url-input').value = '';
   document.getElementById('send-comment-input').value = '';
+  switchSendTab('local');
   document.getElementById('modal-send').classList.add('open');
 }
 
@@ -592,40 +606,77 @@ function closeSendModal() {
 }
 
 async function submitCreateTorrent() {
-  const path = document.getElementById('send-path-input').value.trim();
   const comment = document.getElementById('send-comment-input').value.trim();
-
-  if (!path) {
-    alert("Please enter the absolute file or directory path to share.");
-    return;
-  }
-
   const btn = document.getElementById('btn-create-torrent');
-  btn.disabled = true;
-  btn.textContent = "Hashing & Creating...";
 
-  try {
-    const res = await fetch('/api/torrents/create', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path, comment })
-    });
-    const data = await res.json();
-    btn.disabled = false;
-    btn.textContent = "Create & Start Seeding";
-
-    if (data.status === 'ok') {
-      document.getElementById('send-form-view').style.display = 'none';
-      document.getElementById('send-result-view').style.display = 'flex';
-      document.getElementById('created-magnet-val').value = data.magnet_uri;
-      document.getElementById('created-hash-val').value = data.info_hash;
-    } else {
-      alert("Failed to create torrent: " + (data.error || 'Unknown error'));
+  if (currentSendTab === 'local') {
+    const path = document.getElementById('send-path-input').value.trim();
+    if (!path) {
+      showToast("Please enter the absolute file or directory path to share.", "error");
+      return;
     }
-  } catch (err) {
-    btn.disabled = false;
-    btn.textContent = "Create & Start Seeding";
-    alert("Error creating torrent: " + err.message);
+
+    btn.disabled = true;
+    btn.textContent = "Hashing & Creating...";
+
+    try {
+      const res = await fetch('/api/torrents/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path, comment })
+      });
+      const data = await res.json();
+      btn.disabled = false;
+      btn.textContent = "Create & Start Seeding";
+
+      if (data.status === 'ok') {
+        document.getElementById('send-form-view').style.display = 'none';
+        document.getElementById('send-result-view').style.display = 'flex';
+        document.getElementById('created-magnet-val').value = data.magnet_uri;
+        document.getElementById('created-hash-val').value = data.info_hash;
+        showToast("✓ Torrent created and now seeding to DHT network!", "accent");
+      } else {
+        showToast("Failed to create torrent: " + (data.error || 'Unknown error'), "error");
+      }
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = "Create & Start Seeding";
+      showToast("Error creating torrent: " + err.message, "error");
+    }
+  } else {
+    const url = document.getElementById('send-url-input').value.trim();
+    if (!url) {
+      showToast("Please enter a direct HTTP/HTTPS URL to bridge.", "error");
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = "Verifying & Bridging Swarm...";
+
+    try {
+      const res = await fetch('/api/torrents/create-bridge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, comment })
+      });
+      const data = await res.json();
+      btn.disabled = false;
+      btn.textContent = "Bridge & Seed to Swarm";
+
+      if (data.status === 'ok') {
+        document.getElementById('send-form-view').style.display = 'none';
+        document.getElementById('send-result-view').style.display = 'flex';
+        document.getElementById('created-magnet-val').value = data.magnet_uri;
+        document.getElementById('created-hash-val').value = data.info_hash;
+        showToast("✓ Web mirror bridged to BitTorrent swarm with WebSeed acceleration!", "accent");
+      } else {
+        showToast("Bridge failed: " + (data.error || 'Unknown error'), "error");
+      }
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = "Bridge & Seed to Swarm";
+      showToast("Error creating bridge: " + err.message, "error");
+    }
   }
 }
 

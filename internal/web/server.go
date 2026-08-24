@@ -45,6 +45,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/torrents", s.handleGetTorrents)
 	s.mux.HandleFunc("POST /api/torrents/add", s.handleAddTorrent)
 	s.mux.HandleFunc("POST /api/torrents/create", s.handleCreateTorrent)
+	s.mux.HandleFunc("POST /api/torrents/create-bridge", s.handleCreateBridgeTorrent)
 	s.mux.HandleFunc("GET /api/torrents/{hash}/details", s.handleGetTorrentDetails)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/files/{index}/priority", s.handleSetFilePriority)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/webseeds", s.handleAddWebSeed)
@@ -174,6 +175,34 @@ func (s *Server) handleCreateTorrent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	hash, magnet, err := s.engine.CreateTorrent(req.Path, req.Comment)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status":     "ok",
+		"info_hash":  hash,
+		"magnet_uri": magnet,
+	})
+}
+
+type createBridgeTorrentRequest struct {
+	URL     string   `json:"url"`
+	Mirrors []string `json:"mirrors"`
+	Comment string   `json:"comment"`
+}
+
+func (s *Server) handleCreateBridgeTorrent(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	var req createBridgeTorrentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.URL == "" {
+		http.Error(w, `{"error":"valid url required"}`, http.StatusBadRequest)
+		return
+	}
+
+	hash, magnet, err := s.engine.CreateWebBridgeTorrent(r.Context(), req.URL, req.Mirrors, req.Comment)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})

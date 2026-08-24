@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"digwire/internal/config"
+	"digwire/internal/dhtindex"
 	"digwire/internal/search"
 
 	"github.com/anacrolix/dht/v2"
@@ -123,11 +124,16 @@ type Engine struct {
 	client      *torrent.Client
 	httpManager *HTTPManager
 	searchMgr   *search.Manager
+	dhtIndexer  *dhtindex.Indexer
 	cfg         *config.Config
 	rateMap     map[string]*rateTracker
 	webSeedsMap map[string][]string
 	stopMonitor chan struct{}
 	closeOnce   sync.Once
+}
+
+func (e *Engine) DHTIndexer() *dhtindex.Indexer {
+	return e.dhtIndexer
 }
 
 func (e *Engine) SetSearchManager(sm *search.Manager) {
@@ -185,9 +191,12 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 		return nil, fmt.Errorf("failed to initialize bittorrent client: %w", err)
 	}
 
+	dhtIdx, _ := dhtindex.NewIndexer(client)
+
 	e := &Engine{
 		client:      client,
 		httpManager: NewHTTPManager(cfg.DownloadDir),
+		dhtIndexer:  dhtIdx,
 		cfg:         cfg,
 		rateMap:     make(map[string]*rateTracker),
 		webSeedsMap: make(map[string][]string),
@@ -219,8 +228,9 @@ func (e *Engine) saveSessionLocked() {
 		}
 
 		name := t.Name()
-		mag := fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", hash, url.QueryEscape(name))
 		webseeds := e.webSeedsMap[hash]
+		mag := fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", hash, url.QueryEscape(name))
+		mag = AppendWebSeedsToMagnet(SuperchargeMagnet(mag), webseeds)
 
 		list = append(list, SavedTorrent{
 			InfoHash:  hash,
@@ -449,6 +459,7 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 	}
 
 	// Magnet link or infohash
+	uriOrURL = SuperchargeMagnet(uriOrURL)
 	t, err := e.client.AddMagnet(uriOrURL)
 	if err != nil {
 		return nil, err
@@ -456,6 +467,20 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 	go func(tor *torrent.Torrent) {
 		<-tor.GotInfo()
 		tor.DownloadAll()
+		if e.dhtIndexer != nil && tor.Info() != nil {
+			var fileNames []string
+			for _, f := range tor.Info().UpvertedFiles() {
+				fileNames = append(fileNames, f.DisplayPath(tor.Info()))
+			}
+			e.dhtIndexer.AddRecord(&dhtindex.DHTRecord{
+				InfoHash:     tor.InfoHash().HexString(),
+				Name:         tor.Info().BestName(),
+				SizeBytes:    tor.Length(),
+				NumFiles:     len(fileNames),
+				DiscoveredAt: time.Now().Unix(),
+				Files:        fileNames,
+			})
+		}
 		e.mu.Lock()
 		e.saveSessionLocked()
 		e.mu.Unlock()
@@ -539,14 +564,69 @@ func (e *Engine) CreateTorrent(sourcePath, comment string) (string, string, erro
 	hash := t.InfoHash().HexString()
 	h := t.InfoHash()
 	magnetObj := mi.Magnet(&h, &info)
-	magnetURI := magnetObj.String()
-	if magnetURI == "" {
-		magnetURI = fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", hash, url.QueryEscape(torrentName))
+	magnetURI = AppendWebSeedsToMagnet(SuperchargeMagnet(magnetURI), nil)
+
+	if e.dhtIndexer != nil {
+		var fileNames []string
+		for _, f := range info.UpvertedFiles() {
+			fileNames = append(fileNames, f.DisplayPath(&info))
+		}
+		e.dhtIndexer.AddRecord(&dhtindex.DHTRecord{
+			InfoHash:     hash,
+			Name:         torrentName,
+			SizeBytes:    info.TotalLength(),
+			NumFiles:     len(fileNames),
+			DiscoveredAt: time.Now().Unix(),
+			Files:        fileNames,
+		})
 	}
 
 	e.initTracker(hash)
 	e.saveSessionLocked()
 	return hash, magnetURI, nil
+}
+
+func (e *Engine) CreateWebBridgeTorrent(ctx context.Context, fileURL string, mirrors []string, comment string) (string, string, error) {
+	filename, sizeBytes, _, err := InspectHTTPFile(ctx, fileURL)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to inspect web file: %w", err)
+	}
+
+	task := &HTTPTask{
+		URL:        fileURL,
+		Name:       filename,
+		TotalBytes: sizeBytes,
+	}
+
+	sugg, err := e.FindSuggestedSwarm(ctx, task, e.searchMgr)
+	if err == nil && sugg != nil {
+		t, err := e.client.AddMagnet(sugg.MagnetURI)
+		if err != nil {
+			return "", "", err
+		}
+
+		var allMirrors []string
+		allMirrors = append(allMirrors, fileURL)
+		allMirrors = append(allMirrors, mirrors...)
+		t.AddWebSeeds(allMirrors)
+		hash := t.InfoHash().HexString()
+
+		e.mu.Lock()
+		e.webSeedsMap[hash] = allMirrors
+		e.initTracker(hash)
+		e.saveSessionLocked()
+		e.mu.Unlock()
+
+		go func(tor *torrent.Torrent) {
+			<-tor.GotInfo()
+			tor.DownloadAll()
+		}(t)
+
+		mag := AppendWebSeedsToMagnet(SuperchargeMagnet(sugg.MagnetURI), allMirrors)
+		return hash, mag, nil
+	}
+
+	return "", "", fmt.Errorf("could not find or verify swarm for %s", filename)
 }
 
 func (e *Engine) initTracker(hash string) {
@@ -887,6 +967,7 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 			}
 
 			webseeds := e.webSeedsMap[hashHex]
+			magURI = AppendWebSeedsToMagnet(SuperchargeMagnet(magURI), webseeds)
 
 			return &TorrentDetails{
 				InfoHash:       hashHex,
@@ -1021,6 +1102,9 @@ func (e *Engine) Close() {
 		e.mu.Lock()
 		e.saveSessionLocked()
 		e.mu.Unlock()
+		if e.dhtIndexer != nil {
+			e.dhtIndexer.Close()
+		}
 		close(e.stopMonitor)
 		e.client.Close()
 	})
