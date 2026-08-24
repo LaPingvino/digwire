@@ -11,16 +11,16 @@ depends=('glibc')
 makedepends=('go' 'git')
 provides=('digwire')
 conflicts=('digwire')
-source=("git+https://github.com/LaPingvino/digwire.git")
+source=("$_pkgname-src::git+https://github.com/LaPingvino/digwire.git")
 sha256sums=('SKIP')
 
 pkgver() {
-  cd "$srcdir/$_pkgname"
+  cd "$srcdir/$_pkgname-src"
   printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
 }
 
 build() {
-  cd "$srcdir/$_pkgname"
+  cd "$srcdir/$_pkgname-src"
   export CGO_CPPFLAGS="${CPPFLAGS}"
   export CGO_CFLAGS="${CFLAGS}"
   export CGO_CXXFLAGS="${CXXFLAGS}"
@@ -30,7 +30,7 @@ build() {
 }
 
 package() {
-  cd "$srcdir/$_pkgname"
+  cd "$srcdir/$_pkgname-src"
   install -Dm755 digwire "$pkgdir/usr/bin/digwire"
   install -Dm644 assets/digwire.desktop "$pkgdir/usr/share/applications/digwire.desktop"
   install -Dm644 assets/digwire.png "$pkgdir/usr/share/icons/hicolor/512x512/apps/digwire.png"
