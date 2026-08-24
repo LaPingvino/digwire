@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -169,12 +170,10 @@ func VerifyFileInMultiTorrent(ctx context.Context, fileURL string, fileOffset, f
 		return false
 	}
 
-	// Calculate piece indices that are fully enclosed within this file
 	firstFullPiece := (fileOffset + pieceLen - 1) / pieceLen
 	lastFullPiece := (fileOffset + fileLen) / pieceLen - 1
 
 	if firstFullPiece <= lastFullPiece && int(lastFullPiece) < info.NumPieces() {
-		// Verify piece at firstFullPiece
 		pIdx := int(firstFullPiece)
 		offsetInFile := (int64(pIdx) * pieceLen) - fileOffset
 		var expected [20]byte
@@ -187,6 +186,107 @@ func VerifyFileInMultiTorrent(ctx context.Context, fileURL string, fileOffset, f
 	return false
 }
 
+// buildSearchQueries generates prioritized search query candidates from a filename
+func buildSearchQueries(filename string) []string {
+	var queries []string
+	seen := make(map[string]bool)
+
+	add := func(q string) {
+		q = strings.TrimSpace(q)
+		if q != "" && !seen[strings.ToLower(q)] {
+			seen[strings.ToLower(q)] = true
+			queries = append(queries, q)
+		}
+	}
+
+	ext := filepath.Ext(filename)
+	base := strings.TrimSuffix(filename, ext)
+
+	// 1. Exact filename
+	add(filename)
+
+	// 2. Base name
+	add(base)
+
+	// 3. Clean version-preserving name (e.g. ubuntu-24.04.1 -> ubuntu 24.04.1 desktop amd64)
+	reDots := regexp.MustCompile(`(\d)\.(\d)`)
+	clean := reDots.ReplaceAllString(base, "${1}__DOT__${2}")
+	clean = strings.ReplaceAll(clean, ".", " ")
+	clean = strings.ReplaceAll(clean, "__DOT__", ".")
+	clean = strings.ReplaceAll(clean, "_", " ")
+	clean = strings.ReplaceAll(clean, "-", " ")
+	clean = strings.Join(strings.Fields(clean), " ")
+	add(clean)
+
+	// 4. Token prefixes
+	tokens := strings.Fields(clean)
+	if len(tokens) > 2 {
+		add(strings.Join(tokens[:2], " "))
+	}
+	if len(tokens) > 3 {
+		add(strings.Join(tokens[:3], " "))
+	}
+
+	return queries
+}
+
+// probeHostTorrent attempts to directly fetch `<URL>.torrent` from the source mirror
+func probeHostTorrent(ctx context.Context, fileURL string, task *HTTPTask) (*SwarmSuggestion, error) {
+	torrentURL := fileURL + ".torrent"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, torrentURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Digwire/1.0")
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("status %d", resp.StatusCode)
+	}
+
+	mi, err := metainfo.Load(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	info, err := mi.UnmarshalInfo()
+	if err != nil {
+		return nil, err
+	}
+
+	// Verify size match (single file or subfile)
+	if info.TotalLength() == task.TotalBytes {
+		ok, err := VerifyRandomPieces(ctx, task.URL, &info)
+		if err == nil && ok {
+			hash := mi.HashInfoBytes().HexString()
+			mag := fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", hash, url.QueryEscape(info.BestName()))
+			for _, tier := range mi.AnnounceList {
+				for _, tr := range tier {
+					mag += "&tr=" + url.QueryEscape(tr)
+				}
+			}
+			return &SwarmSuggestion{
+				InfoHash:   hash,
+				MagnetURI:  mag,
+				Name:       info.BestName(),
+				Seeders:    25,
+				Peers:      5,
+				TotalBytes: info.TotalLength(),
+				Provider:   "Official Host (.torrent)",
+				IsPartial:  false,
+			}, nil
+		}
+	}
+
+	return nil, fmt.Errorf("host torrent did not match file content")
+}
+
 // FindAndAttachSwarm attempts to discover an existing swarm for an HTTP URL, verifies multi-piece samples, and attaches it as a WebSeed
 func (e *Engine) FindAndAttachSwarm(ctx context.Context, fileURL string, searchMgr *search.Manager) (*MatchResult, error) {
 	filename, sizeBytes, _, err := InspectHTTPFile(ctx, fileURL)
@@ -194,53 +294,30 @@ func (e *Engine) FindAndAttachSwarm(ctx context.Context, fileURL string, searchM
 		return nil, fmt.Errorf("failed to inspect HTTP file: %w", err)
 	}
 
-	queryName := strings.TrimSuffix(filename, filepath.Ext(filename))
-	queryName = strings.ReplaceAll(queryName, ".", " ")
-	queryName = strings.ReplaceAll(queryName, "_", " ")
-	queryName = strings.ReplaceAll(queryName, "-", " ")
-
-	candidates := searchMgr.SearchAll(ctx, queryName)
-	if len(candidates) == 0 {
-		return nil, fmt.Errorf("no matching candidate swarms found for %s", filename)
+	task := &HTTPTask{
+		URL:        fileURL,
+		Name:       filename,
+		TotalBytes: sizeBytes,
 	}
 
-	for _, cand := range candidates {
-		if cand.SizeBytes > 0 && sizeBytes > 0 && cand.SizeBytes != sizeBytes {
-			continue
-		}
-
-		t, err := e.Add(cand.MagnetURI)
-		if err != nil {
-			continue
-		}
-
-		select {
-		case <-t.GotInfo():
-			info := t.Info()
-			if info != nil && t.Length() == sizeBytes {
-				ok, _ := VerifyRandomPieces(ctx, fileURL, info)
-				if ok {
-					t.AddWebSeeds([]string{fileURL})
-					hash := t.InfoHash().HexString()
-					e.mu.Lock()
-					e.webSeedsMap[hash] = append(e.webSeedsMap[hash], fileURL)
-					e.mu.Unlock()
-
-					return &MatchResult{
-						MatchedTorrent: t,
-						InfoHash:       hash,
-						Name:           info.BestName(),
-						VerifiedPiece:  true,
-						HTTPURL:        fileURL,
-						SizeBytes:      sizeBytes,
-					}, nil
-				}
-			}
-		case <-time.After(5 * time.Second):
-		}
+	sugg, err := e.FindSuggestedSwarm(ctx, task, searchMgr)
+	if err != nil {
+		return nil, err
 	}
 
-	return nil, fmt.Errorf("no candidate torrent passed cryptographic piece verification")
+	t, err := e.UpgradeHTTPToSwarm(task.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &MatchResult{
+		MatchedTorrent: t,
+		InfoHash:       sugg.InfoHash,
+		Name:           sugg.Name,
+		VerifiedPiece:  true,
+		HTTPURL:        fileURL,
+		SizeBytes:      sizeBytes,
+	}, nil
 }
 
 // FindSuggestedSwarm searches for an equivalent or parent collection torrent for an existing HTTP task
@@ -249,18 +326,114 @@ func (e *Engine) FindSuggestedSwarm(ctx context.Context, task *HTTPTask, searchM
 		return nil, fmt.Errorf("invalid task")
 	}
 
-	queryName := strings.TrimSuffix(task.Name, filepath.Ext(task.Name))
-	queryName = strings.ReplaceAll(queryName, ".", " ")
-	queryName = strings.ReplaceAll(queryName, "_", " ")
-	queryName = strings.ReplaceAll(queryName, "-", " ")
+	// STAGE 1: Probe host directly for `<URL>.torrent` (e.g. Ubuntu, Debian, Arch, Fedora mirrors)
+	if sugg, err := probeHostTorrent(ctx, task.URL, task); err == nil && sugg != nil {
+		return sugg, nil
+	}
 
-	candidates := searchMgr.SearchAll(ctx, queryName)
+	// STAGE 2: Multi-Query Search across Indexers (TorrentsCSV, Archive.org, Torznab)
+	queries := buildSearchQueries(task.Name)
+	seenMagnets := make(map[string]bool)
+	var candidates []search.Result
+
+	for _, q := range queries {
+		results := searchMgr.SearchAll(ctx, q)
+		for _, r := range results {
+			if !seenMagnets[r.MagnetURI] {
+				seenMagnets[r.MagnetURI] = true
+				candidates = append(candidates, r)
+			}
+		}
+		if len(candidates) >= 15 {
+			break
+		}
+	}
+
 	if len(candidates) == 0 {
-		return nil, fmt.Errorf("no candidates found")
+		return nil, fmt.Errorf("no candidate torrents found for %s", task.Name)
 	}
 
 	for _, cand := range candidates {
-		t, err := e.Add(cand.MagnetURI)
+		// Optimization A: If candidate is a direct HTTP .torrent URL (e.g. Archive.org, Torznab)
+		if (strings.HasPrefix(cand.MagnetURI, "http://") || strings.HasPrefix(cand.MagnetURI, "https://")) &&
+			strings.HasSuffix(strings.ToLower(cand.MagnetURI), ".torrent") {
+
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, cand.MagnetURI, nil)
+			if err == nil {
+				req.Header.Set("User-Agent", "Digwire/1.0")
+				resp, err := http.DefaultClient.Do(req)
+				if err == nil && resp.StatusCode == 200 {
+					mi, err := metainfo.Load(resp.Body)
+					resp.Body.Close()
+					if err == nil {
+						info, err := mi.UnmarshalInfo()
+						if err == nil {
+							// Single file match
+							if info.TotalLength() == task.TotalBytes {
+								ok, err := VerifyRandomPieces(ctx, task.URL, &info)
+								if err == nil && ok {
+									hash := mi.HashInfoBytes().HexString()
+									mag := fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", hash, url.QueryEscape(info.BestName()))
+									for _, tier := range mi.AnnounceList {
+										for _, tr := range tier {
+											mag += "&tr=" + url.QueryEscape(tr)
+										}
+									}
+									return &SwarmSuggestion{
+										InfoHash:   hash,
+										MagnetURI:  mag,
+										Name:       info.BestName(),
+										Seeders:    cand.Seeders,
+										Peers:      cand.Leechers,
+										TotalBytes: info.TotalLength(),
+										Provider:   cand.Provider,
+										IsPartial:  false,
+									}, nil
+								}
+							}
+
+							// Multi-file partial match
+							if info.IsDir() {
+								var fileOffset int64 = 0
+								for fIdx, f := range info.Files {
+									if f.Length == task.TotalBytes {
+										if VerifyFileInMultiTorrent(ctx, task.URL, fileOffset, f.Length, &info) {
+											hash := mi.HashInfoBytes().HexString()
+											mag := fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", hash, url.QueryEscape(info.BestName()))
+											return &SwarmSuggestion{
+												InfoHash:         hash,
+												MagnetURI:        mag,
+												Name:             info.BestName(),
+												Seeders:          cand.Seeders,
+												Peers:            cand.Leechers,
+												TotalBytes:       f.Length,
+												Provider:         cand.Provider,
+												IsPartial:        true,
+												MatchedFileIndex: fIdx,
+												MatchedFileName:  strings.Join(f.Path, "/"),
+											}, nil
+										}
+									}
+									fileOffset += f.Length
+								}
+							}
+						}
+					}
+				}
+			}
+			continue
+		}
+
+		// Optimization B: Magnet Link candidate
+		magURI := cand.MagnetURI
+		// Enrich with standard trackers if missing
+		if !strings.Contains(magURI, "tr=") {
+			magURI += "&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce"
+			magURI += "&tr=http%3A%2F%2Ftorrent.ubuntu.com%3A6969%2Fannounce"
+			magURI += "&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce"
+		}
+
+		t, err := e.client.AddMagnet(magURI)
 		if err != nil {
 			continue
 		}
@@ -268,56 +441,56 @@ func (e *Engine) FindSuggestedSwarm(ctx context.Context, task *HTTPTask, searchM
 		select {
 		case <-t.GotInfo():
 			info := t.Info()
-			if info == nil {
-				continue
-			}
-
-			// Case 1: Full file match
-			if t.Length() == task.TotalBytes {
-				ok, _ := VerifyRandomPieces(ctx, task.URL, info)
-				if ok {
-					return &SwarmSuggestion{
-						InfoHash:   t.InfoHash().HexString(),
-						MagnetURI:  cand.MagnetURI,
-						Name:       info.BestName(),
-						Seeders:    cand.Seeders,
-						Peers:      cand.Leechers,
-						TotalBytes: t.Length(),
-						Provider:   cand.Provider,
-						IsPartial:  false,
-					}, nil
-				}
-			}
-
-			// Case 2: Partial match inside multi-file pack / collection
-			if info.IsDir() {
-				var fileOffset int64 = 0
-				for fIdx, f := range info.Files {
-					fLen := f.Length
-					if fLen == task.TotalBytes {
-						if VerifyFileInMultiTorrent(ctx, task.URL, fileOffset, fLen, info) {
-							return &SwarmSuggestion{
-								InfoHash:         t.InfoHash().HexString(),
-								MagnetURI:        cand.MagnetURI,
-								Name:             info.BestName(),
-								Seeders:          cand.Seeders,
-								Peers:            cand.Leechers,
-								TotalBytes:       fLen,
-								Provider:         cand.Provider,
-								IsPartial:        true,
-								MatchedFileIndex: fIdx,
-								MatchedFileName:  strings.Join(f.Path, "/"),
-							}, nil
-						}
+			if info != nil {
+				// Case 1: Full file match
+				if t.Length() == task.TotalBytes {
+					ok, _ := VerifyRandomPieces(ctx, task.URL, info)
+					if ok {
+						return &SwarmSuggestion{
+							InfoHash:   t.InfoHash().HexString(),
+							MagnetURI:  magURI,
+							Name:       info.BestName(),
+							Seeders:    cand.Seeders,
+							Peers:      cand.Leechers,
+							TotalBytes: t.Length(),
+							Provider:   cand.Provider,
+							IsPartial:  false,
+						}, nil
 					}
-					fileOffset += fLen
+				}
+
+				// Case 2: Partial match inside multi-file pack / collection
+				if info.IsDir() {
+					var fileOffset int64 = 0
+					for fIdx, f := range info.Files {
+						fLen := f.Length
+						if fLen == task.TotalBytes {
+							if VerifyFileInMultiTorrent(ctx, task.URL, fileOffset, fLen, info) {
+								return &SwarmSuggestion{
+									InfoHash:         t.InfoHash().HexString(),
+									MagnetURI:        magURI,
+									Name:             info.BestName(),
+									Seeders:          cand.Seeders,
+									Peers:            cand.Leechers,
+									TotalBytes:       fLen,
+									Provider:         cand.Provider,
+									IsPartial:        true,
+									MatchedFileIndex: fIdx,
+									MatchedFileName:  strings.Join(f.Path, "/"),
+								}, nil
+							}
+						}
+						fileOffset += fLen
+					}
 				}
 			}
-		case <-time.After(5 * time.Second):
+			t.Drop()
+		case <-time.After(4 * time.Second):
+			t.Drop()
 		}
 	}
 
-	return nil, fmt.Errorf("no matching verified swarm found")
+	return nil, fmt.Errorf("no candidate torrent passed cryptographic piece verification")
 }
 
 // UpgradeHTTPToSwarm upgrades an active HTTP task to a hybrid BitTorrent swarm (with optional partial file download)
