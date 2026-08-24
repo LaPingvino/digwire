@@ -835,7 +835,7 @@ function renderSearchResults() {
         </div>
         <div style="display: flex; gap: 6px;">
           <button class="btn btn-icon" title="Copy Magnet" onclick="copyToClipboard('${encodeURI(r.magnet_uri)}', this)">${ICONS.magnet}</button>
-          <button class="btn btn-primary" onclick="downloadFromSearch('${encodeURIComponent(r.magnet_uri)}')">
+          <button class="btn btn-primary" onclick="downloadFromSearch('${encodeURIComponent(r.magnet_uri)}', this)">
             ${ICONS.download}
             <span>Download</span>
           </button>
@@ -845,8 +845,14 @@ function renderSearchResults() {
   }).join('');
 }
 
-async function downloadFromSearch(encodedURI) {
+async function downloadFromSearch(encodedURI, btn) {
   const uri = decodeURIComponent(encodedURI);
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `<span style="opacity: 0.7;">Adding...</span>`;
+  }
+  showToast("Adding download...", "info", 1500);
+
   try {
     const res = await fetch('/api/torrents/add', {
       method: 'POST',
@@ -855,12 +861,21 @@ async function downloadFromSearch(encodedURI) {
     });
     const data = await res.json();
     if (data.status === 'ok') {
+      showToast("✓ Transfer started!", "info", 2500);
       switchMainView('torrents');
     } else {
-      alert("Failed to add download: " + (data.error || 'Unknown error'));
+      showToast("Failed to add download: " + (data.error || 'Unknown error'), "error", 4000);
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = `${ICONS.download}<span>Download</span>`;
+      }
     }
   } catch (err) {
-    alert("Download request failed: " + err.message);
+    showToast("Download request failed: " + err.message, "error", 4000);
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = `${ICONS.download}<span>Download</span>`;
+    }
   }
 }
 
@@ -881,36 +896,48 @@ async function submitAddTorrent() {
   const fileInput = document.getElementById('add-file-input');
 
   if (fileInput.files.length > 0) {
-    const formData = new FormData();
-    formData.append('torrent_file', fileInput.files[0]);
-    const res = await fetch('/api/torrents/add', { method: 'POST', body: formData });
-    const data = await res.json();
-    if (data.status === 'ok') {
-      closeAddModal();
-      switchMainView('torrents');
-    } else {
-      alert("Failed: " + (data.error || 'Unknown error'));
+    closeAddModal();
+    showToast("Adding .torrent file...", "info", 1800);
+    try {
+      const formData = new FormData();
+      formData.append('torrent_file', fileInput.files[0]);
+      const res = await fetch('/api/torrents/add', { method: 'POST', body: formData });
+      const data = await res.json();
+      if (data.status === 'ok') {
+        showToast("✓ Transfer added!", "info", 2500);
+        switchMainView('torrents');
+      } else {
+        showToast("Failed: " + (data.error || 'Unknown error'), "error", 4000);
+      }
+    } catch (err) {
+      showToast("Request error: " + err.message, "error", 4000);
     }
     return;
   }
 
   if (inputVal) {
-    const res = await fetch('/api/torrents/add', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: inputVal })
-    });
-    const data = await res.json();
-    if (data.status === 'ok') {
-      closeAddModal();
-      switchMainView('torrents');
-    } else {
-      alert("Failed: " + (data.error || 'Unknown error'));
+    closeAddModal();
+    showToast("Adding download...", "info", 1800);
+    try {
+      const res = await fetch('/api/torrents/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: inputVal })
+      });
+      const data = await res.json();
+      if (data.status === 'ok') {
+        showToast("✓ Transfer started!", "info", 2500);
+        switchMainView('torrents');
+      } else {
+        showToast("Failed: " + (data.error || 'Unknown error'), "error", 4000);
+      }
+    } catch (err) {
+      showToast("Request error: " + err.message, "error", 4000);
     }
     return;
   }
 
-  alert("Please enter a magnet link, HTTP direct URL, infohash, or choose a .torrent file.");
+  showToast("Please enter a magnet link, HTTP direct URL, infohash, or choose a .torrent file.", "warning", 3000);
 }
 
 // Settings Modal

@@ -420,7 +420,8 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 		}
 		req.Header.Set("User-Agent", "Digwire/1.0")
 
-		resp, err := http.DefaultClient.Do(req)
+		client := &http.Client{Timeout: 7 * time.Second}
+		resp, err := client.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch torrent file: %w", err)
 		}
