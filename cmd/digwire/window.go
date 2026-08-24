@@ -19,10 +19,10 @@ func launchNativeWindow(url string) *exec.Cmd {
 	switch runtime.GOOS {
 	case "linux":
 		candidates = [][]string{
-			{"google-chrome-stable", fmt.Sprintf("--app=%s", url), fmt.Sprintf("--user-data-dir=%s", userDataDir), "--window-size=960,720", "--class=digwire"},
-			{"google-chrome", fmt.Sprintf("--app=%s", url), fmt.Sprintf("--user-data-dir=%s", userDataDir), "--window-size=960,720", "--class=digwire"},
-			{"chromium", fmt.Sprintf("--app=%s", url), fmt.Sprintf("--user-data-dir=%s", userDataDir), "--window-size=960,720", "--class=digwire"},
-			{"brave-browser", fmt.Sprintf("--app=%s", url), fmt.Sprintf("--user-data-dir=%s", userDataDir), "--window-size=960,720", "--class=digwire"},
+			{"google-chrome-stable", fmt.Sprintf("--app=%s", url), fmt.Sprintf("--user-data-dir=%s", userDataDir), "--window-size=980,720", "--class=digwire", "--name=digwire", "--app-id=digwire"},
+			{"google-chrome", fmt.Sprintf("--app=%s", url), fmt.Sprintf("--user-data-dir=%s", userDataDir), "--window-size=980,720", "--class=digwire", "--name=digwire", "--app-id=digwire"},
+			{"chromium", fmt.Sprintf("--app=%s", url), fmt.Sprintf("--user-data-dir=%s", userDataDir), "--window-size=980,720", "--class=digwire", "--name=digwire", "--app-id=digwire"},
+			{"brave-browser", fmt.Sprintf("--app=%s", url), fmt.Sprintf("--user-data-dir=%s", userDataDir), "--window-size=980,720", "--class=digwire", "--name=digwire", "--app-id=digwire"},
 			{"firefox", "--new-window", url},
 			{"xdg-open", url},
 		}

@@ -1,7 +1,7 @@
 # Maintainer: Joop Kiefte <joop@kiefte.eu>
 pkgname=digwire-git
 _pkgname=digwire
-pkgver=r25.2f1741e
+pkgver=r26.c055e3b
 pkgrel=1
 pkgdesc="Modern hybrid BitTorrent swarm & multi-source web download manager with Libadwaita aesthetic"
 arch=('x86_64' 'aarch64' 'armv7h')
@@ -34,5 +34,6 @@ package() {
   install -Dm755 digwire "$pkgdir/usr/bin/digwire"
   install -Dm644 assets/digwire.desktop "$pkgdir/usr/share/applications/digwire.desktop"
   install -Dm644 assets/digwire.png "$pkgdir/usr/share/icons/hicolor/512x512/apps/digwire.png"
+  install -Dm644 assets/digwire.png "$pkgdir/usr/share/pixmaps/digwire.png"
   install -Dm644 README.md "$pkgdir/usr/share/doc/digwire/README.md"
 }

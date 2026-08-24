@@ -1,0 +1,17 @@
+{
+  "name": "Digwire",
+  "short_name": "Digwire",
+  "description": "Modern hybrid BitTorrent swarm & multi-source web download manager",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#242424",
+  "theme_color": "#303030",
+  "icons": [
+    {
+      "src": "digwire.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
