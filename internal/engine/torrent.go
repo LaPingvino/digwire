@@ -880,6 +880,7 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 			Files:          []string{task.Name},
 			AddedAt:        task.AddedAt,
 			SuggestedSwarm: task.SuggestedSwarm,
+			WebSeeds:       task.Mirrors,
 		})
 		task.mu.Unlock()
 	}
