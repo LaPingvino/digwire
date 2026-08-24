@@ -129,20 +129,6 @@ func (s *Server) handleAddTorrent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If it's an HTTP/HTTPS direct file link (not .torrent), attempt automatic swarm matching & WebSeed injection
-	if (strings.HasPrefix(req.URL, "http://") || strings.HasPrefix(req.URL, "https://")) && !strings.HasSuffix(strings.ToLower(req.URL), ".torrent") {
-		match, err := s.engine.FindAndAttachSwarm(r.Context(), req.URL, s.search)
-		if err == nil && match != nil {
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":         "ok",
-				"info_hash":      match.InfoHash,
-				"name":           match.Name,
-				"hybrid_webseed": true,
-			})
-			return
-		}
-	}
-
 	t, err := s.engine.Add(req.URL)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)

@@ -109,8 +109,8 @@ func (hm *HTTPManager) StartDownload(rawURL string) (*HTTPTask, error) {
 		return existing, nil
 	}
 
-	client := &http.Client{
-		Timeout: 0,
+	probeClient := &http.Client{
+		Timeout: 7 * time.Second,
 	}
 
 	// Probe range support and file size
@@ -121,7 +121,7 @@ func (hm *HTTPManager) StartDownload(rawURL string) (*HTTPTask, error) {
 	req.Header.Set("User-Agent", "Digwire/1.0")
 	req.Header.Set("Range", "bytes=0-0")
 
-	resp, err := client.Do(req)
+	resp, err := probeClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("connection failed: %w", err)
 	}
