@@ -13,11 +13,13 @@ static void on_destroy(GtkWidget* widget, gpointer data) {
     gtk_main_quit();
 }
 
-static void launch_gtk_window(const char* url, const char* icon_path) {
+static int launch_gtk_window(const char* url, const char* icon_path) {
     g_set_prgname("digwire");
     g_set_application_name("Digwire");
     
-    gtk_init(NULL, NULL);
+    if (!gtk_init_check(NULL, NULL)) {
+        return 0;
+    }
 
     GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(window), "Digwire");
@@ -59,6 +61,7 @@ static void launch_gtk_window(const char* url, const char* icon_path) {
 
     gtk_widget_show_all(window);
     gtk_main();
+    return 1;
 }
 */
 import "C"
@@ -71,7 +74,6 @@ import (
 
 func runNativeGTKWindow(url string) bool {
 	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
 
 	iconPath := "/usr/share/icons/hicolor/512x512/apps/digwire.png"
 	if _, err := os.Stat(iconPath); err != nil {
@@ -87,6 +89,6 @@ func runNativeGTKWindow(url string) bool {
 	cIcon := C.CString(iconPath)
 	defer C.free(unsafe.Pointer(cIcon))
 
-	C.launch_gtk_window(cURL, cIcon)
-	return true
+	res := C.launch_gtk_window(cURL, cIcon)
+	return int(res) != 0
 }

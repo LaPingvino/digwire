@@ -43,14 +43,30 @@ func (m *Manager) UpdateProviders(cfg *config.Config) {
 			weight = 1.0
 		}
 		switch pCfg.Type {
-		case "torrentscsv":
-			m.providers = append(m.providers, NewTorrentsCSVProvider(pCfg.Name, pCfg.URL, pCfg.Enabled, weight))
+		case "btdig":
+			m.providers = append(m.providers, NewBTDigProvider(pCfg.Name, pCfg.URL, pCfg.Enabled, weight))
+		case "bitsearch":
+			m.providers = append(m.providers, NewBitSearchProvider(pCfg.Name, pCfg.URL, pCfg.Enabled, weight))
 		case "dht", "apibay":
 			m.providers = append(m.providers, NewApibayProvider(pCfg.Name, pCfg.URL, pCfg.Enabled, weight))
+		case "eztv":
+			m.providers = append(m.providers, NewEZTVProvider(pCfg.Name, pCfg.URL, pCfg.Enabled, weight))
+		case "yts":
+			m.providers = append(m.providers, NewYTSProvider(pCfg.Name, pCfg.URL, pCfg.Enabled, weight))
+		case "solidtorrents":
+			m.providers = append(m.providers, NewSolidTorrentsProvider(pCfg.Name, pCfg.URL, pCfg.Enabled, weight))
+		case "torrentscsv":
+			m.providers = append(m.providers, NewTorrentsCSVProvider(pCfg.Name, pCfg.URL, pCfg.Enabled, weight))
+		case "limetorrents":
+			m.providers = append(m.providers, NewLimeTorrentsProvider(pCfg.Name, pCfg.URL, pCfg.Enabled, weight))
+		case "torlock":
+			m.providers = append(m.providers, NewTorLockProvider(pCfg.Name, pCfg.URL, pCfg.Enabled, weight))
 		case "archiveorg":
 			m.providers = append(m.providers, NewArchiveOrgProvider(pCfg.Name, pCfg.URL, pCfg.Enabled, weight))
 		case "torznab":
 			m.providers = append(m.providers, NewTorznabProvider(pCfg.Name, pCfg.URL, pCfg.APIKey, pCfg.Enabled, weight))
+		default:
+			m.providers = append(m.providers, NewGenericProvider(pCfg))
 		}
 	}
 }

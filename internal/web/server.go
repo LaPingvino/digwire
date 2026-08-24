@@ -1,9 +1,11 @@
 package web
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
@@ -13,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"digwire/internal/config"
 	"digwire/internal/engine"
@@ -60,6 +64,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/stats", s.handleStats)
 	s.mux.HandleFunc("GET /api/config", s.handleGetConfig)
 	s.mux.HandleFunc("POST /api/config", s.handleSaveConfig)
+	s.mux.HandleFunc("GET /api/config/yaml", s.handleGetConfigYAML)
+	s.mux.HandleFunc("POST /api/config/yaml", s.handleSaveConfigYAML)
+	s.mux.HandleFunc("POST /api/providers/test", s.handleTestProvider)
+	s.mux.HandleFunc("POST /api/providers/reset", s.handleResetProviders)
 	s.mux.HandleFunc("GET /api/events", s.handleEventsSSE)
 	s.mux.HandleFunc("POST /api/open-folder", s.handleOpenFolder)
 	s.mux.HandleFunc("GET /api/system/pick-path", s.handlePickPath)
@@ -382,6 +390,125 @@ func (s *Server) handleSaveConfig(w http.ResponseWriter, r *http.Request) {
 	s.search.UpdateProviders(s.cfg)
 
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "saved"})
+}
+
+func (s *Server) handleGetConfigYAML(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	cfgPath := config.GetConfigPath()
+	data, err := os.ReadFile(cfgPath)
+	if err != nil || len(data) == 0 {
+		out, err := yaml.Marshal(s.cfg)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write(out)
+		return
+	}
+	_, _ = w.Write(data)
+}
+
+func (s *Server) handleSaveConfigYAML(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, `{"error":"failed to read request body"}`, http.StatusBadRequest)
+		return
+	}
+
+	var newCfg config.Config
+	if err := yaml.Unmarshal(body, &newCfg); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "YAML syntax error: " + err.Error()})
+		return
+	}
+
+	*s.cfg = newCfg
+	_ = s.cfg.Save()
+	s.search.UpdateProviders(s.cfg)
+
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "saved"})
+}
+
+type testProviderRequest struct {
+	Provider config.SearchProviderConfig `json:"provider"`
+	Query    string                      `json:"query"`
+}
+
+func (s *Server) handleTestProvider(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	var req testProviderRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+
+	q := strings.TrimSpace(req.Query)
+	if q == "" {
+		q = "ubuntu"
+	}
+
+	tempCfg := &config.Config{
+		SearchProviders: []config.SearchProviderConfig{req.Provider},
+	}
+	tempManager := search.NewManager(tempCfg)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	results := tempManager.SearchAll(ctx, q)
+	duration := time.Since(start)
+
+	if len(results) == 0 {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok":          true,
+			"count":       0,
+			"duration_ms": duration.Milliseconds(),
+			"samples":     []interface{}{},
+		})
+		return
+	}
+
+	type sampleResult struct {
+		Title     string `json:"title"`
+		SizeBytes int64  `json:"size_bytes"`
+		Seeders   int    `json:"seeders"`
+		InfoHash  string `json:"info_hash"`
+	}
+	var samples []sampleResult
+	limit := 5
+	if len(results) < limit {
+		limit = len(results)
+	}
+	for i := 0; i < limit; i++ {
+		samples = append(samples, sampleResult{
+			Title:     results[i].Title,
+			SizeBytes: results[i].SizeBytes,
+			Seeders:   results[i].Seeders,
+			InfoHash:  results[i].InfoHash,
+		})
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"ok":          true,
+		"count":       len(results),
+		"duration_ms": duration.Milliseconds(),
+		"samples":     samples,
+	})
+}
+
+func (s *Server) handleResetProviders(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	def := config.DefaultConfig()
+	s.cfg.SearchProviders = def.SearchProviders
+	_ = s.cfg.Save()
+	s.search.UpdateProviders(s.cfg)
+
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":    "reset",
+		"providers": s.cfg.SearchProviders,
+	})
 }
 
 func (s *Server) handleOpenFolder(w http.ResponseWriter, r *http.Request) {

@@ -304,24 +304,162 @@
 
   <!-- Modal: Settings / Preferences -->
   <div class="modal-backdrop" id="modal-settings" onclick="if(event.target===this) closeSettingsModal()">
-    <div class="modal-box" style="max-width: 600px;">
+    <div class="modal-box" style="max-width: 720px; max-height: 88vh; display: flex; flex-direction: column;">
       <div class="modal-header">
-        <div class="modal-title">Preferences</div>
+        <div class="modal-title">Preferences & Search Engines</div>
         <button class="btn btn-icon" onclick="closeSettingsModal()">✕</button>
       </div>
-      <div class="form-group">
-        <label class="form-label">Download Directory</label>
-        <input type="text" id="cfg-download-dir" class="input-text">
+
+      <!-- Settings Tab Switcher -->
+      <div class="view-switcher" style="align-self: flex-start; margin-bottom: 12px;">
+        <button class="view-btn active" id="stab-providers" onclick="switchSettingsTab('providers')">Search Providers</button>
+        <button class="view-btn" id="stab-general" onclick="switchSettingsTab('general')">General</button>
+        <button class="view-btn" id="stab-yaml" onclick="switchSettingsTab('yaml')">Raw YAML</button>
       </div>
-      <div class="form-group">
-        <label class="form-label">Search Providers & Bias Weights</label>
+
+      <!-- Tab: Providers -->
+      <div id="settings-tab-providers" style="flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 12px; color: var(--adw-dim-label);">Configure BitTorrent DHT, API, and Web search engines</span>
+          <div style="display: flex; gap: 6px;">
+            <button class="btn" style="font-size: 11px; padding: 4px 8px;" onclick="resetProvidersToDefault()">↺ Reset Defaults</button>
+            <button class="btn btn-primary" style="font-size: 11px; padding: 4px 10px;" onclick="openAddProviderModal()">+ Add Provider</button>
+          </div>
+        </div>
+
         <div id="cfg-providers-list" style="display: flex; flex-direction: column; gap: 8px;">
           <!-- Dynamically populated -->
         </div>
       </div>
-      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px;">
+
+      <!-- Tab: General -->
+      <div id="settings-tab-general" style="display: none; flex-direction: column; gap: 14px; overflow-y: auto;">
+        <div class="form-group">
+          <label class="form-label">Download Directory</label>
+          <div style="display: flex; gap: 8px;">
+            <input type="text" id="cfg-download-dir" class="input-text" style="flex: 1;">
+            <button class="btn" onclick="openFilePicker('folder')">Browse...</button>
+          </div>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+          <div class="form-group">
+            <label class="form-label">Download Limit (KB/s)</label>
+            <input type="number" id="cfg-dl-limit" class="input-text" placeholder="0 (Unlimited)" min="0">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Upload Limit (KB/s)</label>
+            <input type="number" id="cfg-ul-limit" class="input-text" placeholder="0 (Unlimited)" min="0">
+          </div>
+        </div>
+        <div style="display: flex; gap: 20px; margin-top: 4px;">
+          <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer;">
+            <input type="checkbox" id="cfg-enable-dht"> Enable Mainline DHT
+          </label>
+          <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer;">
+            <input type="checkbox" id="cfg-enable-upnp"> Enable UPnP Port Mapping
+          </label>
+        </div>
+      </div>
+
+      <!-- Tab: Raw YAML -->
+      <div id="settings-tab-yaml" style="display: none; flex-direction: column; gap: 8px; flex: 1; min-height: 350px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 12px; color: var(--adw-dim-label);">Direct YAML editing of <code>config.yaml</code></span>
+          <button class="btn" style="font-size: 11px; padding: 4px 8px;" onclick="loadRawYAML()">↺ Reload YAML</button>
+        </div>
+        <textarea id="cfg-yaml-editor" class="input-text" style="flex: 1; font-family: monospace; font-size: 12px; line-height: 1.4; resize: none; min-height: 280px;"></textarea>
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; border-top: 1px solid var(--adw-border); padding-top: 12px;">
         <button class="btn" onclick="closeSettingsModal()">Close</button>
-        <button class="btn btn-primary" onclick="saveSettings()">Save Preferences</button>
+        <button class="btn btn-primary" id="btn-save-settings" onclick="saveSettings()">Save Preferences</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Provider Edit / Add -->
+  <div class="modal-backdrop" id="modal-provider-edit" onclick="if(event.target===this) closeProviderEditModal()">
+    <div class="modal-box" style="max-width: 540px;">
+      <div class="modal-header">
+        <div class="modal-title" id="provider-edit-title">Edit Search Provider</div>
+        <button class="btn btn-icon" onclick="closeProviderEditModal()">✕</button>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 12px; font-size: 13px;">
+        <div class="form-group">
+          <label class="form-label">Provider Name</label>
+          <input type="text" id="ped-name" class="input-text" placeholder="e.g. My Custom Tracker">
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+          <div class="form-group">
+            <label class="form-label">Type / Protocol</label>
+            <select id="ped-type" class="sort-select" style="width: 100%;" onchange="onProviderTypeChange()">
+              <option value="btdig">BTDigg (DHT Scraper)</option>
+              <option value="bitsearch">BitSearch (DHT Scraper)</option>
+              <option value="apibay">The Pirate Bay (API)</option>
+              <option value="eztv">EZTV (TV Shows API)</option>
+              <option value="yts">YTS (HD Movies API)</option>
+              <option value="solidtorrents">SolidTorrents (API)</option>
+              <option value="torrentscsv">TorrentsCSV (CSV Database)</option>
+              <option value="limetorrents">LimeTorrents (HTML Scraper)</option>
+              <option value="torlock">TorLock (HTML Scraper)</option>
+              <option value="archiveorg">Archive.org (Media API)</option>
+              <option value="torznab">Torznab (Jackett/Prowlarr)</option>
+              <option value="generic_json">Custom JSON API</option>
+              <option value="generic_html">Custom HTML Scraper</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Search Bias Weight</label>
+            <select id="ped-weight" class="sort-select" style="width: 100%;">
+              <option value="1.5">High (1.5x)</option>
+              <option value="1.2">Elevated (1.2x)</option>
+              <option value="1.0">Normal (1.0x)</option>
+              <option value="0.7">Moderate (0.7x)</option>
+              <option value="0.4">Low (0.4x)</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Base URL / Endpoint</label>
+          <input type="text" id="ped-url" class="input-text" placeholder="https://...">
+        </div>
+        <div class="form-group" id="ped-apikey-group" style="display: none;">
+          <label class="form-label">API Key (if required)</label>
+          <input type="text" id="ped-apikey" class="input-text" placeholder="Optional API Key">
+        </div>
+
+        <!-- Custom JSON Rules -->
+        <div id="ped-json-rules" style="display: none; flex-direction: column; gap: 8px; background: rgba(0,0,0,0.15); padding: 10px; border-radius: 6px;">
+          <div style="font-size: 11.5px; font-weight: 600; color: var(--adw-dim-label);">JSON Path Selectors (Dot notation: e.g. data.items)</div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+            <input type="text" id="ped-json-results" class="input-text" placeholder="Results path (e.g. items)">
+            <input type="text" id="ped-json-title" class="input-text" placeholder="Title path (e.g. name)">
+            <input type="text" id="ped-json-hash" class="input-text" placeholder="Hash path (e.g. hash)">
+            <input type="text" id="ped-json-magnet" class="input-text" placeholder="Magnet path (e.g. magnet)">
+            <input type="text" id="ped-json-size" class="input-text" placeholder="Size path (e.g. size)">
+            <input type="text" id="ped-json-seeds" class="input-text" placeholder="Seeds path (e.g. seeders)">
+          </div>
+        </div>
+
+        <!-- Custom HTML Rules -->
+        <div id="ped-html-rules" style="display: none; flex-direction: column; gap: 8px; background: rgba(0,0,0,0.15); padding: 10px; border-radius: 6px;">
+          <div style="font-size: 11.5px; font-weight: 600; color: var(--adw-dim-label);">HTML Regular Expressions</div>
+          <input type="text" id="ped-html-row" class="input-text" placeholder="Row regex (e.g. <tr class='row'>(.*?)</tr>)">
+          <input type="text" id="ped-html-title" class="input-text" placeholder="Title regex (e.g. <a class='title'[^>]*>(.*?)</a>)">
+          <input type="text" id="ped-html-magnet" class="input-text" placeholder="Magnet regex (e.g. href='(magnet:\?[^']+)')">
+        </div>
+
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
+          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+            <input type="checkbox" id="ped-enabled" checked> Enable this provider
+          </label>
+          <button class="btn" onclick="testCurrentProviderEdit()">⚡ Test Connection</button>
+        </div>
+        <div id="ped-test-feedback" style="font-size: 11.5px; display: none; padding: 6px 10px; border-radius: 6px;"></div>
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px;">
+        <button class="btn" onclick="closeProviderEditModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveProviderEdit()">Apply Provider</button>
       </div>
     </div>
   </div>

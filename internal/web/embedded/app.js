@@ -940,36 +940,22 @@ async function submitAddTorrent() {
   showToast("Please enter a magnet link, HTTP direct URL, infohash, or choose a .torrent file.", "warning", 3000);
 }
 
-// Settings Modal
+// Settings & Providers Modal Management
+let activeSettingsTab = 'providers';
+let editingProviderIndex = -1; // -1 for new provider
+
 async function openSettingsModal() {
   const res = await fetch('/api/config');
   activeConfig = await res.json();
 
-  document.getElementById('cfg-download-dir').value = activeConfig.download_dir;
-  const provList = document.getElementById('cfg-providers-list');
-  
-  provList.innerHTML = activeConfig.search_providers.map((p, idx) => `
-    <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(0,0,0,0.15); padding: 10px 14px; border-radius: 8px; gap: 10px;">
-      <div style="flex: 1;">
-        <div style="font-size: 13px; font-weight: 600;">${p.name}</div>
-        <div style="font-size: 11px; color: var(--adw-dim-label);">${p.url || p.type}</div>
-      </div>
-      <div style="display: flex; align-items: center; gap: 12px;">
-        <label style="font-size: 11px; color: var(--adw-dim-label); display: flex; align-items: center; gap: 4px;">
-          Bias:
-          <select id="cfg-prov-weight-${idx}" class="sort-select" style="padding: 2px 6px;">
-            <option value="1.5" ${p.weight >= 1.4 ? 'selected' : ''}>High (1.5x)</option>
-            <option value="1.0" ${p.weight > 0.7 && p.weight < 1.4 ? 'selected' : ''}>Normal (1.0x)</option>
-            <option value="0.5" ${p.weight <= 0.7 ? 'selected' : ''}>Low (0.5x)</option>
-          </select>
-        </label>
-        <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer;">
-          <input type="checkbox" id="cfg-prov-enabled-${idx}" ${p.enabled ? 'checked' : ''}> Enabled
-        </label>
-      </div>
-    </div>
-  `).join('');
+  document.getElementById('cfg-download-dir').value = activeConfig.download_dir || '';
+  document.getElementById('cfg-dl-limit').value = activeConfig.download_limit_kb || '';
+  document.getElementById('cfg-ul-limit').value = activeConfig.upload_limit_kb || '';
+  document.getElementById('cfg-enable-dht').checked = activeConfig.enable_dht !== false;
+  document.getElementById('cfg-enable-upnp').checked = activeConfig.enable_upnp !== false;
 
+  renderProvidersList();
+  switchSettingsTab('providers');
   document.getElementById('modal-settings').classList.add('open');
 }
 
@@ -977,24 +963,355 @@ function closeSettingsModal() {
   document.getElementById('modal-settings').classList.remove('open');
 }
 
+function switchSettingsTab(tab) {
+  activeSettingsTab = tab;
+  ['providers', 'general', 'yaml'].forEach(t => {
+    const btn = document.getElementById(`stab-${t}`);
+    const view = document.getElementById(`settings-tab-${t}`);
+    if (btn) btn.classList.toggle('active', t === tab);
+    if (view) view.style.display = t === tab ? 'flex' : 'none';
+  });
+
+  if (tab === 'yaml') {
+    loadRawYAML();
+  }
+}
+
+function renderProvidersList() {
+  const provList = document.getElementById('cfg-providers-list');
+  if (!activeConfig || !activeConfig.search_providers || activeConfig.search_providers.length === 0) {
+    provList.innerHTML = '<div style="text-align: center; color: var(--adw-dim-label); padding: 20px;">No search providers configured. Click "+ Add Provider" or "Reset Defaults".</div>';
+    return;
+  }
+
+  provList.innerHTML = activeConfig.search_providers.map((p, idx) => {
+    let typeBadge = p.type.toUpperCase();
+    let badgeColor = 'rgba(53, 132, 228, 0.2)';
+    let badgeTextColor = '#78aeed';
+
+    if (p.type === 'btdig' || p.type === 'bitsearch' || p.type === 'dht') {
+      badgeColor = 'rgba(230, 97, 0, 0.2)';
+      badgeTextColor = '#ff9e3b';
+      typeBadge = 'DHT';
+    } else if (p.type === 'yts' || p.type === 'eztv') {
+      badgeColor = 'rgba(154, 99, 212, 0.2)';
+      badgeTextColor = '#dc8add';
+      typeBadge = p.type === 'yts' ? 'MOVIES' : 'TV';
+    } else if (p.type.includes('json') || p.type.includes('html')) {
+      badgeColor = 'rgba(51, 209, 122, 0.2)';
+      badgeTextColor = '#57e389';
+      typeBadge = 'CUSTOM';
+    }
+
+    return `
+      <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(0,0,0,0.18); border: 1px solid var(--adw-border); padding: 10px 14px; border-radius: 8px; gap: 12px;">
+        <div style="display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0;">
+          <input type="checkbox" id="cfg-prov-enabled-${idx}" ${p.enabled ? 'checked' : ''} onchange="activeConfig.search_providers[${idx}].enabled=this.checked" style="cursor: pointer;">
+          <div style="overflow: hidden;">
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span style="font-size: 13px; font-weight: 600; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">${escapeHtml(p.name)}</span>
+              <span style="font-size: 9.5px; font-weight: 700; background: ${badgeColor}; color: ${badgeTextColor}; padding: 1px 5px; border-radius: 4px;">${typeBadge}</span>
+            </div>
+            <div style="font-size: 11px; color: var(--adw-dim-label); text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">${escapeHtml(p.url || p.type)}</div>
+          </div>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
+          <select id="cfg-prov-weight-${idx}" class="sort-select" style="padding: 2px 6px; font-size: 11.5px;" onchange="activeConfig.search_providers[${idx}].weight=parseFloat(this.value)||1.0">
+            <option value="1.5" ${p.weight >= 1.4 ? 'selected' : ''}>High (1.5x)</option>
+            <option value="1.2" ${p.weight >= 1.15 && p.weight < 1.4 ? 'selected' : ''}>Elevated (1.2x)</option>
+            <option value="1.0" ${p.weight >= 0.85 && p.weight < 1.15 ? 'selected' : ''}>Normal (1.0x)</option>
+            <option value="0.7" ${p.weight >= 0.55 && p.weight < 0.85 ? 'selected' : ''}>Moderate (0.7x)</option>
+            <option value="0.4" ${p.weight < 0.55 ? 'selected' : ''}>Low (0.4x)</option>
+          </select>
+          <button class="btn" style="padding: 3px 8px; font-size: 11px;" id="btn-test-prov-${idx}" onclick="testSingleProvider(${idx}, this)" title="Test live latency and results">⚡ Test</button>
+          <button class="btn" style="padding: 3px 8px; font-size: 11px;" onclick="openEditProviderModal(${idx})" title="Edit provider details">✏️</button>
+          <button class="btn" style="padding: 3px 8px; font-size: 11px; color: var(--adw-error);" onclick="deleteProvider(${idx})" title="Remove provider">🗑️</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+async function testSingleProvider(idx, btnEl) {
+  const p = activeConfig.search_providers[idx];
+  if (!p) return;
+
+  const originalText = btnEl.textContent;
+  btnEl.textContent = '...';
+  btnEl.disabled = true;
+
+  try {
+    const res = await fetch('/api/providers/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: p, query: 'ubuntu' })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      showToast(`✓ ${p.name}: ${data.count} hits (${data.duration_ms}ms)`, "success", 3000);
+      btnEl.textContent = `✓ ${data.count} (${data.duration_ms}ms)`;
+    } else {
+      showToast(`✕ ${p.name} failed: ${data.error || 'Timeout'}`, "warning", 3500);
+      btnEl.textContent = '✕ Fail';
+    }
+  } catch (err) {
+    showToast(`Error testing ${p.name}: ${err.message}`, "error", 3000);
+    btnEl.textContent = '✕ Error';
+  } finally {
+    setTimeout(() => {
+      btnEl.textContent = originalText;
+      btnEl.disabled = false;
+    }, 4000);
+  }
+}
+
+function openAddProviderModal() {
+  editingProviderIndex = -1;
+  document.getElementById('provider-edit-title').textContent = 'Add Search Provider';
+  document.getElementById('ped-name').value = '';
+  document.getElementById('ped-type').value = 'btdig';
+  document.getElementById('ped-weight').value = '1.0';
+  document.getElementById('ped-url').value = 'https://';
+  document.getElementById('ped-apikey').value = '';
+  document.getElementById('ped-enabled').checked = true;
+  document.getElementById('ped-test-feedback').style.display = 'none';
+
+  onProviderTypeChange();
+  document.getElementById('modal-provider-edit').classList.add('open');
+}
+
+function openEditProviderModal(idx) {
+  editingProviderIndex = idx;
+  const p = activeConfig.search_providers[idx];
+  if (!p) return;
+
+  document.getElementById('provider-edit-title').textContent = `Edit Provider: ${p.name}`;
+  document.getElementById('ped-name').value = p.name || '';
+  document.getElementById('ped-type').value = p.type || 'btdig';
+  document.getElementById('ped-weight').value = (p.weight || 1.0).toFixed(1);
+  document.getElementById('ped-url').value = p.url || '';
+  document.getElementById('ped-apikey').value = p.api_key || '';
+  document.getElementById('ped-enabled').checked = p.enabled !== false;
+
+  document.getElementById('ped-json-results').value = p.results_path || '';
+  document.getElementById('ped-json-title').value = p.title_path || '';
+  document.getElementById('ped-json-hash').value = p.hash_path || '';
+  document.getElementById('ped-json-magnet').value = p.magnet_path || '';
+  document.getElementById('ped-json-size').value = p.size_path || '';
+  document.getElementById('ped-json-seeds').value = p.seeds_path || '';
+
+  document.getElementById('ped-html-row').value = p.row_regex || '';
+  document.getElementById('ped-html-title').value = p.title_regex || '';
+  document.getElementById('ped-html-magnet').value = p.magnet_regex || '';
+
+  document.getElementById('ped-test-feedback').style.display = 'none';
+
+  onProviderTypeChange();
+  document.getElementById('modal-provider-edit').classList.add('open');
+}
+
+function closeProviderEditModal() {
+  document.getElementById('modal-provider-edit').classList.remove('open');
+}
+
+function onProviderTypeChange() {
+  const type = document.getElementById('ped-type').value;
+  const apikeyGroup = document.getElementById('ped-apikey-group');
+  const jsonRules = document.getElementById('ped-json-rules');
+  const htmlRules = document.getElementById('ped-html-rules');
+  const urlInput = document.getElementById('ped-url');
+
+  apikeyGroup.style.display = (type === 'torznab' || type === 'generic_json') ? 'block' : 'none';
+  jsonRules.style.display = type === 'generic_json' ? 'flex' : 'none';
+  htmlRules.style.display = type === 'generic_html' ? 'flex' : 'none';
+
+  // Preset default URLs if empty or modifying template
+  if (!urlInput.value || urlInput.value === 'https://' || urlInput.dataset.auto) {
+    urlInput.dataset.auto = 'true';
+    switch (type) {
+      case 'btdig': urlInput.value = 'https://btdig.com'; break;
+      case 'bitsearch': urlInput.value = 'https://bitsearch.to'; break;
+      case 'apibay': urlInput.value = 'https://apibay.org'; break;
+      case 'eztv': urlInput.value = 'https://eztv.re'; break;
+      case 'yts': urlInput.value = 'https://yts.mx'; break;
+      case 'solidtorrents': urlInput.value = 'https://solidtorrents.to'; break;
+      case 'torrentscsv': urlInput.value = 'https://torrents-csv.com'; break;
+      case 'limetorrents': urlInput.value = 'https://www.limetorrents.lol'; break;
+      case 'torlock': urlInput.value = 'https://www.torlock.com'; break;
+      case 'archiveorg': urlInput.value = 'https://archive.org'; break;
+      case 'torznab': urlInput.value = 'http://localhost:9696/api/v1/search'; break;
+      case 'generic_json': urlInput.value = 'https://example.com/api/search?q={query}'; break;
+      case 'generic_html': urlInput.value = 'https://example.com/search?q={query}'; break;
+    }
+  }
+}
+
+async function testCurrentProviderEdit() {
+  const feedback = document.getElementById('ped-test-feedback');
+  feedback.style.display = 'block';
+  feedback.style.background = 'rgba(53, 132, 228, 0.2)';
+  feedback.style.color = '#78aeed';
+  feedback.textContent = 'Testing connection and querying sample data...';
+
+  const prov = {
+    name: document.getElementById('ped-name').value.trim() || 'Test Provider',
+    type: document.getElementById('ped-type').value,
+    url: document.getElementById('ped-url').value.trim(),
+    api_key: document.getElementById('ped-apikey').value.trim(),
+    enabled: true,
+    weight: parseFloat(document.getElementById('ped-weight').value) || 1.0,
+    results_path: document.getElementById('ped-json-results').value.trim(),
+    title_path: document.getElementById('ped-json-title').value.trim(),
+    hash_path: document.getElementById('ped-json-hash').value.trim(),
+    magnet_path: document.getElementById('ped-json-magnet').value.trim(),
+    size_path: document.getElementById('ped-json-size').value.trim(),
+    seeds_path: document.getElementById('ped-json-seeds').value.trim(),
+    row_regex: document.getElementById('ped-html-row').value.trim(),
+    title_regex: document.getElementById('ped-html-title').value.trim(),
+    magnet_regex: document.getElementById('ped-html-magnet').value.trim(),
+  };
+
+  try {
+    const res = await fetch('/api/providers/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: prov, query: 'ubuntu' })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      feedback.style.background = 'rgba(46, 194, 126, 0.2)';
+      feedback.style.color = '#57e389';
+      feedback.textContent = `✓ Success! Retrieved ${data.count} torrents in ${data.duration_ms}ms.`;
+    } else {
+      feedback.style.background = 'rgba(224, 27, 36, 0.2)';
+      feedback.style.color = '#ff7b63';
+      feedback.textContent = `✕ Test Failed: ${data.error || 'Could not parse response'}`;
+    }
+  } catch (err) {
+    feedback.style.background = 'rgba(224, 27, 36, 0.2)';
+    feedback.style.color = '#ff7b63';
+    feedback.textContent = `✕ Network Error: ${err.message}`;
+  }
+}
+
+function saveProviderEdit() {
+  const name = document.getElementById('ped-name').value.trim();
+  const url = document.getElementById('ped-url').value.trim();
+  if (!name || !url) {
+    showToast("Please provide a name and valid URL for the provider.", "warning", 3000);
+    return;
+  }
+
+  const prov = {
+    name: name,
+    type: document.getElementById('ped-type').value,
+    url: url,
+    api_key: document.getElementById('ped-apikey').value.trim(),
+    enabled: document.getElementById('ped-enabled').checked,
+    weight: parseFloat(document.getElementById('ped-weight').value) || 1.0,
+    results_path: document.getElementById('ped-json-results').value.trim(),
+    title_path: document.getElementById('ped-json-title').value.trim(),
+    hash_path: document.getElementById('ped-json-hash').value.trim(),
+    magnet_path: document.getElementById('ped-json-magnet').value.trim(),
+    size_path: document.getElementById('ped-json-size').value.trim(),
+    seeds_path: document.getElementById('ped-json-seeds').value.trim(),
+    row_regex: document.getElementById('ped-html-row').value.trim(),
+    title_regex: document.getElementById('ped-html-title').value.trim(),
+    magnet_regex: document.getElementById('ped-html-magnet').value.trim(),
+  };
+
+  if (!activeConfig.search_providers) {
+    activeConfig.search_providers = [];
+  }
+
+  if (editingProviderIndex >= 0) {
+    activeConfig.search_providers[editingProviderIndex] = prov;
+  } else {
+    activeConfig.search_providers.push(prov);
+  }
+
+  renderProvidersList();
+  closeProviderEditModal();
+  showToast(`Provider "${name}" updated. Click "Save Preferences" to persist.`, "info", 2500);
+}
+
+function deleteProvider(idx) {
+  if (!activeConfig || !activeConfig.search_providers) return;
+  const name = activeConfig.search_providers[idx]?.name || 'provider';
+  activeConfig.search_providers.splice(idx, 1);
+  renderProvidersList();
+  showToast(`Removed "${name}". Click "Save Preferences" to apply.`, "info", 2000);
+}
+
+async function resetProvidersToDefault() {
+  try {
+    const res = await fetch('/api/providers/reset', { method: 'POST' });
+    const data = await res.json();
+    if (data.providers) {
+      activeConfig.search_providers = data.providers;
+      renderProvidersList();
+      showToast("Reset all search providers to default FrostWire/DHT sources.", "success", 2500);
+    }
+  } catch (err) {
+    showToast("Failed to reset providers: " + err.message, "error", 3000);
+  }
+}
+
+async function loadRawYAML() {
+  const editor = document.getElementById('cfg-yaml-editor');
+  editor.value = "Loading YAML from disk...";
+  try {
+    const res = await fetch('/api/config/yaml');
+    editor.value = await res.text();
+  } catch (err) {
+    editor.value = "# Error loading YAML: " + err.message;
+  }
+}
+
 async function saveSettings() {
   if (!activeConfig) return;
 
-  activeConfig.download_dir = document.getElementById('cfg-download-dir').value.trim();
-  activeConfig.search_providers.forEach((p, idx) => {
-    const cb = document.getElementById(`cfg-prov-enabled-${idx}`);
-    if (cb) p.enabled = cb.checked;
-    const wt = document.getElementById(`cfg-prov-weight-${idx}`);
-    if (wt) p.weight = parseFloat(wt.value) || 1.0;
-  });
+  const btn = document.getElementById('btn-save-settings');
+  const origText = btn.textContent;
+  btn.textContent = 'Saving...';
+  btn.disabled = true;
 
-  await fetch('/api/config', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(activeConfig)
-  });
+  try {
+    if (activeSettingsTab === 'yaml') {
+      const yamlContent = document.getElementById('cfg-yaml-editor').value;
+      const res = await fetch('/api/config/yaml', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: yamlContent
+      });
+      const data = await res.json();
+      if (data.error) {
+        showToast(data.error, "error", 4000);
+        return;
+      }
+      showToast("YAML configuration saved and reloaded successfully!", "success", 2500);
+    } else {
+      activeConfig.download_dir = document.getElementById('cfg-download-dir').value.trim();
+      activeConfig.download_limit_kb = parseInt(document.getElementById('cfg-dl-limit').value, 10) || 0;
+      activeConfig.upload_limit_kb = parseInt(document.getElementById('cfg-ul-limit').value, 10) || 0;
+      activeConfig.enable_dht = document.getElementById('cfg-enable-dht').checked;
+      activeConfig.enable_upnp = document.getElementById('cfg-enable-upnp').checked;
 
-  closeSettingsModal();
+      await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(activeConfig)
+      });
+      showToast("Preferences and search engines saved!", "success", 2500);
+    }
+    closeSettingsModal();
+  } catch (err) {
+    showToast("Failed to save: " + err.message, "error", 3000);
+  } finally {
+    btn.textContent = origText;
+    btn.disabled = false;
+  }
 }
 
 // File & Folder Picker integration

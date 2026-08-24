@@ -9,23 +9,39 @@ import (
 
 type SearchProviderConfig struct {
 	Name    string  `yaml:"name" json:"name"`
-	Type    string  `yaml:"type" json:"type"` // "torrentscsv", "torznab", "archiveorg"
+	Type    string  `yaml:"type" json:"type"` // "btdig", "bitsearch", "apibay", "eztv", "yts", "solidtorrents", "torrentscsv", "limetorrents", "torlock", "archiveorg", "torznab", "generic_json", "generic_html"
 	URL     string  `yaml:"url" json:"url"`
 	APIKey  string  `yaml:"api_key,omitempty" json:"api_key,omitempty"`
 	Enabled bool    `yaml:"enabled" json:"enabled"`
 	Weight  float64 `yaml:"weight" json:"weight"` // 0.1 to 2.0 bias multiplier
+
+	// Generic JSON paths for custom API trackers
+	ResultsPath string `yaml:"results_path,omitempty" json:"results_path,omitempty"`
+	TitlePath   string `yaml:"title_path,omitempty" json:"title_path,omitempty"`
+	HashPath    string `yaml:"hash_path,omitempty" json:"hash_path,omitempty"`
+	MagnetPath  string `yaml:"magnet_path,omitempty" json:"magnet_path,omitempty"`
+	SizePath    string `yaml:"size_path,omitempty" json:"size_path,omitempty"`
+	SeedsPath   string `yaml:"seeds_path,omitempty" json:"seeds_path,omitempty"`
+	PeersPath   string `yaml:"peers_path,omitempty" json:"peers_path,omitempty"`
+
+	// Generic regex patterns for custom HTML scrapers
+	RowRegex    string `yaml:"row_regex,omitempty" json:"row_regex,omitempty"`
+	TitleRegex  string `yaml:"title_regex,omitempty" json:"title_regex,omitempty"`
+	MagnetRegex string `yaml:"magnet_regex,omitempty" json:"magnet_regex,omitempty"`
+	SizeRegex   string `yaml:"size_regex,omitempty" json:"size_regex,omitempty"`
+	SeedsRegex  string `yaml:"seeds_regex,omitempty" json:"seeds_regex,omitempty"`
 }
 
 type Config struct {
-	DownloadDir      string                 `yaml:"download_dir" json:"download_dir"`
-	ListenPort       int                    `yaml:"listen_port" json:"listen_port"`
-	WebPort          int                    `yaml:"web_port" json:"web_port"`
-	DownloadLimitKB  int                    `yaml:"download_limit_kb" json:"download_limit_kb"`
-	UploadLimitKB    int                    `yaml:"upload_limit_kb" json:"upload_limit_kb"`
-	EnableDHT        bool                   `yaml:"enable_dht" json:"enable_dht"`
-	EnableUPnP       bool                   `yaml:"enable_upnp" json:"enable_upnp"`
-	SearchProviders  []SearchProviderConfig `yaml:"search_providers" json:"search_providers"`
-	configPath       string                 `yaml:"-" json:"-"`
+	DownloadDir     string                 `yaml:"download_dir" json:"download_dir"`
+	ListenPort      int                    `yaml:"listen_port" json:"listen_port"`
+	WebPort         int                    `yaml:"web_port" json:"web_port"`
+	DownloadLimitKB int                    `yaml:"download_limit_kb" json:"download_limit_kb"`
+	UploadLimitKB   int                    `yaml:"upload_limit_kb" json:"upload_limit_kb"`
+	EnableDHT       bool                   `yaml:"enable_dht" json:"enable_dht"`
+	EnableUPnP      bool                   `yaml:"enable_upnp" json:"enable_upnp"`
+	SearchProviders []SearchProviderConfig `yaml:"search_providers" json:"search_providers"`
+	configPath      string                 `yaml:"-" json:"-"`
 }
 
 func DefaultConfig() *Config {
@@ -45,18 +61,67 @@ func DefaultConfig() *Config {
 		EnableUPnP:      true,
 		SearchProviders: []SearchProviderConfig{
 			{
-				Name:    "TorrentsCSV",
-				Type:    "torrentscsv",
-				URL:     "https://torrents-csv.com",
+				Name:    "BTDigg (DHT)",
+				Type:    "btdig",
+				URL:     "https://btdig.com",
+				Enabled: true,
+				Weight:  1.4,
+			},
+			{
+				Name:    "BitSearch (DHT)",
+				Type:    "bitsearch",
+				URL:     "https://bitsearch.to",
+				Enabled: true,
+				Weight:  1.4,
+			},
+			{
+				Name:    "The Pirate Bay",
+				Type:    "apibay",
+				URL:     "https://apibay.org",
+				Enabled: true,
+				Weight:  1.3,
+			},
+			{
+				Name:    "EZTV (TV Shows)",
+				Type:    "eztv",
+				URL:     "https://eztv.re",
 				Enabled: true,
 				Weight:  1.2,
 			},
 			{
-				Name:    "DHT / Open Indexer",
-				Type:    "dht",
-				URL:     "https://apibay.org",
+				Name:    "YTS (HD Movies)",
+				Type:    "yts",
+				URL:     "https://yts.mx",
 				Enabled: true,
-				Weight:  1.3,
+				Weight:  1.2,
+			},
+			{
+				Name:    "SolidTorrents",
+				Type:    "solidtorrents",
+				URL:     "https://solidtorrents.to",
+				Enabled: true,
+				Weight:  1.1,
+			},
+			{
+				Name:    "TorrentsCSV",
+				Type:    "torrentscsv",
+				URL:     "https://torrents-csv.com",
+				Enabled: true,
+				Weight:  1.0,
+			},
+			{
+				Name:    "LimeTorrents",
+				Type:    "limetorrents",
+				URL:     "https://www.limetorrents.lol",
+				Enabled: true,
+				Weight:  0.9,
+			},
+			{
+				Name:    "TorLock",
+				Type:    "torlock",
+				URL:     "https://www.torlock.com",
+				Enabled: true,
+				Weight:  0.9,
 			},
 			{
 				Name:    "Archive.org",
