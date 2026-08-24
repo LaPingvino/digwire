@@ -164,6 +164,7 @@ func GetConfigPath() string {
 
 func LoadConfig() (*Config, error) {
 	cfgPath := GetConfigPath()
+	defCfg := DefaultConfig()
 	cfg := DefaultConfig()
 	cfg.configPath = cfgPath
 
@@ -180,6 +181,30 @@ func LoadConfig() (*Config, error) {
 		return cfg, err
 	}
 
+	changed := false
+
+	// Ensure fallback DNS is populated
+	if len(cfg.FallbackDNS) == 0 {
+		cfg.FallbackDNS = defCfg.FallbackDNS
+		changed = true
+	}
+
+	// Merge any newly introduced default search providers if not present
+	existingMap := make(map[string]bool)
+	for _, p := range cfg.SearchProviders {
+		existingMap[p.Type] = true
+		existingMap[p.Name] = true
+	}
+
+	for _, defP := range defCfg.SearchProviders {
+		if !existingMap[defP.Type] && !existingMap[defP.Name] {
+			cfg.SearchProviders = append(cfg.SearchProviders, defP)
+			existingMap[defP.Type] = true
+			existingMap[defP.Name] = true
+			changed = true
+		}
+	}
+
 	for i := range cfg.SearchProviders {
 		if cfg.SearchProviders[i].Weight <= 0 {
 			cfg.SearchProviders[i].Weight = 1.0
@@ -187,6 +212,10 @@ func LoadConfig() (*Config, error) {
 	}
 
 	cfg.configPath = cfgPath
+	if changed {
+		_ = cfg.Save()
+	}
+
 	return cfg, nil
 }
 
