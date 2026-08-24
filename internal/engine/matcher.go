@@ -230,57 +230,65 @@ func buildSearchQueries(filename string) []string {
 	return queries
 }
 
-// probeHostTorrent attempts to directly fetch `<URL>.torrent` from the source mirror
 func probeHostTorrent(ctx context.Context, fileURL string, task *HTTPTask) (*SwarmSuggestion, error) {
-	torrentURL := fileURL + ".torrent"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, torrentURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", "Digwire/1.0")
-
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("status %d", resp.StatusCode)
+	probeURLs := []string{
+		fileURL + ".torrent",
+		"https://torrent.fedoraproject.org/torrents/" + task.Name + ".torrent",
+		"https://torrents.fedoraproject.org/torrents/" + task.Name + ".torrent",
+		"https://releases.ubuntu.com/" + task.Name + ".torrent",
 	}
 
-	mi, err := metainfo.Load(resp.Body)
-	if err != nil {
-		return nil, err
-	}
+	client := &http.Client{Timeout: 4 * time.Second}
 
-	info, err := mi.UnmarshalInfo()
-	if err != nil {
-		return nil, err
-	}
+	for _, torrentURL := range probeURLs {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, torrentURL, nil)
+		if err != nil {
+			continue
+		}
+		req.Header.Set("User-Agent", "Digwire/1.0")
 
-	// Verify size match (single file or subfile)
-	if info.TotalLength() == task.TotalBytes {
-		ok, err := VerifyRandomPieces(ctx, task.URL, &info)
-		if err == nil && ok {
-			hash := mi.HashInfoBytes().HexString()
-			mag := fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", hash, url.QueryEscape(info.BestName()))
-			for _, tier := range mi.AnnounceList {
-				for _, tr := range tier {
-					mag += "&tr=" + url.QueryEscape(tr)
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		if resp.StatusCode != 200 {
+			resp.Body.Close()
+			continue
+		}
+
+		mi, err := metainfo.Load(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			continue
+		}
+
+		info, err := mi.UnmarshalInfo()
+		if err != nil {
+			continue
+		}
+
+		// Verify size match
+		if info.TotalLength() == task.TotalBytes {
+			ok, err := VerifyRandomPieces(ctx, task.URL, &info)
+			if err == nil && ok {
+				hash := mi.HashInfoBytes().HexString()
+				mag := fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", hash, url.QueryEscape(info.BestName()))
+				for _, tier := range mi.AnnounceList {
+					for _, tr := range tier {
+						mag += "&tr=" + url.QueryEscape(tr)
+					}
 				}
+				return &SwarmSuggestion{
+					InfoHash:   hash,
+					MagnetURI:  mag,
+					Name:       info.BestName(),
+					Seeders:    25,
+					Peers:      5,
+					TotalBytes: info.TotalLength(),
+					Provider:   "Official Host (.torrent)",
+					IsPartial:  false,
+				}, nil
 			}
-			return &SwarmSuggestion{
-				InfoHash:   hash,
-				MagnetURI:  mag,
-				Name:       info.BestName(),
-				Seeders:    25,
-				Peers:      5,
-				TotalBytes: info.TotalLength(),
-				Provider:   "Official Host (.torrent)",
-				IsPartial:  false,
-			}, nil
 		}
 	}
 
@@ -353,7 +361,21 @@ func (e *Engine) FindSuggestedSwarm(ctx context.Context, task *HTTPTask, searchM
 		return nil, fmt.Errorf("no candidate torrents found for %s", task.Name)
 	}
 
+	// Filter candidates: only check compatible sizes and limit to top 4
+	var filteredCandidates []search.Result
 	for _, cand := range candidates {
+		if cand.SizeBytes > 0 && task.TotalBytes > 0 {
+			if cand.SizeBytes < task.TotalBytes {
+				continue // Smaller torrent cannot contain target file
+			}
+		}
+		filteredCandidates = append(filteredCandidates, cand)
+		if len(filteredCandidates) >= 4 {
+			break
+		}
+	}
+
+	for _, cand := range filteredCandidates {
 		// Optimization A: If candidate is a direct HTTP .torrent URL (e.g. Archive.org, Torznab)
 		if (strings.HasPrefix(cand.MagnetURI, "http://") || strings.HasPrefix(cand.MagnetURI, "https://")) &&
 			strings.HasSuffix(strings.ToLower(cand.MagnetURI), ".torrent") {

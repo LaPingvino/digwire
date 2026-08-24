@@ -222,12 +222,11 @@ func (e *Engine) saveSessionLocked() {
 	for _, t := range torrents {
 		hash := t.InfoHash().HexString()
 		tr := e.rateMap[hash]
-		var addedAt int64 = time.Now().Unix()
-		var isPaused bool = false
-		if tr != nil {
-			addedAt = tr.addedAt
-			isPaused = tr.isPaused
+		if tr == nil {
+			continue // Do not persist probing torrents
 		}
+		addedAt := tr.addedAt
+		isPaused := tr.isPaused
 
 		name := t.Name()
 		webseeds := e.webSeedsMap[hash]
@@ -783,17 +782,15 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 	for _, t := range torrents {
 		hash := t.InfoHash().HexString()
 		tracker := e.rateMap[hash]
-
-		var addedAt int64
-		var isPaused bool
-		var dlRate, ulRate int64
-
-		if tracker != nil {
-			addedAt = tracker.addedAt
-			isPaused = tracker.isPaused
-			dlRate = tracker.downloadRate
-			ulRate = tracker.uploadRate
+		if tracker == nil {
+			// Skip internal background probing torrents
+			continue
 		}
+
+		addedAt := tracker.addedAt
+		isPaused := tracker.isPaused
+		dlRate := tracker.downloadRate
+		ulRate := tracker.uploadRate
 
 		info := t.Info()
 		var totalBytes, completedBytes int64
