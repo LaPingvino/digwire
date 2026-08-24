@@ -1,14 +1,14 @@
 # Maintainer: Joop Kiefte <joop@kiefte.eu>
 pkgname=digwire-git
 _pkgname=digwire
-pkgver=r26.c055e3b
+pkgver=r27.e110363
 pkgrel=1
 pkgdesc="Modern hybrid BitTorrent swarm & multi-source web download manager with Libadwaita aesthetic"
 arch=('x86_64' 'aarch64' 'armv7h')
 url="https://github.com/LaPingvino/digwire"
 license=('GPL-3.0-or-later')
-depends=('glibc')
-makedepends=('go' 'git')
+depends=('glibc' 'gtk3' 'webkit2gtk-4.1')
+makedepends=('go' 'git' 'pkgconf' 'gtk3' 'webkit2gtk-4.1')
 provides=('digwire')
 conflicts=('digwire')
 source=("$_pkgname-src::git+https://github.com/LaPingvino/digwire.git")

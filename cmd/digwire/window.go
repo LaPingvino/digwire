@@ -10,6 +10,15 @@ import (
 
 // launchNativeWindow opens the URL in a dedicated standalone app window (chromeless, native window frame)
 func launchNativeWindow(url string) *exec.Cmd {
+	// 1. Try native GTK3 WebKit2GTK window (sets native Wayland app_id, WM_CLASS, and window icon in Crostini/Linux)
+	if runtime.GOOS == "linux" {
+		if runNativeGTKWindow(url) {
+			p, _ := os.FindProcess(os.Getpid())
+			_ = p.Signal(os.Interrupt)
+			return nil
+		}
+	}
+
 	home, _ := os.UserHomeDir()
 	userDataDir := filepath.Join(home, ".config", "digwire", "app-profile")
 	_ = os.MkdirAll(userDataDir, 0755)
