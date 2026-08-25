@@ -101,8 +101,14 @@ func (p *GenericProvider) parseJSON(r interface{ Read([]byte) (int, error) }, qu
 		}
 
 		sizeBytes := getInt64ByPath(m, p.cfg.SizePath)
-		seeders := int(getInt64ByPath(m, p.cfg.SeedsPath))
-		leechers := int(getInt64ByPath(m, p.cfg.PeersPath))
+		seeders := -1
+		if p.cfg.SeedsPath != "" {
+			seeders = int(getInt64ByPath(m, p.cfg.SeedsPath))
+		}
+		leechers := -1
+		if p.cfg.PeersPath != "" {
+			leechers = int(getInt64ByPath(m, p.cfg.PeersPath))
+		}
 
 		score := CalculateRelevance(query, title, seeders, p.cfg.Weight)
 
@@ -176,10 +182,12 @@ func (p *GenericProvider) parseHTML(r interface{ Read([]byte) (int, error) }, qu
 			sizeBytes = parseHumanSize(sizeMatch[1])
 		}
 
-		var seeds int
+		seeds := -1
+		leechers := -1
 		seedsMatch := seedsRegex.FindStringSubmatch(content)
 		if len(seedsMatch) >= 2 {
 			seeds, _ = strconv.Atoi(strings.ReplaceAll(seedsMatch[1], ",", ""))
+			leechers = 0
 		}
 
 		score := CalculateRelevance(query, title, seeds, p.cfg.Weight)
@@ -190,7 +198,7 @@ func (p *GenericProvider) parseHTML(r interface{ Read([]byte) (int, error) }, qu
 			MagnetURI:    magnetURI,
 			SizeBytes:    sizeBytes,
 			Seeders:      seeds,
-			Leechers:     0,
+			Leechers:     leechers,
 			Provider:     p.cfg.Name,
 			ProviderType: "custom_html",
 			Score:        score,

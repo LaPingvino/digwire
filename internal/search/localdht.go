@@ -59,8 +59,8 @@ func (p *LocalDHTProvider) Search(ctx context.Context, query string) ([]Result, 
 			InfoHash:     rec.InfoHash,
 			MagnetURI:    magURI,
 			SizeBytes:    rec.SizeBytes,
-			Seeders:      10, // Active DHT
-			Leechers:     2,
+			Seeders:      -1, // Unknown until queried from swarm
+			Leechers:     -1,
 			Provider:     p.name,
 			ProviderType: "dht_local",
 			PublishDate:  rec.DiscoveredAt,

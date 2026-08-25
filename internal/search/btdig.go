@@ -127,8 +127,9 @@ func (p *BTDigProvider) Search(ctx context.Context, query string) ([]Result, err
 			sizeBytes = parseHumanSize(strings.TrimSpace(rawSize))
 		}
 
-		// BTDig is a pure DHT indexer; estimate reasonable baseline seeders for scoring
-		seeders := 5
+		// BTDig is a DHT indexer without live seeder scrape counts
+		seeders := -1
+		leechers := -1
 
 		score := CalculateRelevance(query, title, seeders, p.weight)
 
@@ -138,7 +139,7 @@ func (p *BTDigProvider) Search(ctx context.Context, query string) ([]Result, err
 			MagnetURI:    magnetURI,
 			SizeBytes:    sizeBytes,
 			Seeders:      seeders,
-			Leechers:     1,
+			Leechers:     leechers,
 			Provider:     p.name,
 			ProviderType: "btdig",
 			Score:        score,

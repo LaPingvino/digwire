@@ -860,7 +860,9 @@ function renderSearchResults() {
     if (currentSortBy === 'relevance') {
       return (b.score || 0) - (a.score || 0);
     } else if (currentSortBy === 'seeders') {
-      return (b.seeders || 0) - (a.seeders || 0);
+      const sA = a.seeders !== undefined && a.seeders >= 0 ? a.seeders : -1;
+      const sB = b.seeders !== undefined && b.seeders >= 0 ? b.seeders : -1;
+      return sB - sA;
     } else if (currentSortBy === 'size') {
       return (b.size_bytes || 0) - (a.size_bytes || 0);
     }
@@ -872,14 +874,29 @@ function renderSearchResults() {
     const scoreText = r.score > 0 ? `<span class="score-badge">Relevance: ${r.score.toFixed(0)}</span>` : '';
     const fileCountBadge = (r.files && r.files.length > 0) ? `<span style="font-size: 11px; opacity: 0.85;">📁 ${r.files.length} ${r.files.length === 1 ? 'file' : 'files'}</span>` : '';
 
+    let seedersHtml = '';
+    if (r.seeders !== undefined && r.seeders >= 0) {
+      const seedColor = r.seeders > 0 ? 'var(--adw-success)' : 'var(--adw-dim-label)';
+      seedersHtml = `<span style="color: ${seedColor}; font-weight: 600;">${ICONS.arrowUp}${r.seeders} seeds</span>`;
+    } else {
+      seedersHtml = `<span class="seed-probe-btn" style="color: var(--adw-dim-label); opacity: 0.85; cursor: pointer; text-decoration: underline dotted;" title="Swarm health unknown. Click to probe live swarm." onclick="scrapeSwarmCard(${idx}, event)">${ICONS.arrowUp}? seeds</span>`;
+    }
+
+    let leechersHtml = '';
+    if (r.leechers !== undefined && r.leechers >= 0) {
+      leechersHtml = `<span>${ICONS.arrowDown}${r.leechers} peers</span>`;
+    } else {
+      leechersHtml = `<span style="color: var(--adw-dim-label); opacity: 0.85;" title="Peer count unknown">${ICONS.arrowDown}? peers</span>`;
+    }
+
     return `
       <div class="search-card">
         <div class="search-info">
           <div class="search-title" title="${escapeHtml(r.title)}">${escapeHtml(r.title)}</div>
           <div class="search-sub">
             <span>${ICONS.package}${formatBytes(r.size_bytes)}</span>
-            <span style="color: var(--adw-success); font-weight: 600;">${ICONS.arrowUp}${r.seeders} seeds</span>
-            <span>${ICONS.arrowDown}${r.leechers} peers</span>
+            ${seedersHtml}
+            ${leechersHtml}
             <span class="provider-badge ${tagClass}">${escapeHtml(r.provider)}</span>
             ${fileCountBadge}
             ${scoreText}
@@ -899,6 +916,38 @@ function renderSearchResults() {
       </div>
     `;
   }).join('');
+}
+
+async function scrapeSwarmCard(idx, event) {
+  if (event) {
+    event.stopPropagation();
+  }
+  const result = rawSearchResults[idx];
+  if (!result) return;
+
+  const targetEl = event ? event.currentTarget : null;
+  if (targetEl) {
+    targetEl.innerHTML = '⏳ probing...';
+  }
+
+  try {
+    const res = await fetch(`/api/torrents/scrape?hash=${encodeURIComponent(result.info_hash)}&magnet=${encodeURIComponent(result.magnet_uri)}`);
+    if (!res.ok) {
+      throw new Error("Probe timed out");
+    }
+    const data = await res.json();
+    if (data.seeders !== undefined && data.seeders >= 0) {
+      result.seeders = data.seeders;
+      result.leechers = data.leechers !== undefined ? data.leechers : 0;
+    }
+  } catch (err) {
+    if (targetEl) {
+      targetEl.innerHTML = `${ICONS.arrowUp}0 seeds`;
+      result.seeders = 0;
+      result.leechers = 0;
+    }
+  }
+  renderSearchResults();
 }
 
 let currentInspectData = null;
@@ -953,6 +1002,7 @@ async function openInspectModal(resultIdx) {
     if (!res.ok) {
       throw new Error("Metadata resolution timed out (no DHT peers responded in 8s). You can still start the download directly.");
     }
+    const data = await res.json();
     if (data.name && data.name.trim() !== '') {
       result.title = data.name;
     }
@@ -961,6 +1011,10 @@ async function openInspectModal(resultIdx) {
     }
     if (data.magnet_uri) {
       result.magnet_uri = data.magnet_uri;
+    }
+    if (data.seeders !== undefined && data.seeders >= 0) {
+      result.seeders = data.seeders;
+      result.leechers = data.leechers !== undefined ? data.leechers : 0;
     }
 
     currentInspectData = {

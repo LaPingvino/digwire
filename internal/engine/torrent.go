@@ -1272,6 +1272,8 @@ type InspectResult struct {
 	MagnetURI string              `json:"magnet_uri"`
 	TotalSize int64               `json:"total_size"`
 	NumFiles  int                 `json:"num_files"`
+	Seeders   int                 `json:"seeders"`
+	Leechers  int                 `json:"leechers"`
 	Files     []TorrentFileDetail `json:"files"`
 }
 
@@ -1315,12 +1317,23 @@ func (e *Engine) InspectMagnetMetadata(ctx context.Context, uriOrHash string) (*
 						Length: f.Length,
 					})
 				}
+				st := t.Stats()
+				seeders := st.ConnectedSeeders
+				if seeders == 0 && st.ActivePeers > 0 {
+					seeders = st.ActivePeers
+				}
+				leechers := st.TotalPeers - seeders
+				if leechers < 0 {
+					leechers = 0
+				}
 				return &InspectResult{
 					Name:      info.BestName(),
 					InfoHash:  hash,
 					MagnetURI: uriOrHash,
 					TotalSize: t.Length(),
 					NumFiles:  len(files),
+					Seeders:   seeders,
+					Leechers:  leechers,
 					Files:     files,
 				}, nil
 			}
@@ -1345,6 +1358,8 @@ func (e *Engine) InspectMagnetMetadata(ctx context.Context, uriOrHash string) (*
 				MagnetURI: uriOrHash,
 				TotalSize: rec.SizeBytes,
 				NumFiles:  len(rec.Files),
+				Seeders:   -1,
+				Leechers:  -1,
 				Files:     files,
 			}, nil
 		}
@@ -1412,12 +1427,24 @@ func (e *Engine) InspectMagnetMetadata(ctx context.Context, uriOrHash string) (*
 				})
 			}
 
+			st := t.Stats()
+			seeders := st.ConnectedSeeders
+			if seeders == 0 && st.ActivePeers > 0 {
+				seeders = st.ActivePeers
+			}
+			leechers := st.TotalPeers - seeders
+			if leechers < 0 {
+				leechers = 0
+			}
+
 			return &InspectResult{
 				Name:      info.BestName(),
 				InfoHash:  hash,
 				MagnetURI: mag,
 				TotalSize: t.Length(),
 				NumFiles:  len(files),
+				Seeders:   seeders,
+				Leechers:  leechers,
 				Files:     files,
 			}, nil
 
@@ -1430,5 +1457,76 @@ func (e *Engine) InspectMagnetMetadata(ctx context.Context, uriOrHash string) (*
 		case <-ctx.Done():
 			return nil, fmt.Errorf("metadata lookup timed out (swarm peers not responding)")
 		}
+	}
+}
+
+// ScrapeSwarm performs a fast 3-second live probe of a torrent swarm's seeders and peer count
+func (e *Engine) ScrapeSwarm(ctx context.Context, uriOrHash string) (seeders int, leechers int, err error) {
+	hash := extractInfoHash(uriOrHash)
+	if hash == "" {
+		return -1, -1, fmt.Errorf("invalid magnet link or infohash")
+	}
+	hash = strings.ToLower(hash)
+
+	// Check if torrent already exists in engine
+	e.mu.RLock()
+	for _, t := range e.client.Torrents() {
+		if strings.EqualFold(t.InfoHash().HexString(), hash) {
+			st := t.Stats()
+			e.mu.RUnlock()
+			s := st.ConnectedSeeders
+			if s == 0 && st.ActivePeers > 0 {
+				s = st.ActivePeers
+			}
+			l := st.TotalPeers - s
+			if l < 0 {
+				l = 0
+			}
+			return s, l, nil
+		}
+	}
+	e.mu.RUnlock()
+
+	mag := uriOrHash
+	if !strings.HasPrefix(mag, "magnet:?") {
+		mag = fmt.Sprintf("magnet:?xt=urn:btih:%s", hash)
+	}
+	extractedPeers := ExtractPeersFromMagnet(mag)
+	mag = SuperchargeMagnet(mag)
+
+	t, err := e.client.AddMagnet(mag)
+	if err != nil {
+		return -1, -1, err
+	}
+	t.DisallowDataDownload()
+	t.AddTrackers(GetTier1TrackerList())
+	peerInfos := ConvertToPeerInfos(extractedPeers)
+	if len(peerInfos) > 0 {
+		t.AddPeers(peerInfos)
+	}
+
+	defer func() {
+		e.mu.RLock()
+		_, isUserDl := e.rateMap[hash]
+		e.mu.RUnlock()
+		if !isUserDl {
+			t.Drop()
+		}
+	}()
+
+	select {
+	case <-time.After(3 * time.Second):
+		st := t.Stats()
+		s := st.ConnectedSeeders
+		if s == 0 && st.ActivePeers > 0 {
+			s = st.ActivePeers
+		}
+		l := st.TotalPeers - s
+		if l < 0 {
+			l = 0
+		}
+		return s, l, nil
+	case <-ctx.Done():
+		return -1, -1, ctx.Err()
 	}
 }

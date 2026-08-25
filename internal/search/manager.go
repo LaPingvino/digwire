@@ -110,7 +110,13 @@ func CalculateRelevance(query, title string, seeders int, weight float64) float6
 	}
 
 	// 3. Swarm health / seeders score (Logarithmic scaling so seeds help, but don't overwhelm relevance)
-	seederScore := math.Log2(float64(seeders+1)) * 4.0
+	seederScore := 0.0
+	if seeders > 0 {
+		seederScore = math.Log2(float64(seeders+1)) * 4.0
+	} else if seeders < 0 {
+		// Unknown/unprobed swarm baseline score
+		seederScore = 6.0
+	}
 
 	// 4. Apply provider bias weight
 	if weight <= 0 {
@@ -179,7 +185,15 @@ func (m *Manager) SearchAll(ctx context.Context, query string) []Result {
 	// Sort primary by balanced relevance Score descending, then by seeders
 	sort.Slice(combined, func(i, j int) bool {
 		if combined[i].Score == combined[j].Score {
-			return combined[i].Seeders > combined[j].Seeders
+			sI := combined[i].Seeders
+			if sI < 0 {
+				sI = 0
+			}
+			sJ := combined[j].Seeders
+			if sJ < 0 {
+				sJ = 0
+			}
+			return sI > sJ
 		}
 		return combined[i].Score > combined[j].Score
 	})
