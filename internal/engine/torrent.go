@@ -27,12 +27,14 @@ import (
 )
 
 type SavedTorrent struct {
-	InfoHash  string   `json:"info_hash"`
-	MagnetURI string   `json:"magnet_uri"`
-	Name      string   `json:"name"`
-	IsPaused  bool     `json:"is_paused"`
-	AddedAt   int64    `json:"added_at"`
-	WebSeeds  []string `json:"webseeds"`
+	InfoHash       string   `json:"info_hash"`
+	MagnetURI      string   `json:"magnet_uri"`
+	Name           string   `json:"name"`
+	IsPaused       bool     `json:"is_paused"`
+	AddedAt        int64    `json:"added_at"`
+	WebSeeds       []string `json:"webseeds"`
+	TotalBytes     int64    `json:"total_bytes,omitempty"`
+	CompletedBytes int64    `json:"completed_bytes,omitempty"`
 }
 
 type SavedHTTPTask struct {
@@ -115,14 +117,16 @@ type GlobalStats struct {
 }
 
 type rateTracker struct {
-	lastBytesRead    int64
-	lastBytesWritten int64
-	lastTime         time.Time
-	downloadRate     int64
-	uploadRate       int64
-	addedAt          int64
-	isPaused         bool
-	displayName      string
+	lastBytesRead       int64
+	lastBytesWritten    int64
+	lastTime            time.Time
+	downloadRate        int64
+	uploadRate          int64
+	addedAt             int64
+	isPaused            bool
+	displayName         string
+	savedTotalBytes     int64
+	savedCompletedBytes int64
 }
 
 type Engine struct {
@@ -176,6 +180,41 @@ func getSessionFilePath() string {
 		configDir = "."
 	}
 	return filepath.Join(configDir, "digwire", "session.json")
+}
+
+func getTorrentsCacheDir() string {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		configDir = "."
+	}
+	dir := filepath.Join(configDir, "digwire", "torrents")
+	_ = os.MkdirAll(dir, 0755)
+	return dir
+}
+
+func getTorrentCacheFilePath(infoHashHex string) string {
+	if infoHashHex == "" {
+		return ""
+	}
+	return filepath.Join(getTorrentsCacheDir(), strings.ToLower(infoHashHex)+".torrent")
+}
+
+func (e *Engine) saveTorrentMetainfo(t *torrent.Torrent) {
+	if t == nil || t.Info() == nil {
+		return
+	}
+	hash := t.InfoHash().HexString()
+	filePath := getTorrentCacheFilePath(hash)
+	if filePath == "" {
+		return
+	}
+	mi := t.Metainfo()
+	f, err := os.Create(filePath)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_ = mi.Write(f)
 }
 
 func NewEngine(cfg *config.Config) (*Engine, error) {
@@ -271,17 +310,33 @@ func (e *Engine) saveSessionLocked() {
 		isPaused := tr.isPaused
 
 		name := t.Name()
+		if name == "" && tr.displayName != "" {
+			name = tr.displayName
+		}
+
+		var totalBytes, completedBytes int64
+		if t.Info() != nil {
+			totalBytes = t.Length()
+			completedBytes = t.BytesCompleted()
+			e.saveTorrentMetainfo(t)
+		} else {
+			totalBytes = tr.savedTotalBytes
+			completedBytes = tr.savedCompletedBytes
+		}
+
 		webseeds := e.webSeedsMap[hash]
 		mag := fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", hash, url.QueryEscape(name))
 		mag = AppendWebSeedsToMagnet(SuperchargeMagnet(mag), webseeds)
 
 		list = append(list, SavedTorrent{
-			InfoHash:  hash,
-			MagnetURI: mag,
-			Name:      name,
-			IsPaused:  isPaused,
-			AddedAt:   addedAt,
-			WebSeeds:  webseeds,
+			InfoHash:       hash,
+			MagnetURI:      mag,
+			Name:           name,
+			IsPaused:       isPaused,
+			AddedAt:        addedAt,
+			WebSeeds:       webseeds,
+			TotalBytes:     totalBytes,
+			CompletedBytes: completedBytes,
 		})
 	}
 
@@ -327,40 +382,80 @@ func (e *Engine) loadSession() {
 		if item.MagnetURI == "" && item.InfoHash != "" {
 			item.MagnetURI = "magnet:?xt=urn:btih:" + item.InfoHash
 		}
-		if item.MagnetURI == "" {
+		if item.MagnetURI == "" && item.InfoHash == "" {
 			continue
 		}
 
-		t, err := e.client.AddMagnet(item.MagnetURI)
-		if err != nil {
-			continue
+		var t *torrent.Torrent
+		var hash string
+		cachedTorrentPath := getTorrentCacheFilePath(item.InfoHash)
+
+		// 1. Try loading cached .torrent metainfo directly so metadata & piece progress are immediately available on start!
+		if item.InfoHash != "" {
+			if _, err := os.Stat(cachedTorrentPath); err == nil {
+				if mi, err := metainfo.LoadFromFile(cachedTorrentPath); err == nil && mi != nil {
+					if addedT, err := e.client.AddTorrent(mi); err == nil {
+						t = addedT
+						hash = t.InfoHash().HexString()
+					}
+				}
+			}
 		}
 
-		hash := t.InfoHash().HexString()
+		// 2. Fall back to AddMagnet
+		if t == nil {
+			if item.MagnetURI == "" {
+				continue
+			}
+			addedT, err := e.client.AddMagnet(item.MagnetURI)
+			if err != nil {
+				continue
+			}
+			t = addedT
+			hash = t.InfoHash().HexString()
+		}
+
+		// Inject tier-1 trackers
+		t.AddTrackers(GetTier1TrackerList())
+
 		e.rateMap[hash] = &rateTracker{
-			lastTime: time.Now(),
-			addedAt:  item.AddedAt,
-			isPaused: item.IsPaused,
+			lastTime:            time.Now(),
+			addedAt:             item.AddedAt,
+			isPaused:            item.IsPaused,
+			displayName:         item.Name,
+			savedTotalBytes:     item.TotalBytes,
+			savedCompletedBytes: item.CompletedBytes,
 		}
 
 		if len(item.WebSeeds) > 0 {
 			e.webSeedsMap[hash] = SanitizeWebSeeds(item.WebSeeds, false)
 		}
 
-		if !item.IsPaused {
-			go func(tor *torrent.Torrent, seeds []string) {
-				<-tor.GotInfo()
-				if len(seeds) > 0 && tor.Info() != nil {
-					clean := SanitizeWebSeeds(seeds, tor.Info().IsDir())
-					if len(clean) > 0 {
-						tor.AddWebSeeds(clean)
-					}
+		go func(tor *torrent.Torrent, seeds []string, isPaused bool, h string) {
+			<-tor.GotInfo()
+			// Persist .torrent metadata to cache folder so subsequent restarts never lose metadata or piece info
+			e.saveTorrentMetainfo(tor)
+
+			if len(seeds) > 0 && tor.Info() != nil {
+				clean := SanitizeWebSeeds(seeds, tor.Info().IsDir())
+				if len(clean) > 0 {
+					tor.AddWebSeeds(clean)
 				}
+			}
+			if !isPaused {
 				tor.DownloadAll()
-				e.mu.Lock()
-				e.saveSessionLocked()
-				e.mu.Unlock()
-			}(t, item.WebSeeds)
+			} else {
+				tor.DisallowDataDownload()
+			}
+			e.mu.Lock()
+			e.saveSessionLocked()
+			e.mu.Unlock()
+		}(t, item.WebSeeds, item.IsPaused, hash)
+
+		if !item.IsPaused {
+			if t.Info() != nil {
+				t.DownloadAll()
+			}
 		} else {
 			t.DisallowDataDownload()
 		}
@@ -471,6 +566,7 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 		}
 		t.DownloadAll()
 		e.mu.Lock()
+		e.saveTorrentMetainfo(t)
 		e.initTracker(t.InfoHash().HexString())
 		e.saveSessionLocked()
 		e.mu.Unlock()
@@ -564,6 +660,7 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 		}
 
 		<-tor.GotInfo()
+		e.saveTorrentMetainfo(tor)
 		if len(seeds) > 0 && tor.Info() != nil {
 			clean := SanitizeWebSeeds(seeds, tor.Info().IsDir())
 			if len(clean) > 0 {
@@ -607,6 +704,7 @@ func (e *Engine) AddTorrentFile(reader io.Reader) (*torrent.Torrent, error) {
 		return nil, err
 	}
 	t.DownloadAll()
+	e.saveTorrentMetainfo(t)
 	e.initTracker(t.InfoHash().HexString())
 	e.saveSessionLocked()
 	return t, nil
@@ -852,6 +950,7 @@ func (e *Engine) Remove(infoHashHex string, deleteFiles bool) error {
 			t.Drop()
 			delete(e.rateMap, infoHashHex)
 			delete(e.webSeedsMap, infoHashHex)
+			_ = os.Remove(getTorrentCacheFilePath(infoHashHex))
 			e.saveSessionLocked()
 
 			if deleteFiles && name != "" {
@@ -919,6 +1018,11 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 				name = "Resolving metadata (" + hash[:8] + "...)"
 			}
 			state = "metadata"
+			totalBytes = tracker.savedTotalBytes
+			completedBytes = tracker.savedCompletedBytes
+			if totalBytes > 0 && completedBytes > 0 {
+				progress = (float64(completedBytes) / float64(totalBytes)) * 100.0
+			}
 		}
 
 		var eta int64 = 0
