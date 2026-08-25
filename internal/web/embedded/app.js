@@ -1764,6 +1764,63 @@ function confirmFileBrowserSelection() {
   }
 }
 
+// Native Window Actions & State Management
+function sendNativeWindowAction(action) {
+  try {
+    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.windowAction) {
+      window.webkit.messageHandlers.windowAction.postMessage(action);
+      return true;
+    }
+  } catch (e) {}
+  return false;
+}
+
+let isWindowMaximized = false;
+
+function windowMinimize() {
+  if (!sendNativeWindowAction('minimize')) {
+    showToast("Minimize is handled by your system window manager (Super+H / Alt+F9)", "info", 2000);
+  }
+}
+
+function windowToggleMaximize() {
+  const btn = document.getElementById('btn-window-maximize');
+  if (sendNativeWindowAction('toggle_maximize')) {
+    isWindowMaximized = !isWindowMaximized;
+    if (btn) {
+      btn.innerHTML = isWindowMaximized ?
+        `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>` :
+        `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg>`;
+    }
+    return;
+  }
+
+  // Fallback to HTML5 Fullscreen
+  if (!document.fullscreenElement) {
+    document.documentElement.requestFullscreen().catch(() => {});
+    if (btn) {
+      btn.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>`;
+    }
+  } else {
+    document.exitFullscreen().catch(() => {});
+    if (btn) {
+      btn.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg>`;
+    }
+  }
+}
+
+function windowHeaderDblClick(e) {
+  if (e.target.closest('button, input, select, a, .view-btn')) return;
+  windowToggleMaximize();
+}
+
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'F11') {
+    e.preventDefault();
+    windowToggleMaximize();
+  }
+});
+
 // Initialize on page load
 window.addEventListener('DOMContentLoaded', () => {
   initEventStream();

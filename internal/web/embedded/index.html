@@ -15,7 +15,7 @@
 <body>
 
   <!-- Libadwaita HeaderBar -->
-  <header class="adw-header-bar">
+  <header class="adw-header-bar" ondblclick="windowHeaderDblClick(event)">
     <div class="header-group">
       <div class="app-title" style="display: flex; align-items: center; gap: 8px;">
         <img src="digwire.png" alt="Digwire" style="width: 26px; height: 26px; border-radius: 6px; box-shadow: 0 1px 4px rgba(0,0,0,0.4);">
@@ -37,7 +37,7 @@
       <button class="view-btn" onclick="setFilter('completed')">Completed</button>
     </div>
 
-    <!-- Actions -->
+    <!-- Actions & Window Controls -->
     <div class="header-group">
       <button class="btn btn-primary" onclick="openAddModal()">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
@@ -53,6 +53,16 @@
       <button class="btn btn-icon" title="Preferences" onclick="openSettingsModal()">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
       </button>
+
+      <!-- Native Window Controls -->
+      <div class="window-controls" style="display: flex; gap: 4px; align-items: center; margin-left: 6px; padding-left: 8px; border-left: 1px solid var(--adw-card-border);">
+        <button class="btn btn-icon" title="Minimize Window (Alt+F9)" onclick="windowMinimize()" style="width: 28px; height: 28px; min-width: 28px; padding: 0; border-radius: 50%;">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+        </button>
+        <button class="btn btn-icon" id="btn-window-maximize" title="Maximize / Restore Window (F11)" onclick="windowToggleMaximize()" style="width: 28px; height: 28px; min-width: 28px; padding: 0; border-radius: 50%;">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg>
+        </button>
+      </div>
     </div>
   </header>
 

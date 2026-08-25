@@ -13,6 +13,36 @@ static void on_destroy(GtkWidget* widget, gpointer data) {
     gtk_main_quit();
 }
 
+static void on_script_message(WebKitUserContentManager *manager, WebKitJavascriptResult *res, gpointer user_data) {
+    GtkWindow *window = GTK_WINDOW(user_data);
+    JSCValue *val = webkit_javascript_result_get_js_value(res);
+    if (val && jsc_value_is_string(val)) {
+        char *str = jsc_value_to_string(val);
+        if (str) {
+            if (strcmp(str, "minimize") == 0) {
+                gtk_window_iconify(window);
+            } else if (strcmp(str, "maximize") == 0) {
+                gtk_window_maximize(window);
+            } else if (strcmp(str, "unmaximize") == 0) {
+                gtk_window_unmaximize(window);
+            } else if (strcmp(str, "toggle_maximize") == 0) {
+                if (gtk_window_is_maximized(window)) {
+                    gtk_window_unmaximize(window);
+                } else {
+                    gtk_window_maximize(window);
+                }
+            } else if (strcmp(str, "fullscreen") == 0) {
+                gtk_window_fullscreen(window);
+            } else if (strcmp(str, "unfullscreen") == 0) {
+                gtk_window_unfullscreen(window);
+            } else if (strcmp(str, "close") == 0) {
+                gtk_window_close(window);
+            }
+            g_free(str);
+        }
+    }
+}
+
 static int launch_gtk_window(const char* url, const char* icon_path) {
     g_set_prgname("digwire");
     g_set_application_name("Digwire");
@@ -25,6 +55,7 @@ static int launch_gtk_window(const char* url, const char* icon_path) {
     gtk_window_set_title(GTK_WINDOW(window), "Digwire");
     gtk_window_set_default_size(GTK_WINDOW(window), 980, 720);
     gtk_window_set_position(GTK_WINDOW(window), GTK_WIN_POS_CENTER);
+    gtk_window_set_resizable(GTK_WINDOW(window), TRUE);
 
     // Set application icon from theme or file
     gtk_window_set_icon_name(GTK_WINDOW(window), "digwire");
@@ -36,14 +67,20 @@ static int launch_gtk_window(const char* url, const char* icon_path) {
         }
     }
 
-    // Set GTK dark theme
+    // Set GTK dark theme and window decorations
     GtkSettings *settings = gtk_settings_get_default();
     if (settings != NULL) {
         g_object_set(settings, "gtk-application-prefer-dark-theme", TRUE, NULL);
+        g_object_set(settings, "gtk-decoration-layout", "menu:minimize,maximize,close", NULL);
     }
 
-    // Create WebKit View
-    WebKitWebView *webView = WEBKIT_WEB_VIEW(webkit_web_view_new());
+    // Setup script message handler for window controls
+    WebKitUserContentManager *ucm = webkit_user_content_manager_new();
+    webkit_user_content_manager_register_script_message_handler(ucm, "windowAction");
+    g_signal_connect(ucm, "script-message-received::windowAction", G_CALLBACK(on_script_message), window);
+
+    // Create WebKit View with ucm
+    WebKitWebView *webView = WEBKIT_WEB_VIEW(webkit_web_view_new_with_user_content_manager(ucm));
     webkit_web_view_load_uri(webView, url);
 
     // Enable WebKit developer tools
