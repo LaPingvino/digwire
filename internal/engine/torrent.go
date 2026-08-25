@@ -437,6 +437,9 @@ func (e *Engine) loadSession() {
 			// Persist .torrent metadata to cache folder so subsequent restarts never lose metadata or piece info
 			e.saveTorrentMetainfo(tor)
 
+			// Adopt any partial/remnant local files (.part, .crdownload, wget partials) into layout
+			e.AdoptExistingLocalProgress(tor)
+
 			// Cryptographically verify existing local pieces on disk before downloading
 			_ = tor.VerifyData()
 
@@ -459,6 +462,7 @@ func (e *Engine) loadSession() {
 		if !item.IsPaused {
 			if t.Info() != nil {
 				go func(tor *torrent.Torrent) {
+					e.AdoptExistingLocalProgress(tor)
 					_ = tor.VerifyData()
 					tor.DownloadAll()
 				}(t)
@@ -579,6 +583,7 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 
 		go func(tor *torrent.Torrent) {
 			<-tor.GotInfo()
+			e.AdoptExistingLocalProgress(tor)
 			_ = tor.VerifyData()
 			tor.DownloadAll()
 		}(t)
@@ -674,6 +679,9 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 		<-tor.GotInfo()
 		e.saveTorrentMetainfo(tor)
 
+		// Adopt any remnant / partial local files (.part, .crdownload, wget partials)
+		e.AdoptExistingLocalProgress(tor)
+
 		// Always verify existing data on disk first
 		_ = tor.VerifyData()
 
@@ -725,6 +733,7 @@ func (e *Engine) AddTorrentFile(reader io.Reader) (*torrent.Torrent, error) {
 
 	go func(tor *torrent.Torrent) {
 		<-tor.GotInfo()
+		e.AdoptExistingLocalProgress(tor)
 		_ = tor.VerifyData()
 		tor.DownloadAll()
 	}(t)
@@ -846,6 +855,7 @@ func (e *Engine) CreateWebBridgeTorrent(ctx context.Context, fileURL string, mir
 		go func(tor *torrent.Torrent, seeds []string) {
 			<-tor.GotInfo()
 			e.saveTorrentMetainfo(tor)
+			e.AdoptExistingLocalProgress(tor)
 			_ = tor.VerifyData()
 			if len(seeds) > 0 && tor.Info() != nil {
 				clean := SanitizeWebSeeds(seeds, tor.Info().IsDir())
@@ -861,6 +871,61 @@ func (e *Engine) CreateWebBridgeTorrent(ctx context.Context, fileURL string, mir
 	}
 
 	return "", "", fmt.Errorf("could not find or verify swarm for %s", filename)
+}
+
+// AdoptExistingLocalProgress scans for any partial or remnant files matching the torrent layout
+// (such as .part, .crdownload, .download, or direct wget partial downloads) and moves/renames them
+// into the expected torrent file path so VerifyData() can immediately discover and reuse existing progress.
+func (e *Engine) AdoptExistingLocalProgress(tor *torrent.Torrent) {
+	if tor == nil || tor.Info() == nil {
+		return
+	}
+
+	info := tor.Info()
+	baseDownloadDir := e.cfg.DownloadDir
+
+	for _, f := range info.UpvertedFiles() {
+		displayPath := f.DisplayPath(info)
+		targetPath := filepath.Join(baseDownloadDir, displayPath)
+
+		// If target file already exists and has size > 0, keep it for VerifyData()
+		if fi, err := os.Stat(targetPath); err == nil && fi.Size() > 0 {
+			continue
+		}
+
+		// Candidate partial extensions and fallback locations
+		candidates := []string{
+			targetPath + ".part",
+			targetPath + ".crdownload",
+			targetPath + ".download",
+			targetPath + ".tmp",
+		}
+
+		// If multi-file torrent, also check if the file was downloaded directly into Downloads root (e.g. via wget)
+		filenameOnly := filepath.Base(displayPath)
+		if filenameOnly != "" && filenameOnly != displayPath {
+			rootCandidate := filepath.Join(baseDownloadDir, filenameOnly)
+			candidates = append(candidates,
+				rootCandidate,
+				rootCandidate+".part",
+				rootCandidate+".crdownload",
+				rootCandidate+".download",
+				rootCandidate+".tmp",
+			)
+		}
+
+		// Check all candidate locations
+		for _, cand := range candidates {
+			fi, err := os.Stat(cand)
+			if err == nil && !fi.IsDir() && fi.Size() > 0 {
+				_ = os.MkdirAll(filepath.Dir(targetPath), 0755)
+				// Move / rename candidate file to expected torrent path
+				if err := os.Rename(cand, targetPath); err == nil {
+					break
+				}
+			}
+		}
+	}
 }
 
 func (e *Engine) initTracker(hash string, displayName ...string) {
@@ -888,6 +953,7 @@ func (e *Engine) VerifyTorrentData(infoHashHex string) error {
 		if strings.EqualFold(t.InfoHash().HexString(), infoHashHex) {
 			go func(tor *torrent.Torrent) {
 				<-tor.GotInfo()
+				e.AdoptExistingLocalProgress(tor)
 				_ = tor.VerifyData()
 			}(t)
 			return nil
@@ -940,6 +1006,7 @@ func (e *Engine) Resume(infoHashHex string) error {
 			}
 			go func(tor *torrent.Torrent) {
 				<-tor.GotInfo()
+				e.AdoptExistingLocalProgress(tor)
 				_ = tor.VerifyData()
 				tor.DownloadAll()
 				e.mu.Lock()

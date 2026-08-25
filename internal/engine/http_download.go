@@ -203,6 +203,40 @@ func (t *HTTPTask) runDownload() {
 	supportsRange := t.SupportsRange
 	t.mu.Unlock()
 
+	// Check if already completed on disk
+	if totalBytes > 0 {
+		if fi, err := os.Stat(destPath); err == nil && fi.Size() == totalBytes {
+			t.mu.Lock()
+			t.State = "completed"
+			t.CompletedBytes = totalBytes
+			t.DownloadRate = 0
+			t.ETASeconds = 0
+			t.mu.Unlock()
+			return
+		}
+	}
+
+	// Scan candidate partial files from wget, Chrome, curl, or prior sessions
+	candidates := []string{
+		partPath,
+		destPath + ".crdownload",
+		destPath + ".download",
+		destPath + ".tmp",
+	}
+	// If destPath exists but is partial (e.g. from wget), adopt it as .part
+	if fi, err := os.Stat(destPath); err == nil && !fi.IsDir() && (totalBytes == 0 || fi.Size() < totalBytes) {
+		candidates = append([]string{destPath}, candidates...)
+	}
+
+	for _, cand := range candidates {
+		if fi, err := os.Stat(cand); err == nil && !fi.IsDir() && fi.Size() > 0 {
+			if cand != partPath {
+				_ = os.Rename(cand, partPath)
+			}
+			break
+		}
+	}
+
 	// Open or create .part file
 	file, err := os.OpenFile(partPath, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
@@ -216,24 +250,56 @@ func (t *HTTPTask) runDownload() {
 
 	if totalBytes > 0 && supportsRange {
 		// Multi-mirror Segmented Downloader for Gigabit lines
-		// Chunk size: 8MB for high-speed TCP window saturation
 		const chunkSize int64 = 8 * 1024 * 1024
 		numChunks := (totalBytes + chunkSize - 1) / chunkSize
 		t.chunkQueue = make(chan ChunkSpec, numChunks)
 
-		// Populate chunk queue
+		// Check already downloaded bytes on disk
+		var alreadyDownloaded int64 = 0
+		if fi, err := file.Stat(); err == nil && fi.Size() > 0 {
+			alreadyDownloaded = fi.Size()
+			if alreadyDownloaded > totalBytes {
+				alreadyDownloaded = totalBytes
+			}
+		}
+
+		if alreadyDownloaded >= totalBytes {
+			_ = file.Sync()
+			file.Close()
+			_ = os.Rename(partPath, destPath)
+			t.mu.Lock()
+			t.State = "completed"
+			t.CompletedBytes = totalBytes
+			t.DownloadRate = 0
+			t.ETASeconds = 0
+			t.mu.Unlock()
+			return
+		}
+
+		// Populate chunk queue only with missing portions
 		for i := int64(0); i < numChunks; i++ {
 			start := i * chunkSize
 			end := start + chunkSize - 1
 			if end >= totalBytes {
 				end = totalBytes - 1
 			}
+
+			// If chunk is already fully present on disk
+			if end < alreadyDownloaded {
+				continue
+			}
+			// If partial chunk overlap, adjust start
+			if start < alreadyDownloaded {
+				start = alreadyDownloaded
+			}
+
 			t.chunkQueue <- ChunkSpec{
 				Index: i,
 				Start: start,
 				End:   end,
 			}
 		}
+		atomic.StoreInt64(&t.CompletedBytes, alreadyDownloaded)
 
 		t.mu.RLock()
 		mirrors := make([]string, len(t.Mirrors))
