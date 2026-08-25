@@ -437,6 +437,9 @@ func (e *Engine) loadSession() {
 			// Persist .torrent metadata to cache folder so subsequent restarts never lose metadata or piece info
 			e.saveTorrentMetainfo(tor)
 
+			// Cryptographically verify existing local pieces on disk before downloading
+			_ = tor.VerifyData()
+
 			if len(seeds) > 0 && tor.Info() != nil {
 				clean := SanitizeWebSeeds(seeds, tor.Info().IsDir())
 				if len(clean) > 0 {
@@ -455,7 +458,10 @@ func (e *Engine) loadSession() {
 
 		if !item.IsPaused {
 			if t.Info() != nil {
-				t.DownloadAll()
+				go func(tor *torrent.Torrent) {
+					_ = tor.VerifyData()
+					tor.DownloadAll()
+				}(t)
 			}
 		} else {
 			t.DisallowDataDownload()
@@ -565,12 +571,17 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 		if err != nil {
 			return nil, err
 		}
-		t.DownloadAll()
 		e.mu.Lock()
 		e.saveTorrentMetainfo(t)
 		e.initTracker(t.InfoHash().HexString())
 		e.saveSessionLocked()
 		e.mu.Unlock()
+
+		go func(tor *torrent.Torrent) {
+			<-tor.GotInfo()
+			_ = tor.VerifyData()
+			tor.DownloadAll()
+		}(t)
 		return t, nil
 	}
 
@@ -662,6 +673,10 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 
 		<-tor.GotInfo()
 		e.saveTorrentMetainfo(tor)
+
+		// Always verify existing data on disk first
+		_ = tor.VerifyData()
+
 		if len(seeds) > 0 && tor.Info() != nil {
 			clean := SanitizeWebSeeds(seeds, tor.Info().IsDir())
 			if len(clean) > 0 {
@@ -704,10 +719,15 @@ func (e *Engine) AddTorrentFile(reader io.Reader) (*torrent.Torrent, error) {
 	if err != nil {
 		return nil, err
 	}
-	t.DownloadAll()
 	e.saveTorrentMetainfo(t)
 	e.initTracker(t.InfoHash().HexString())
 	e.saveSessionLocked()
+
+	go func(tor *torrent.Torrent) {
+		<-tor.GotInfo()
+		_ = tor.VerifyData()
+		tor.DownloadAll()
+	}(t)
 	return t, nil
 }
 
@@ -825,6 +845,8 @@ func (e *Engine) CreateWebBridgeTorrent(ctx context.Context, fileURL string, mir
 
 		go func(tor *torrent.Torrent, seeds []string) {
 			<-tor.GotInfo()
+			e.saveTorrentMetainfo(tor)
+			_ = tor.VerifyData()
 			if len(seeds) > 0 && tor.Info() != nil {
 				clean := SanitizeWebSeeds(seeds, tor.Info().IsDir())
 				if len(clean) > 0 {
@@ -913,20 +935,17 @@ func (e *Engine) Resume(infoHashHex string) error {
 	for _, t := range torrents {
 		if strings.EqualFold(t.InfoHash().HexString(), infoHashHex) {
 			t.AllowDataDownload()
-			if t.Info() != nil {
-				t.DownloadAll()
-			} else {
-				go func(tor *torrent.Torrent) {
-					<-tor.GotInfo()
-					tor.DownloadAll()
-					e.mu.Lock()
-					e.saveSessionLocked()
-					e.mu.Unlock()
-				}(t)
-			}
 			if tr, ok := e.rateMap[infoHashHex]; ok {
 				tr.isPaused = false
 			}
+			go func(tor *torrent.Torrent) {
+				<-tor.GotInfo()
+				_ = tor.VerifyData()
+				tor.DownloadAll()
+				e.mu.Lock()
+				e.saveSessionLocked()
+				e.mu.Unlock()
+			}(t)
 			e.saveSessionLocked()
 			return nil
 		}

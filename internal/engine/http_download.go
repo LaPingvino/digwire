@@ -370,6 +370,16 @@ func (t *HTTPTask) singleStreamDownload(ctx context.Context, partPath, destPath 
 	}
 	req.Header.Set("User-Agent", "Digwire/1.0")
 
+	var startOffset int64 = 0
+	if fi, err := os.Stat(partPath); err == nil && fi.Size() > 0 {
+		startOffset = fi.Size()
+		if startOffset < t.TotalBytes || t.TotalBytes == 0 {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", startOffset))
+			_, _ = t.file.Seek(startOffset, io.SeekStart)
+			atomic.StoreInt64(&t.CompletedBytes, startOffset)
+		}
+	}
+
 	resp, err := t.client.Do(req)
 	if err != nil {
 		if ctx.Err() != context.Canceled {
@@ -380,6 +390,18 @@ func (t *HTTPTask) singleStreamDownload(ctx context.Context, partPath, destPath 
 		return
 	}
 	defer resp.Body.Close()
+
+	if startOffset > 0 && resp.StatusCode != http.StatusPartialContent && resp.StatusCode != http.StatusOK {
+		// Server rejected range, restart from beginning
+		_, _ = t.file.Seek(0, io.SeekStart)
+		_ = t.file.Truncate(0)
+		atomic.StoreInt64(&t.CompletedBytes, 0)
+	} else if startOffset > 0 && resp.StatusCode == http.StatusOK {
+		// Server sent entire body, restart from beginning
+		_, _ = t.file.Seek(0, io.SeekStart)
+		_ = t.file.Truncate(0)
+		atomic.StoreInt64(&t.CompletedBytes, 0)
+	}
 
 	buf := make([]byte, 64*1024)
 	for {
