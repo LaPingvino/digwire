@@ -56,6 +56,7 @@ static int launch_gtk_window(const char* url, const char* icon_path) {
     gtk_window_set_default_size(GTK_WINDOW(window), 980, 720);
     gtk_window_set_position(GTK_WINDOW(window), GTK_WIN_POS_CENTER);
     gtk_window_set_resizable(GTK_WINDOW(window), TRUE);
+    gtk_window_set_type_hint(GTK_WINDOW(window), GDK_WINDOW_TYPE_HINT_NORMAL);
 
     // Set application icon from theme or file
     gtk_window_set_icon_name(GTK_WINDOW(window), "digwire");
