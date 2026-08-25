@@ -55,12 +55,15 @@
       </button>
 
       <!-- Native Window Controls -->
-      <div class="window-controls" style="display: flex; gap: 4px; align-items: center; margin-left: 6px; padding-left: 8px; border-left: 1px solid var(--adw-card-border);">
-        <button class="btn btn-icon" title="Minimize Window (Alt+F9)" onclick="windowMinimize()" style="width: 28px; height: 28px; min-width: 28px; padding: 0; border-radius: 50%;">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+      <div class="window-controls">
+        <button class="window-control-btn" title="Minimize Window (Alt+F9)" onclick="windowMinimize()">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
         </button>
-        <button class="btn btn-icon" id="btn-window-maximize" title="Maximize / Restore Window (F11)" onclick="windowToggleMaximize()" style="width: 28px; height: 28px; min-width: 28px; padding: 0; border-radius: 50%;">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg>
+        <button class="window-control-btn" id="btn-window-maximize" title="Maximize / Restore Window (F11)" onclick="windowToggleMaximize()">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg>
+        </button>
+        <button class="window-control-btn btn-close" title="Close Window (Ctrl+Q)" onclick="windowClose()">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
         </button>
       </div>
     </div>

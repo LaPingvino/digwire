@@ -1809,8 +1809,14 @@ function windowToggleMaximize() {
   }
 }
 
+function windowClose() {
+  if (!sendNativeWindowAction('close')) {
+    window.close();
+  }
+}
+
 function windowHeaderDblClick(e) {
-  if (e.target.closest('button, input, select, a, .view-btn')) return;
+  if (e.target.closest('button, input, select, a, .view-btn, .window-control-btn')) return;
   windowToggleMaximize();
 }
 
@@ -1818,6 +1824,10 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'F11') {
     e.preventDefault();
     windowToggleMaximize();
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'q') {
+    e.preventDefault();
+    windowClose();
   }
 });
 

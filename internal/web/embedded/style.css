@@ -111,6 +111,43 @@ body {
   box-shadow: 0 1px 3px rgba(0,0,0,0.15);
 }
 
+/* Window Control Buttons */
+.window-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+  padding-left: 10px;
+  border-left: 1px solid var(--adw-card-border);
+}
+
+.window-control-btn {
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid transparent;
+  color: var(--adw-fg-color);
+  cursor: pointer;
+  padding: 0;
+  transition: all 0.15s ease;
+}
+
+.window-control-btn:hover {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.window-control-btn.btn-close:hover {
+  background: #e01b24;
+  color: #fff;
+  border-color: #c01c28;
+}
+
 /* Buttons */
 .btn {
   display: inline-flex;
