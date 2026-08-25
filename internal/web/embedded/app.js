@@ -645,6 +645,21 @@ function copyCurrentMagnet() {
   }
 }
 
+function exportCurrentTorrentFile(btn) {
+  if (!currentDetailData || !currentDetailData.info_hash) {
+    showToast("Torrent details not loaded", "warning");
+    return;
+  }
+  const hash = currentDetailData.info_hash;
+  const link = document.createElement('a');
+  link.href = `/api/torrents/${hash}/export`;
+  link.download = `${currentDetailData.name || hash}.torrent`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  showToast("Downloading .torrent file...", "success", 2000);
+}
+
 // Send as Torrent (Create & Share)
 let currentSendTab = 'local';
 
@@ -1134,6 +1149,21 @@ function copyInspectMagnet(btn) {
   if (currentInspectData && currentInspectData.magnet_uri) {
     copyToClipboard(currentInspectData.magnet_uri, btn);
   }
+}
+
+function saveInspectTorrentFile(btn) {
+  if (!currentInspectData || !currentInspectData.info_hash) {
+    showToast("Metadata not loaded yet", "warning");
+    return;
+  }
+  const hash = currentInspectData.info_hash;
+  const link = document.createElement('a');
+  link.href = `/api/torrents/${hash}/export`;
+  link.download = `${currentInspectData.name || hash}.torrent`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  showToast("Downloading .torrent file...", "success", 2000);
 }
 
 async function startDownloadFromInspect(btn) {

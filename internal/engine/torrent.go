@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -1399,6 +1400,54 @@ func extractInfoHash(input string) string {
 	return ""
 }
 
+// GetTorrentFileBytes returns the raw bencoded .torrent file data and recommended filename
+func (e *Engine) GetTorrentFileBytes(infoHashHex string) ([]byte, string, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	hash := strings.ToLower(infoHashHex)
+
+	// 1. Check if cached .torrent file exists on disk
+	filePath := getTorrentCacheFilePath(hash)
+	if filePath != "" {
+		if data, err := os.ReadFile(filePath); err == nil && len(data) > 0 {
+			name := hash + ".torrent"
+			for _, t := range e.client.Torrents() {
+				if strings.EqualFold(t.InfoHash().HexString(), hash) {
+					if t.Info() != nil && t.Info().Name != "" {
+						name = t.Info().Name + ".torrent"
+					} else if t.Name() != "" {
+						name = t.Name() + ".torrent"
+					}
+					break
+				}
+			}
+			return data, name, nil
+		}
+	}
+
+	// 2. Generate on the fly from memory if torrent is active and has Info()
+	for _, t := range e.client.Torrents() {
+		if strings.EqualFold(t.InfoHash().HexString(), hash) {
+			if t.Info() == nil {
+				return nil, "", fmt.Errorf("metadata is still resolving for %s", hash)
+			}
+			mi := t.Metainfo()
+			var buf bytes.Buffer
+			if err := mi.Write(&buf); err != nil {
+				return nil, "", err
+			}
+			name := t.Info().Name
+			if name == "" {
+				name = hash
+			}
+			return buf.Bytes(), name + ".torrent", nil
+		}
+	}
+
+	return nil, "", fmt.Errorf("torrent file not found for hash: %s", hash)
+}
+
 // InspectMagnetMetadata resolves or retrieves the file list and metadata of any magnet link or infohash
 func (e *Engine) InspectMagnetMetadata(ctx context.Context, uriOrHash string) (*InspectResult, error) {
 	hash := extractInfoHash(uriOrHash)
@@ -1445,7 +1494,34 @@ func (e *Engine) InspectMagnetMetadata(ctx context.Context, uriOrHash string) (*
 	}
 	e.mu.RUnlock()
 
-	// 2. Check if cached in DHT Indexer
+	// 2. Check if cached .torrent metainfo exists on disk
+	cachedPath := getTorrentCacheFilePath(hash)
+	if cachedPath != "" {
+		if mi, err := metainfo.LoadFromFile(cachedPath); err == nil && mi != nil {
+			if info, err := mi.UnmarshalInfo(); err == nil {
+				var files []TorrentFileDetail
+				for idx, f := range info.UpvertedFiles() {
+					files = append(files, TorrentFileDetail{
+						Index:  idx,
+						Path:   f.DisplayPath(&info),
+						Length: f.Length,
+					})
+				}
+				return &InspectResult{
+					Name:      info.BestName(),
+					InfoHash:  hash,
+					MagnetURI: uriOrHash,
+					TotalSize: info.TotalLength(),
+					NumFiles:  len(files),
+					Seeders:   -1,
+					Leechers:  -1,
+					Files:     files,
+				}, nil
+			}
+		}
+	}
+
+	// 3. Check if cached in DHT Indexer
 	if e.dhtIndexer != nil {
 		if rec := e.dhtIndexer.GetRecord(hash); rec != nil && len(rec.Files) > 0 {
 			var files []TorrentFileDetail
@@ -1469,7 +1545,7 @@ func (e *Engine) InspectMagnetMetadata(ctx context.Context, uriOrHash string) (*
 		}
 	}
 
-	// 3. Resolve metadata live over BEP 9 DHT swarm and direct peers
+	// 4. Resolve metadata live over BEP 9 DHT swarm and direct peers
 	mag := uriOrHash
 	if !strings.HasPrefix(mag, "magnet:?") {
 		mag = fmt.Sprintf("magnet:?xt=urn:btih:%s", hash)

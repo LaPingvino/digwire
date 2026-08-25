@@ -254,10 +254,13 @@
         <!-- Tab Content dynamically loaded -->
       </div>
 
-      <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--adw-border); padding-top: 12px; margin-top: 8px;">
-        <div style="display: flex; gap: 6px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--adw-border); padding-top: 12px; margin-top: 8px; flex-wrap: wrap; gap: 8px;">
+        <div style="display: flex; gap: 6px; flex-wrap: wrap;">
           <button class="btn" onclick="copyCurrentMagnet()">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -1px; margin-right: 4px;"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>Copy Magnet
+          </button>
+          <button class="btn" onclick="exportCurrentTorrentFile(this)">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -1px; margin-right: 4px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>Save .torrent
           </button>
           <button class="btn" onclick="if(currentDetailData) verifyTorrent(currentDetailData.info_hash, this)">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -1px; margin-right: 4px;"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>Verify Local Data
@@ -298,11 +301,17 @@
         <!-- File rows dynamically populated -->
       </div>
 
-      <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--adw-border); padding-top: 12px; margin-top: 12px;">
-        <button class="btn" id="inspect-copy-magnet-btn" onclick="copyInspectMagnet(this)">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -1px; margin-right: 3px;"><path d="M6 15v-4a6 6 0 1 1 12 0v4"></path><path d="M6 11H2"></path><path d="M22 11h-4"></path><path d="M2 15h4"></path><path d="M18 15h4"></path></svg>
-          <span>Copy Magnet</span>
-        </button>
+      <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--adw-border); padding-top: 12px; margin-top: 12px; flex-wrap: wrap; gap: 8px;">
+        <div style="display: flex; gap: 6px;">
+          <button class="btn" id="inspect-copy-magnet-btn" onclick="copyInspectMagnet(this)">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -1px; margin-right: 3px;"><path d="M6 15v-4a6 6 0 1 1 12 0v4"></path><path d="M6 11H2"></path><path d="M22 11h-4"></path><path d="M2 15h4"></path><path d="M18 15h4"></path></svg>
+            <span>Copy Magnet</span>
+          </button>
+          <button class="btn" id="inspect-save-torrent-btn" onclick="saveInspectTorrentFile(this)">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -1px; margin-right: 3px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+            <span>Save .torrent</span>
+          </button>
+        </div>
         <div style="display: flex; gap: 8px;">
           <button class="btn" onclick="closeInspectModal()">Close</button>
           <button class="btn btn-primary" id="inspect-download-btn" onclick="startDownloadFromInspect(this)">

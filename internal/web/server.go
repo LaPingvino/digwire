@@ -52,6 +52,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/torrents/create", s.handleCreateTorrent)
 	s.mux.HandleFunc("POST /api/torrents/create-bridge", s.handleCreateBridgeTorrent)
 	s.mux.HandleFunc("GET /api/torrents/{hash}/details", s.handleGetTorrentDetails)
+	s.mux.HandleFunc("GET /api/torrents/{hash}/export", s.handleExportTorrentFile)
 	s.mux.HandleFunc("GET /api/torrents/inspect", s.handleInspectTorrent)
 	s.mux.HandleFunc("GET /api/torrents/scrape", s.handleScrapeTorrent)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/files/{index}/priority", s.handleSetFilePriority)
@@ -227,6 +228,28 @@ func (s *Server) handleGetTorrentDetails(w http.ResponseWriter, r *http.Request)
 	}
 
 	_ = json.NewEncoder(w).Encode(details)
+}
+
+func (s *Server) handleExportTorrentFile(w http.ResponseWriter, r *http.Request) {
+	hash := r.PathValue("hash")
+	if hash == "" {
+		http.Error(w, `{"error":"missing infohash"}`, http.StatusBadRequest)
+		return
+	}
+
+	data, filename, err := s.engine.GetTorrentFileBytes(hash)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/x-bittorrent")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 type setFilePriorityRequest struct {
