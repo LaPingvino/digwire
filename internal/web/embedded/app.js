@@ -889,6 +889,20 @@ function renderSearchResults() {
       leechersHtml = `<span style="color: var(--adw-dim-label); opacity: 0.85;" title="Peer count unknown">${ICONS.arrowDown}? peers</span>`;
     }
 
+    let healthBadge = '';
+    if (r.health) {
+      if (r.health.status === 'periodic') {
+        const titleTooltip = escapeHtml(`Historical Swarm Pattern: ${r.health.description || ''}`);
+        const peakText = r.health.peak_window ? `~${r.health.peak_window}` : 'Periodic';
+        healthBadge = `<span class="health-badge health-periodic" style="background: rgba(230, 162, 60, 0.15); color: #e6a23c; border: 1px solid rgba(230, 162, 60, 0.3); padding: 2px 7px; border-radius: 10px; font-size: 11px; font-weight: 500;" title="${titleTooltip}">🟡 ${peakText}</span>`;
+      } else if (r.health.status === 'dormant') {
+        const titleTooltip = escapeHtml(`Swarm History: ${r.health.description || 'No active seeders recorded in checks'}`);
+        healthBadge = `<span class="health-badge health-dormant" style="background: rgba(245, 108, 108, 0.15); color: #f56c6c; border: 1px solid rgba(245, 108, 108, 0.3); padding: 2px 7px; border-radius: 10px; font-size: 11px; font-weight: 500;" title="${titleTooltip}">🔴 Dormant</span>`;
+      } else if (r.health.status === 'active') {
+        healthBadge = `<span class="health-badge health-active" style="background: rgba(103, 194, 58, 0.15); color: #67c23a; border: 1px solid rgba(103, 194, 58, 0.3); padding: 2px 7px; border-radius: 10px; font-size: 11px; font-weight: 500;" title="Live seeders active right now">🟢 Active</span>`;
+      }
+    }
+
     return `
       <div class="search-card">
         <div class="search-info">
@@ -898,6 +912,7 @@ function renderSearchResults() {
             ${seedersHtml}
             ${leechersHtml}
             <span class="provider-badge ${tagClass}">${escapeHtml(r.provider)}</span>
+            ${healthBadge}
             ${fileCountBadge}
             ${scoreText}
           </div>
@@ -939,12 +954,18 @@ async function scrapeSwarmCard(idx, event) {
     if (data.seeders !== undefined && data.seeders >= 0) {
       result.seeders = data.seeders;
       result.leechers = data.leechers !== undefined ? data.leechers : 0;
+      result.health = {
+        status: data.seeders > 0 ? 'active' : 'dormant',
+        description: data.seeders > 0 ? `${data.seeders} live seeders active` : '0 seeders seen',
+        peak_window: data.seeders > 0 ? 'Active Now' : ''
+      };
     }
   } catch (err) {
     if (targetEl) {
       targetEl.innerHTML = `${ICONS.arrowUp}0 seeds`;
       result.seeders = 0;
       result.leechers = 0;
+      result.health = { status: 'dormant', description: 'Probe timed out (no responding peers)' };
     }
   }
   renderSearchResults();
@@ -1015,6 +1036,11 @@ async function openInspectModal(resultIdx) {
     if (data.seeders !== undefined && data.seeders >= 0) {
       result.seeders = data.seeders;
       result.leechers = data.leechers !== undefined ? data.leechers : 0;
+      result.health = {
+        status: data.seeders > 0 ? 'active' : 'dormant',
+        description: data.seeders > 0 ? `${data.seeders} live seeders active` : '0 seeders seen',
+        peak_window: data.seeders > 0 ? 'Active Now' : ''
+      };
     }
 
     currentInspectData = {

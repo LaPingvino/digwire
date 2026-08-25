@@ -18,12 +18,13 @@ import (
 )
 
 type DHTRecord struct {
-	InfoHash     string   `json:"info_hash"`
-	Name         string   `json:"name"`
-	SizeBytes    int64    `json:"size_bytes"`
-	NumFiles     int      `json:"num_files"`
-	DiscoveredAt int64    `json:"discovered_at"`
-	Files        []string `json:"files,omitempty"`
+	InfoHash     string         `json:"info_hash"`
+	Name         string         `json:"name"`
+	SizeBytes    int64          `json:"size_bytes"`
+	NumFiles     int            `json:"num_files"`
+	DiscoveredAt int64          `json:"discovered_at"`
+	Files        []string       `json:"files,omitempty"`
+	Activity     *SwarmActivity `json:"activity,omitempty"`
 }
 
 type Indexer struct {
@@ -144,6 +145,61 @@ func (idx *Indexer) GetRecord(infoHashHex string) *DHTRecord {
 	return idx.records[strings.ToLower(strings.TrimSpace(infoHashHex))]
 }
 
+// GetHealthPrediction evaluates historical swarm health for an infohash
+func (idx *Indexer) GetHealthPrediction(infoHashHex string) *HealthPrediction {
+	if idx == nil {
+		return nil
+	}
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	rec := idx.records[strings.ToLower(strings.TrimSpace(infoHashHex))]
+	if rec == nil || rec.Activity == nil {
+		return nil
+	}
+	return rec.Activity.PredictHealth()
+}
+
+// RecordSwarmActivity logs a temporal swarm probe/presence sample into the DHT record
+func (idx *Indexer) RecordSwarmActivity(infoHashHex string, name string, seeders int, peers int) {
+	if idx == nil {
+		return
+	}
+	infoHashHex = strings.ToLower(strings.TrimSpace(infoHashHex))
+	if len(infoHashHex) != 40 {
+		return
+	}
+
+	idx.mu.Lock()
+	rec := idx.records[infoHashHex]
+	if rec == nil {
+		rec = &DHTRecord{
+			InfoHash:     infoHashHex,
+			Name:         name,
+			DiscoveredAt: time.Now().Unix(),
+			Activity:     &SwarmActivity{},
+		}
+		idx.addRecordInMemory(rec)
+	}
+	if rec.Activity == nil {
+		rec.Activity = &SwarmActivity{}
+	}
+	if name != "" && rec.Name == "" {
+		rec.Name = name
+	}
+	rec.Activity.RecordSample(seeders, peers)
+	idx.mu.Unlock()
+
+	// Append updated record to disk
+	data, err := json.Marshal(rec)
+	if err == nil {
+		f, err := os.OpenFile(idx.filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err == nil {
+			_, _ = f.Write(append(data, '\n'))
+			_ = f.Close()
+		}
+	}
+}
+
 // AddRecord adds or updates a record and persists to disk
 func (idx *Indexer) AddRecord(rec *DHTRecord) {
 	if rec == nil || rec.InfoHash == "" || rec.Name == "" {
@@ -155,7 +211,11 @@ func (idx *Indexer) AddRecord(rec *DHTRecord) {
 	}
 
 	idx.mu.Lock()
-	if _, exists := idx.records[rec.InfoHash]; exists {
+	existing := idx.records[rec.InfoHash]
+	if existing != nil {
+		if rec.Activity != nil && existing.Activity == nil {
+			existing.Activity = rec.Activity
+		}
 		idx.mu.Unlock()
 		return
 	}

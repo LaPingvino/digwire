@@ -198,10 +198,23 @@ func (m *Manager) SearchAll(ctx context.Context, query string) []Result {
 		return combined[i].Score > combined[j].Score
 	})
 
-	// Auto-index discovered torrents into local DHT database
+	// Attach health predictions and log known swarm stats into DHT temporal history
 	m.mu.RLock()
 	locDHT := m.localDHT
 	m.mu.RUnlock()
+
+	if locDHT != nil && locDHT.indexer != nil {
+		for i := range combined {
+			if combined[i].InfoHash != "" {
+				combined[i].Health = locDHT.indexer.GetHealthPrediction(combined[i].InfoHash)
+				if combined[i].Seeders >= 0 {
+					locDHT.indexer.RecordSwarmActivity(combined[i].InfoHash, combined[i].Title, combined[i].Seeders, combined[i].Leechers)
+				}
+			}
+		}
+	}
+
+	// Auto-index discovered torrents into local DHT database
 	if locDHT != nil && locDHT.indexer != nil {
 		go func(items []Result) {
 			for _, item := range items {
@@ -210,7 +223,7 @@ func (m *Manager) SearchAll(ctx context.Context, query string) []Result {
 						InfoHash:     item.InfoHash,
 						Name:         item.Title,
 						SizeBytes:    item.SizeBytes,
-						NumFiles:     1,
+						NumFiles:     len(item.Files),
 						DiscoveredAt: time.Now().Unix(),
 					})
 				}

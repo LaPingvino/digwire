@@ -1437,6 +1437,10 @@ func (e *Engine) InspectMagnetMetadata(ctx context.Context, uriOrHash string) (*
 				leechers = 0
 			}
 
+			if e.dhtIndexer != nil {
+				e.dhtIndexer.RecordSwarmActivity(hash, info.BestName(), seeders, leechers)
+			}
+
 			return &InspectResult{
 				Name:      info.BestName(),
 				InfoHash:  hash,
@@ -1482,6 +1486,9 @@ func (e *Engine) ScrapeSwarm(ctx context.Context, uriOrHash string) (seeders int
 			if l < 0 {
 				l = 0
 			}
+			if e.dhtIndexer != nil {
+				e.dhtIndexer.RecordSwarmActivity(hash, "", s, l)
+			}
 			return s, l, nil
 		}
 	}
@@ -1524,6 +1531,9 @@ func (e *Engine) ScrapeSwarm(ctx context.Context, uriOrHash string) (seeders int
 		l := st.TotalPeers - s
 		if l < 0 {
 			l = 0
+		}
+		if e.dhtIndexer != nil {
+			e.dhtIndexer.RecordSwarmActivity(hash, "", s, l)
 		}
 		return s, l, nil
 	case <-ctx.Done():
