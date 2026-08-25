@@ -1,7 +1,7 @@
 # Maintainer: Joop Kiefte <joop@kiefte.eu>
 pkgname=digwire-git
 _pkgname=digwire
-pkgver=r37.f8a2430
+pkgver=r38.cf08581
 pkgrel=1
 pkgdesc="Modern hybrid BitTorrent swarm & multi-source web download manager with Libadwaita aesthetic"
 arch=('x86_64' 'aarch64' 'armv7h')
