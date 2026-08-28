@@ -173,6 +173,8 @@ function renderTorrents() {
     const isSeeding = t.state === 'seeding' || t.state === 'completed';
     const isMeta = t.state === 'metadata';
 
+    const isWebDownload = t.magnet_uri && (t.magnet_uri.startsWith('http://') || t.magnet_uri.startsWith('https://'));
+
     let metaString = `${formatBytes(t.completed_bytes)} of ${formatBytes(t.total_bytes)} (${t.progress.toFixed(1)}%)`;
     if (isMeta) {
       metaString = 'Downloading metadata from peers...';
@@ -184,9 +186,20 @@ function renderTorrents() {
     if (t.upload_rate > 0) {
       metaString += ` • ↑ ${formatSpeed(t.upload_rate)}`;
     }
-    metaString += ` • ${t.peers} peers`;
-    if (t.webseeds && t.webseeds.length > 0) {
-      metaString += ` • <span style="color: #57e389; font-weight: 600;">${ICONS.globe}${t.webseeds.length} WebSeed${t.webseeds.length > 1 ? 's' : ''}</span>`;
+    if (isWebDownload) {
+      const mirrorCount = t.webseeds && t.webseeds.length > 0 ? t.webseeds.length : (t.peers || 1);
+      metaString += ` • ${mirrorCount} mirror${mirrorCount !== 1 ? 's' : ''}`;
+    } else {
+      const seeds = t.seeders || 0;
+      const leechers = t.leechers !== undefined ? t.leechers : Math.max(0, (t.peers || 0) - seeds);
+      if (isSeeding) {
+        metaString += ` • ${leechers} peer${leechers !== 1 ? 's' : ''}`;
+      } else {
+        metaString += ` • ${seeds} seed${seeds !== 1 ? 's' : ''}, ${leechers} peer${leechers !== 1 ? 's' : ''}`;
+      }
+      if (t.webseeds && t.webseeds.length > 0) {
+        metaString += ` • <span style="color: #57e389; font-weight: 600;">${ICONS.globe}${t.webseeds.length} WebSeed${t.webseeds.length > 1 ? 's' : ''}</span>`;
+      }
     }
 
     let swarmBanner = '';
@@ -203,8 +216,6 @@ function renderTorrents() {
         </div>
       `;
     }
-
-    const isWebDownload = t.magnet_uri && (t.magnet_uri.startsWith('http://') || t.magnet_uri.startsWith('https://'));
 
     return `
       <div class="torrent-card">
@@ -483,6 +494,13 @@ function switchDetailTab(tab) {
 
         <span class="detail-label">Storage Path:</span>
         <span class="detail-val" style="font-family: monospace;">${currentDetailData.download_dir}</span>
+
+        <span class="detail-label">Connected Swarm:</span>
+        <span class="detail-val">
+          ${currentDetailData.seeders !== undefined ? 
+            `${currentDetailData.seeders} seed${currentDetailData.seeders !== 1 ? 's' : ''}, ${currentDetailData.leechers !== undefined ? currentDetailData.leechers : 0} peer${currentDetailData.leechers !== 1 ? 's' : ''} (${currentDetailData.total_peers || (currentDetailData.peers ? currentDetailData.peers.length : 0)} total connected)` : 
+            `${currentDetailData.peers ? currentDetailData.peers.length : 0} peers connected`}
+        </span>
 
         <span class="detail-label">Data Integrity:</span>
         <div>

@@ -277,6 +277,19 @@ func (idx *Indexer) crawlerWorker() {
 			case <-t.GotInfo():
 				info := t.Info()
 				if info != nil {
+					// Cache .torrent file to disk for instant zero-latency retrieval
+					configDir, _ := os.UserConfigDir()
+					if configDir != "" {
+						tDir := filepath.Join(configDir, "digwire", "torrents")
+						_ = os.MkdirAll(tDir, 0755)
+						tPath := filepath.Join(tDir, strings.ToLower(hashHex)+".torrent")
+						if f, err := os.Create(tPath); err == nil {
+							mi := t.Metainfo()
+							_ = mi.Write(f)
+							f.Close()
+						}
+					}
+
 					var fileNames []string
 					for _, f := range info.UpvertedFiles() {
 						fileNames = append(fileNames, f.DisplayPath(info))

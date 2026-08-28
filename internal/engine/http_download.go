@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -50,13 +51,46 @@ type HTTPTask struct {
 	ETASeconds     int64                  `json:"eta_seconds"`
 	SuggestedSwarm *SwarmSuggestion       `json:"suggested_swarm,omitempty"`
 	
-	chunkQueue     chan ChunkSpec         `json:"-"`
-	cancel         context.CancelFunc     `json:"-"`
-	lastCompleted  int64                  `json:"-"`
-	lastTime       time.Time              `json:"-"`
-	client         *http.Client           `json:"-"`
-	file           *os.File               `json:"-"`
-	activeWorkers  sync.WaitGroup         `json:"-"`
+	chunkQueue      chan ChunkSpec        `json:"-"`
+	completedChunks map[int64]bool        `json:"-"`
+	cancel          context.CancelFunc    `json:"-"`
+	lastCompleted   int64                 `json:"-"`
+	lastTime        time.Time             `json:"-"`
+	client          *http.Client          `json:"-"`
+	file            *os.File              `json:"-"`
+	activeWorkers   sync.WaitGroup        `json:"-"`
+}
+
+func getChunksManifestPath(partPath string) string {
+	return partPath + ".chunks"
+}
+
+func loadCompletedChunks(partPath string) map[int64]bool {
+	completed := make(map[int64]bool)
+	data, err := os.ReadFile(getChunksManifestPath(partPath))
+	if err != nil {
+		return completed
+	}
+	var indices []int64
+	if err := json.Unmarshal(data, &indices); err == nil {
+		for _, idx := range indices {
+			completed[idx] = true
+		}
+	}
+	return completed
+}
+
+func saveCompletedChunks(partPath string, completed map[int64]bool) {
+	indices := make([]int64, 0, len(completed))
+	for idx, ok := range completed {
+		if ok {
+			indices = append(indices, idx)
+		}
+	}
+	data, err := json.Marshal(indices)
+	if err == nil {
+		_ = os.WriteFile(getChunksManifestPath(partPath), data, 0644)
+	}
 }
 
 type HTTPManager struct {
@@ -254,29 +288,12 @@ func (t *HTTPTask) runDownload() {
 		numChunks := (totalBytes + chunkSize - 1) / chunkSize
 		t.chunkQueue = make(chan ChunkSpec, numChunks)
 
-		// Check already downloaded bytes on disk
+		// Load verified chunk manifest from disk
+		t.mu.Lock()
+		t.completedChunks = loadCompletedChunks(partPath)
+		t.mu.Unlock()
+
 		var alreadyDownloaded int64 = 0
-		if fi, err := file.Stat(); err == nil && fi.Size() > 0 {
-			alreadyDownloaded = fi.Size()
-			if alreadyDownloaded > totalBytes {
-				alreadyDownloaded = totalBytes
-			}
-		}
-
-		if alreadyDownloaded >= totalBytes {
-			_ = file.Sync()
-			file.Close()
-			_ = os.Rename(partPath, destPath)
-			t.mu.Lock()
-			t.State = "completed"
-			t.CompletedBytes = totalBytes
-			t.DownloadRate = 0
-			t.ETASeconds = 0
-			t.mu.Unlock()
-			return
-		}
-
-		// Populate chunk queue only with missing portions
 		for i := int64(0); i < numChunks; i++ {
 			start := i * chunkSize
 			end := start + chunkSize - 1
@@ -284,13 +301,14 @@ func (t *HTTPTask) runDownload() {
 				end = totalBytes - 1
 			}
 
-			// If chunk is already fully present on disk
-			if end < alreadyDownloaded {
+			// Only skip chunks that are verified in the manifest
+			t.mu.Lock()
+			isDone := t.completedChunks[i]
+			t.mu.Unlock()
+
+			if isDone {
+				alreadyDownloaded += (end - start + 1)
 				continue
-			}
-			// If partial chunk overlap, adjust start
-			if start < alreadyDownloaded {
-				start = alreadyDownloaded
 			}
 
 			t.chunkQueue <- ChunkSpec{
@@ -300,6 +318,20 @@ func (t *HTTPTask) runDownload() {
 			}
 		}
 		atomic.StoreInt64(&t.CompletedBytes, alreadyDownloaded)
+
+		if alreadyDownloaded >= totalBytes {
+			_ = file.Sync()
+			file.Close()
+			_ = os.Rename(partPath, destPath)
+			_ = os.Remove(getChunksManifestPath(partPath))
+			t.mu.Lock()
+			t.State = "completed"
+			t.CompletedBytes = totalBytes
+			t.DownloadRate = 0
+			t.ETASeconds = 0
+			t.mu.Unlock()
+			return
+		}
 
 		t.mu.RLock()
 		mirrors := make([]string, len(t.Mirrors))
@@ -314,7 +346,7 @@ func (t *HTTPTask) runDownload() {
 		for _, m := range mirrors {
 			for w := 0; w < workersPerMirror; w++ {
 				t.activeWorkers.Add(1)
-				go t.mirrorWorker(ctx, m)
+				go t.mirrorWorker(ctx, m, partPath)
 			}
 		}
 
@@ -328,6 +360,7 @@ func (t *HTTPTask) runDownload() {
 				_ = file.Sync()
 				file.Close()
 				_ = os.Rename(partPath, destPath)
+				_ = os.Remove(getChunksManifestPath(partPath))
 				t.mu.Lock()
 				t.State = "completed"
 				t.DownloadRate = 0
@@ -341,7 +374,7 @@ func (t *HTTPTask) runDownload() {
 	}
 }
 
-func (t *HTTPTask) mirrorWorker(ctx context.Context, mirrorURL string) {
+func (t *HTTPTask) mirrorWorker(ctx context.Context, mirrorURL, partPath string) {
 	defer t.activeWorkers.Done()
 
 	buf := make([]byte, 128*1024)
@@ -411,7 +444,16 @@ func (t *HTTPTask) mirrorWorker(ctx context.Context, mirrorURL string) {
 			}
 			resp.Body.Close()
 
-			if !success && offset <= chunk.End {
+			if success && offset > chunk.End {
+				// Record chunk completion into manifest
+				t.mu.Lock()
+				if t.completedChunks == nil {
+					t.completedChunks = make(map[int64]bool)
+				}
+				t.completedChunks[chunk.Index] = true
+				saveCompletedChunks(partPath, t.completedChunks)
+				t.mu.Unlock()
+			} else {
 				// Requeue remaining segment
 				select {
 				case t.chunkQueue <- ChunkSpec{
@@ -553,9 +595,10 @@ func (t *HTTPTask) AddMirror(mirrorURL string) {
 	// If actively downloading with range support, launch workers for the new mirror immediately!
 	if t.State == "downloading" && t.chunkQueue != nil && t.cancel != nil {
 		ctx, _ := context.WithCancel(context.Background())
+		partPath := t.DestPath + ".part"
 		for w := 0; w < 2; w++ {
 			t.activeWorkers.Add(1)
-			go t.mirrorWorker(ctx, mirrorURL)
+			go t.mirrorWorker(ctx, mirrorURL, partPath)
 		}
 	}
 }

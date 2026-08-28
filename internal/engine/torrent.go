@@ -67,6 +67,7 @@ type TorrentStatus struct {
 	ETASeconds     int64    `json:"eta_seconds"`
 	State          string           `json:"state"` // "downloading", "seeding", "paused", "metadata", "completed"
 	Seeders        int              `json:"seeders"`
+	Leechers       int              `json:"leechers"`
 	Peers          int              `json:"peers"`
 	Files          []string         `json:"files,omitempty"`
 	AddedAt        int64            `json:"added_at"`
@@ -99,6 +100,9 @@ type TorrentDetails struct {
 	NumPieces      int                 `json:"num_pieces"`
 	DownloadDir    string              `json:"download_dir"`
 	State          string              `json:"state"`
+	Seeders        int                 `json:"seeders"`
+	Leechers       int                 `json:"leechers"`
+	TotalPeers     int                 `json:"total_peers"`
 	Files          []TorrentFileDetail `json:"files"`
 	Peers          []PeerDetail        `json:"peers"`
 	Trackers       []string            `json:"trackers"`
@@ -228,6 +232,39 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 	tConfig.NoDHT = !cfg.EnableDHT
 	tConfig.PeriodicallyAnnounceTorrentsToDht = true
 	tConfig.ListenPort = cfg.ListenPort
+
+	// BEP 10 / BEP 20 Protocol Identity & Extension Handshake
+	tConfig.ExtendedHandshakeClientVersion = "Digwire 0.2.1"
+	tConfig.Bep20 = "-DW0201-"
+
+	// Swarm Altruism & Reliable Metadata Exchange (BEP 9 / ut_metadata)
+	tConfig.Seed = true
+	tConfig.AcceptPeerConnections = true
+	tConfig.AlwaysWantConns = true
+	tConfig.NoDefaultPortForwarding = false
+	tConfig.UpnpID = "digwire"
+
+	// High-Availability DHT Bootstrap Routers
+	tConfig.DhtStartingNodes = func(network string) dht.StartingNodesGetter {
+		return func() ([]dht.Addr, error) {
+			custom := []string{
+				"router.bittorrent.com:6881",
+				"dht.transmissionbt.com:6881",
+				"dht.libtorrent.org:25401",
+				"router.utorrent.com:6881",
+				"dht.aelitis.com:6881",
+			}
+			addrs, _ := dht.ResolveHostPorts(custom)
+			defAddrs, _ := dht.GlobalBootstrapAddrs(network)
+			return append(addrs, defAddrs...), nil
+		}
+	}
+
+	// Active DHT Node (participates in routing, replies to queries from other nodes)
+	tConfig.ConfigureAnacrolixDhtServer = func(dhtCfg *dht.ServerConfig) {
+		dhtCfg.Passive = false
+		dhtCfg.WaitToReply = false
+	}
 
 	// 1/1 Gbps High-Throughput & Low-Latency Tuning
 	tConfig.EstablishedConnsPerTorrent = 250
@@ -432,12 +469,16 @@ func (e *Engine) loadSession() {
 			e.webSeedsMap[hash] = SanitizeWebSeeds(item.WebSeeds, false)
 		}
 
+		if item.IsPaused {
+			t.DisallowDataDownload()
+		}
+
 		go func(tor *torrent.Torrent, seeds []string, isPaused bool, h string) {
 			<-tor.GotInfo()
 			// Persist .torrent metadata to cache folder so subsequent restarts never lose metadata or piece info
 			e.saveTorrentMetainfo(tor)
 
-			// Adopt any partial/remnant local files (.part, .crdownload, wget partials) into layout
+			// Adopt any external partial/remnant local files (.crdownload, wget partials) into layout
 			e.AdoptExistingLocalProgress(tor)
 
 			// Cryptographically verify existing local pieces on disk before downloading
@@ -458,18 +499,6 @@ func (e *Engine) loadSession() {
 			e.saveSessionLocked()
 			e.mu.Unlock()
 		}(t, item.WebSeeds, item.IsPaused, hash)
-
-		if !item.IsPaused {
-			if t.Info() != nil {
-				go func(tor *torrent.Torrent) {
-					e.AdoptExistingLocalProgress(tor)
-					_ = tor.VerifyData()
-					tor.DownloadAll()
-				}(t)
-			}
-		} else {
-			t.DisallowDataDownload()
-		}
 	}
 
 	// Restore HTTP downloads
@@ -887,15 +916,18 @@ func (e *Engine) AdoptExistingLocalProgress(tor *torrent.Torrent) {
 	for _, f := range info.UpvertedFiles() {
 		displayPath := f.DisplayPath(info)
 		targetPath := filepath.Join(baseDownloadDir, displayPath)
+		partPath := targetPath + ".part"
 
-		// If target file already exists and has size > 0, keep it for VerifyData()
+		// If target file or its native .part file already exists, anacrolix/torrent will verify it
 		if fi, err := os.Stat(targetPath); err == nil && fi.Size() > 0 {
 			continue
 		}
+		if fi, err := os.Stat(partPath); err == nil && fi.Size() > 0 {
+			continue
+		}
 
-		// Candidate partial extensions and fallback locations
+		// Candidate external partial extensions and fallback locations
 		candidates := []string{
-			targetPath + ".part",
 			targetPath + ".crdownload",
 			targetPath + ".download",
 			targetPath + ".tmp",
@@ -914,13 +946,16 @@ func (e *Engine) AdoptExistingLocalProgress(tor *torrent.Torrent) {
 			)
 		}
 
-		// Check all candidate locations
+		// Check external candidates and adopt into partPath (or targetPath if full size)
 		for _, cand := range candidates {
 			fi, err := os.Stat(cand)
 			if err == nil && !fi.IsDir() && fi.Size() > 0 {
 				_ = os.MkdirAll(filepath.Dir(targetPath), 0755)
-				// Move / rename candidate file to expected torrent path
-				if err := os.Rename(cand, targetPath); err == nil {
+				dest := partPath
+				if fi.Size() == f.Length {
+					dest = targetPath
+				}
+				if err := os.Rename(cand, dest); err == nil {
 					break
 				}
 			}
@@ -1123,6 +1158,13 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 		magURI = AppendWebSeedsToMagnet(SuperchargeMagnet(magURI), webseeds)
 		webConns := t.WebseedPeerConns()
 
+		seeders := stats.ConnectedSeeders + len(webConns)
+		leechers := stats.ActivePeers - stats.ConnectedSeeders
+		if leechers < 0 {
+			leechers = 0
+		}
+		totalPeers := stats.ActivePeers + len(webConns)
+
 		statuses = append(statuses, TorrentStatus{
 			InfoHash:       hash,
 			Name:           name,
@@ -1134,8 +1176,9 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 			UploadRate:     ulRate,
 			ETASeconds:     eta,
 			State:          state,
-			Seeders:        stats.ConnectedSeeders + len(webConns),
-			Peers:          stats.ActivePeers + len(webConns),
+			Seeders:        seeders,
+			Leechers:       leechers,
+			Peers:          totalPeers,
 			Files:          files,
 			AddedAt:        addedAt,
 			WebSeeds:       webseeds,
@@ -1231,6 +1274,9 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 				},
 			},
 			Peers:          peerDetails,
+			Seeders:        len(task.Mirrors),
+			Leechers:       0,
+			TotalPeers:     len(task.Mirrors),
 			WebSeeds:       task.Mirrors,
 			CreatedBy:      "Multi-Source HTTP Downloader",
 			SuggestedSwarm: task.SuggestedSwarm,
@@ -1310,6 +1356,15 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 			webseeds := e.webSeedsMap[hashHex]
 			magURI = AppendWebSeedsToMagnet(SuperchargeMagnet(magURI), webseeds)
 
+			st := t.Stats()
+			webConns := t.WebseedPeerConns()
+			sCount := st.ConnectedSeeders + len(webConns)
+			lCount := st.ActivePeers - st.ConnectedSeeders
+			if lCount < 0 {
+				lCount = 0
+			}
+			totPeers := st.ActivePeers + len(webConns)
+
 			return &TorrentDetails{
 				InfoHash:       hashHex,
 				Name:           name,
@@ -1321,6 +1376,9 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 				NumPieces:      numPieces,
 				DownloadDir:    e.cfg.DownloadDir,
 				State:          t.String(),
+				Seeders:        sCount,
+				Leechers:       lCount,
+				TotalPeers:     totPeers,
 				Files:          files,
 				Peers:          peerDetails,
 				Trackers:       trackers,
@@ -1670,6 +1728,7 @@ func (e *Engine) InspectMagnetMetadata(ctx context.Context, uriOrHash string) (*
 			if info == nil {
 				return nil, fmt.Errorf("failed to extract metadata")
 			}
+			e.saveTorrentMetainfo(t)
 			var files []TorrentFileDetail
 			var fileNames []string
 			for idx, f := range info.UpvertedFiles() {
