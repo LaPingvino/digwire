@@ -306,7 +306,7 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 		WriteBufferSize:       64 * 1024,
 	}
 
-	// Persistent Piece Completion Database (stores verified SHA-1 piece hashes on disk across restarts)
+	// Persistent SQLite Piece Completion Database (.torrent.db, stores verified SHA-1 piece hashes on disk across restarts)
 	configDir, _ := os.UserConfigDir()
 	var pieceCompDir string
 	if configDir != "" {

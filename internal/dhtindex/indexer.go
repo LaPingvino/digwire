@@ -3,6 +3,7 @@ package dhtindex
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/anacrolix/torrent"
+	_ "modernc.org/sqlite"
 )
 
 type DHTRecord struct {
@@ -31,7 +33,7 @@ type Indexer struct {
 	mu           sync.RWMutex
 	records      map[string]*DHTRecord
 	tokenIndex   map[string]map[string]bool // token -> set of infohashes
-	filePath     string
+	db           *sql.DB
 	crawlQueue   chan string
 	seenCrawl    map[string]bool
 	client       *torrent.Client
@@ -63,19 +65,57 @@ func NewIndexer(client *torrent.Client) (*Indexer, error) {
 	}
 	appDir := filepath.Join(configDir, "digwire")
 	_ = os.MkdirAll(appDir, 0755)
-	dbPath := filepath.Join(appDir, "dht_index.jsonl")
+
+	sqlitePath := filepath.Join(appDir, "dht_index.sqlite")
+	db, err := sql.Open("sqlite", sqlitePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open sqlite index: %w", err)
+	}
+
+	// Optimize SQLite for concurrent DHT indexing
+	_, _ = db.Exec("PRAGMA journal_mode = WAL;")
+	_, _ = db.Exec("PRAGMA busy_timeout = 5000;")
+	_, _ = db.Exec("PRAGMA synchronous = NORMAL;")
+
+	schema := `
+	CREATE TABLE IF NOT EXISTS dht_records (
+		info_hash TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		size_bytes INTEGER DEFAULT 0,
+		num_files INTEGER DEFAULT 0,
+		discovered_at INTEGER NOT NULL,
+		files_json TEXT DEFAULT '[]',
+		activity_json TEXT DEFAULT '{}',
+		last_seeders INTEGER DEFAULT 0,
+		last_peers INTEGER DEFAULT 0,
+		last_seen_healthy INTEGER DEFAULT 0
+	);
+	CREATE INDEX IF NOT EXISTS idx_dht_name ON dht_records(name);
+	CREATE INDEX IF NOT EXISTS idx_dht_discovered ON dht_records(discovered_at DESC);
+	`
+	if _, err := db.Exec(schema); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to initialize sqlite schema: %w", err)
+	}
 
 	idx := &Indexer{
 		records:    make(map[string]*DHTRecord),
 		tokenIndex: make(map[string]map[string]bool),
-		filePath:   dbPath,
+		db:         db,
 		crawlQueue: make(chan string, 10000),
 		seenCrawl:  make(map[string]bool),
 		client:     client,
 		stopChan:   make(chan struct{}),
 	}
 
-	idx.loadFromDisk()
+	// Auto-migrate legacy dht_index.jsonl if present
+	legacyJSONL := filepath.Join(appDir, "dht_index.jsonl")
+	if _, err := os.Stat(legacyJSONL); err == nil {
+		idx.migrateJSONL(legacyJSONL)
+		_ = os.Rename(legacyJSONL, legacyJSONL+".migrated")
+	}
+
+	idx.loadFromSQLite()
 
 	// Launch concurrent crawler worker pool (8 workers)
 	for i := 0; i < 8; i++ {
@@ -95,8 +135,8 @@ func NewIndexer(client *torrent.Client) (*Indexer, error) {
 	return idx, nil
 }
 
-func (idx *Indexer) loadFromDisk() {
-	file, err := os.Open(idx.filePath)
+func (idx *Indexer) migrateJSONL(jsonlPath string) {
+	file, err := os.Open(jsonlPath)
 	if err != nil {
 		return
 	}
@@ -106,6 +146,32 @@ func (idx *Indexer) loadFromDisk() {
 	buf := make([]byte, 1024*1024)
 	scanner.Buffer(buf, 10*1024*1024)
 
+	tx, err := idx.db.Begin()
+	if err != nil {
+		return
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+	INSERT INTO dht_records (
+		info_hash, name, size_bytes, num_files, discovered_at, files_json, activity_json,
+		last_seeders, last_peers, last_seen_healthy
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(info_hash) DO UPDATE SET
+		name = CASE WHEN excluded.name != '' THEN excluded.name ELSE dht_records.name END,
+		size_bytes = CASE WHEN excluded.size_bytes > 0 THEN excluded.size_bytes ELSE dht_records.size_bytes END,
+		num_files = CASE WHEN excluded.num_files > 0 THEN excluded.num_files ELSE dht_records.num_files END,
+		files_json = CASE WHEN excluded.files_json != '[]' THEN excluded.files_json ELSE dht_records.files_json END,
+		activity_json = excluded.activity_json,
+		last_seeders = excluded.last_seeders,
+		last_peers = excluded.last_peers,
+		last_seen_healthy = CASE WHEN excluded.last_seen_healthy > 0 THEN excluded.last_seen_healthy ELSE dht_records.last_seen_healthy END;
+	`)
+	if err != nil {
+		return
+	}
+	defer stmt.Close()
+
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
@@ -113,8 +179,50 @@ func (idx *Indexer) loadFromDisk() {
 		}
 		var rec DHTRecord
 		if err := json.Unmarshal(line, &rec); err == nil && rec.InfoHash != "" {
-			idx.addRecordInMemory(&rec)
+			filesJSON, _ := json.Marshal(rec.Files)
+			activityJSON, _ := json.Marshal(rec.Activity)
+			var lastSeeders, lastPeers int
+			var lastSeenHealthy int64
+			if rec.Activity != nil {
+				lastSeeders = rec.Activity.LastSeeders
+				lastPeers = rec.Activity.LastPeers
+				lastSeenHealthy = rec.Activity.LastSeenHealthy
+			}
+			_, _ = stmt.Exec(
+				strings.ToLower(rec.InfoHash), rec.Name, rec.SizeBytes, rec.NumFiles, rec.DiscoveredAt,
+				string(filesJSON), string(activityJSON), lastSeeders, lastPeers, lastSeenHealthy,
+			)
 		}
+	}
+	_ = tx.Commit()
+}
+
+func (idx *Indexer) loadFromSQLite() {
+	if idx.db == nil {
+		return
+	}
+	rows, err := idx.db.Query(`
+		SELECT info_hash, name, size_bytes, num_files, discovered_at, files_json, activity_json
+		FROM dht_records
+	`)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var rec DHTRecord
+		var filesStr, actStr string
+		if err := rows.Scan(&rec.InfoHash, &rec.Name, &rec.SizeBytes, &rec.NumFiles, &rec.DiscoveredAt, &filesStr, &actStr); err != nil {
+			continue
+		}
+		if filesStr != "" && filesStr != "null" {
+			_ = json.Unmarshal([]byte(filesStr), &rec.Files)
+		}
+		if actStr != "" && actStr != "null" && actStr != "{}" {
+			_ = json.Unmarshal([]byte(actStr), &rec.Activity)
+		}
+		idx.addRecordInMemory(&rec)
 	}
 }
 
@@ -189,15 +297,7 @@ func (idx *Indexer) RecordSwarmActivity(infoHashHex string, name string, seeders
 	rec.Activity.RecordSample(seeders, peers)
 	idx.mu.Unlock()
 
-	// Append updated record to disk
-	data, err := json.Marshal(rec)
-	if err == nil {
-		f, err := os.OpenFile(idx.filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-		if err == nil {
-			_, _ = f.Write(append(data, '\n'))
-			_ = f.Close()
-		}
-	}
+	idx.saveRecordToSQLite(rec)
 }
 
 // AddRecord adds or updates a record and persists to disk
@@ -222,15 +322,43 @@ func (idx *Indexer) AddRecord(rec *DHTRecord) {
 	idx.addRecordInMemory(rec)
 	idx.mu.Unlock()
 
-	// Append to disk file
-	data, err := json.Marshal(rec)
-	if err == nil {
-		f, err := os.OpenFile(idx.filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-		if err == nil {
-			_, _ = f.Write(append(data, '\n'))
-			_ = f.Close()
-		}
+	idx.saveRecordToSQLite(rec)
+}
+
+func (idx *Indexer) saveRecordToSQLite(rec *DHTRecord) {
+	if idx.db == nil || rec == nil {
+		return
 	}
+	filesJSON, _ := json.Marshal(rec.Files)
+	activityJSON, _ := json.Marshal(rec.Activity)
+
+	var lastSeeders, lastPeers int
+	var lastSeenHealthy int64
+	if rec.Activity != nil {
+		lastSeeders = rec.Activity.LastSeeders
+		lastPeers = rec.Activity.LastPeers
+		lastSeenHealthy = rec.Activity.LastSeenHealthy
+	}
+
+	query := `
+	INSERT INTO dht_records (
+		info_hash, name, size_bytes, num_files, discovered_at, files_json, activity_json,
+		last_seeders, last_peers, last_seen_healthy
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(info_hash) DO UPDATE SET
+		name = CASE WHEN excluded.name != '' THEN excluded.name ELSE dht_records.name END,
+		size_bytes = CASE WHEN excluded.size_bytes > 0 THEN excluded.size_bytes ELSE dht_records.size_bytes END,
+		num_files = CASE WHEN excluded.num_files > 0 THEN excluded.num_files ELSE dht_records.num_files END,
+		files_json = CASE WHEN excluded.files_json != '[]' THEN excluded.files_json ELSE dht_records.files_json END,
+		activity_json = excluded.activity_json,
+		last_seeders = excluded.last_seeders,
+		last_peers = excluded.last_peers,
+		last_seen_healthy = CASE WHEN excluded.last_seen_healthy > 0 THEN excluded.last_seen_healthy ELSE dht_records.last_seen_healthy END;
+	`
+	_, _ = idx.db.Exec(query,
+		rec.InfoHash, rec.Name, rec.SizeBytes, rec.NumFiles, rec.DiscoveredAt,
+		string(filesJSON), string(activityJSON), lastSeeders, lastPeers, lastSeenHealthy,
+	)
 }
 
 // QueueCrawl adds an infohash to the crawler worker queue
@@ -435,5 +563,8 @@ func (idx *Indexer) Size() int {
 func (idx *Indexer) Close() {
 	idx.closeOnce.Do(func() {
 		close(idx.stopChan)
+		if idx.db != nil {
+			_ = idx.db.Close()
+		}
 	})
 }

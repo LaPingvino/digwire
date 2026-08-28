@@ -104,7 +104,8 @@ func (p *BitSearchProvider) Search(ctx context.Context, query string) ([]Result,
 			continue
 		}
 
-		seeders := 10
+		seeders := -1
+		leechers := -1
 		score := CalculateRelevance(query, title, seeders, p.weight)
 
 		results = append(results, Result{
@@ -113,7 +114,7 @@ func (p *BitSearchProvider) Search(ctx context.Context, query string) ([]Result,
 			MagnetURI:    rawMagnet,
 			SizeBytes:    0,
 			Seeders:      seeders,
-			Leechers:     1,
+			Leechers:     leechers,
 			Provider:     p.name,
 			ProviderType: "bitsearch",
 			Score:        score,
