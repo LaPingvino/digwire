@@ -35,6 +35,7 @@ type SavedTorrent struct {
 	MagnetURI      string   `json:"magnet_uri"`
 	Name           string   `json:"name"`
 	IsPaused       bool     `json:"is_paused"`
+	IsSeeding      bool     `json:"is_seeding,omitempty"`
 	AddedAt        int64    `json:"added_at"`
 	WebSeeds       []string `json:"webseeds"`
 	TotalBytes     int64    `json:"total_bytes,omitempty"`
@@ -145,6 +146,7 @@ type rateTracker struct {
 	lastSampleTime      time.Time
 	addedAt             int64
 	isPaused            bool
+	isSeeding           bool
 	isVerifying         bool
 	displayName         string
 	savedTotalBytes     int64
@@ -155,6 +157,7 @@ type rateTracker struct {
 type Engine struct {
 	mu          sync.RWMutex
 	client      *torrent.Client
+	pieceComp   storage.PieceCompletion
 	httpManager *HTTPManager
 	searchMgr   *search.Manager
 	dhtIndexer  *dhtindex.Indexer
@@ -356,6 +359,7 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 
 	e := &Engine{
 		client:      client,
+		pieceComp:   pieceCompletion,
 		httpManager: NewHTTPManager(cfg.DownloadDir),
 		dhtIndexer:  dhtIdx,
 		cfg:         cfg,
@@ -410,11 +414,14 @@ func (e *Engine) saveSessionLocked() {
 		mag := fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", hash, url.QueryEscape(name))
 		mag = AppendWebSeedsToMagnet(SuperchargeMagnet(mag), webseeds)
 
+		isSeeding := tr.isSeeding || (totalBytes > 0 && completedBytes >= totalBytes) || t.Seeding()
+
 		list = append(list, SavedTorrent{
 			InfoHash:       hash,
 			MagnetURI:      mag,
 			Name:           name,
 			IsPaused:       isPaused,
+			IsSeeding:      isSeeding,
 			AddedAt:        addedAt,
 			WebSeeds:       webseeds,
 			TotalBytes:     totalBytes,
@@ -497,6 +504,11 @@ func (e *Engine) loadSession() {
 			hash = t.InfoHash().HexString()
 		}
 
+		// Immediately disallow data download so no incoming peer data is requested or written
+		// before data is verified! This prevents redundant downloads or race conditions on restart.
+		t.DisallowDataDownload()
+		t.AllowDataUpload()
+
 		// Inject tier-1 trackers
 		t.AddTrackers(GetTier1TrackerList())
 
@@ -517,10 +529,13 @@ func (e *Engine) loadSession() {
 			}
 		}
 
+		isSeeding := item.IsSeeding || (item.TotalBytes > 0 && item.CompletedBytes >= item.TotalBytes)
+
 		e.rateMap[hash] = &rateTracker{
 			lastTime:            time.Now(),
 			addedAt:             item.AddedAt,
 			isPaused:            item.IsPaused,
+			isSeeding:           isSeeding,
 			displayName:         item.Name,
 			savedTotalBytes:     item.TotalBytes,
 			savedCompletedBytes: savedCompleted,
@@ -634,7 +649,13 @@ func (e *Engine) monitorLoop() {
 					tracker.peakDLRate = tracker.downloadRate
 				}
 
-				isSeeding := t.Seeding() || (t.Length() > 0 && t.BytesCompleted() >= t.Length())
+				isSeeding := t.Seeding() || (t.Length() > 0 && t.BytesCompleted() >= t.Length()) || tracker.isSeeding
+				if isSeeding && !tracker.isSeeding {
+					tracker.isSeeding = true
+					t.DisallowDataDownload()
+					t.AllowDataUpload()
+					e.saveSessionLocked()
+				}
 
 				// Periodically sample swarm presence into DHT indexer (every 60 seconds)
 				if now.Sub(tracker.lastSampleTime) >= 60*time.Second {
@@ -704,12 +725,7 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 		e.saveSessionLocked()
 		e.mu.Unlock()
 
-		go func(tor *torrent.Torrent) {
-			<-tor.GotInfo()
-			e.AdoptExistingLocalProgress(tor)
-			_ = tor.VerifyData()
-			tor.DownloadAll()
-		}(t)
+		e.ConsolidateAndVerify(t)
 		return t, nil
 	}
 
@@ -924,7 +940,15 @@ func (e *Engine) CreateTorrent(sourcePath, comment string) (string, string, erro
 		})
 	}
 
-	e.initTracker(hash)
+	e.initTracker(hash, torrentName)
+	if tr := e.rateMap[hash]; tr != nil {
+		tr.isSeeding = true
+		tr.savedTotalBytes = info.TotalLength()
+		tr.savedCompletedBytes = info.TotalLength()
+	}
+	t.DisallowDataDownload()
+	t.AllowDataUpload()
+	_ = t.VerifyData()
 	e.saveSessionLocked()
 	return hash, magnetURI, nil
 }
@@ -962,16 +986,13 @@ func (e *Engine) CreateWebBridgeTorrent(ctx context.Context, fileURL string, mir
 
 		go func(tor *torrent.Torrent, seeds []string) {
 			<-tor.GotInfo()
-			e.saveTorrentMetainfo(tor)
-			e.AdoptExistingLocalProgress(tor)
-			_ = tor.VerifyData()
 			if len(seeds) > 0 && tor.Info() != nil {
 				clean := SanitizeWebSeeds(seeds, tor.Info().IsDir())
 				if len(clean) > 0 {
 					tor.AddWebSeeds(clean)
 				}
 			}
-			tor.DownloadAll()
+			e.ConsolidateAndVerify(tor)
 		}(t, cleanMirrors)
 
 		mag := AppendWebSeedsToMagnet(SuperchargeMagnet(sugg.MagnetURI), cleanMirrors)
@@ -1103,19 +1124,39 @@ func (e *Engine) ConsolidateAndVerify(tor *torrent.Torrent, onComplete ...func()
 
 		// 5. Post-verification state alignment
 		e.mu.Lock()
+		bComp := tor.BytesCompleted()
+		tLen := tor.Length()
+		isComplete := (tLen > 0 && bComp >= tLen)
+
 		if tr := e.rateMap[hash]; tr != nil {
 			tr.isVerifying = false
-			tr.savedTotalBytes = tor.Length()
-			tr.savedCompletedBytes = tor.BytesCompleted()
-			if !tr.isPaused {
+			tr.savedTotalBytes = tLen
+			tr.savedCompletedBytes = bComp
+			if isComplete {
+				tr.isSeeding = true
+			} else if !isComplete && bComp < tLen {
+				tr.isSeeding = false
+			}
+
+			if isComplete {
+				// 100% complete: seed to the swarm, do not download
+				tor.DisallowDataDownload()
+				tor.AllowDataUpload()
+			} else if !tr.isPaused {
+				// Has missing pieces and not paused: resume downloading
 				tor.AllowDataDownload()
 				tor.DownloadAll()
 			} else {
 				tor.DisallowDataDownload()
 			}
 		} else {
-			tor.AllowDataDownload()
-			tor.DownloadAll()
+			if isComplete {
+				tor.DisallowDataDownload()
+				tor.AllowDataUpload()
+			} else {
+				tor.AllowDataDownload()
+				tor.DownloadAll()
+			}
 		}
 		e.saveSessionLocked()
 		e.mu.Unlock()
@@ -1278,7 +1319,7 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 				state = "verifying"
 			} else if isPaused {
 				state = "paused"
-			} else if completedBytes >= totalBytes && totalBytes > 0 {
+			} else if (completedBytes >= totalBytes && totalBytes > 0) || tracker.isSeeding {
 				state = "seeding"
 			} else {
 				state = "downloading"
@@ -1313,7 +1354,7 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 		magURI := fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", hash, url.QueryEscape(name))
 		magURI = AppendWebSeedsToMagnet(SuperchargeMagnet(magURI), webseeds)
 		webConns := t.WebseedPeerConns()
-		isSeeding := state == "seeding" || state == "completed" || (totalBytes > 0 && completedBytes >= totalBytes)
+		isSeeding := state == "seeding" || state == "completed" || (totalBytes > 0 && completedBytes >= totalBytes) || (tracker != nil && tracker.isSeeding)
 
 		seeders := stats.ConnectedSeeders + len(webConns)
 		if isSeeding {
@@ -1629,7 +1670,7 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 			webConns := t.WebseedPeerConns()
 			tr := e.rateMap[strings.ToLower(hashHex)]
 
-			isSeeding := (totalBytes > 0 && completedBytes >= totalBytes) || t.Seeding()
+			isSeeding := (totalBytes > 0 && completedBytes >= totalBytes) || t.Seeding() || (tr != nil && tr.isSeeding)
 			if tr != nil && tr.savedTotalBytes > 0 && tr.savedCompletedBytes >= tr.savedTotalBytes {
 				isSeeding = true
 			}
@@ -1696,7 +1737,9 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 			})
 
 			displayState := "downloading"
-			if isSeeding {
+			if tr != nil && tr.isVerifying {
+				displayState = "verifying"
+			} else if isSeeding {
 				displayState = "seeding"
 			} else if tr != nil && tr.isPaused {
 				displayState = "paused"
@@ -2015,6 +2058,9 @@ func (e *Engine) Close() {
 		}
 		close(e.stopMonitor)
 		e.client.Close()
+		if e.pieceComp != nil {
+			_ = e.pieceComp.Close()
+		}
 	})
 }
 
