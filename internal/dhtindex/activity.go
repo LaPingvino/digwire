@@ -55,6 +55,14 @@ func (a *SwarmActivity) RecordSample(seeders, peers int, timestamp ...time.Time)
 	}
 }
 
+// UptimeDutyCycle returns the observed fraction (0.0 to 1.0) of checks where seeders/peers were active
+func (a *SwarmActivity) UptimeDutyCycle() float64 {
+	if a == nil || a.TotalSamples == 0 {
+		return 0
+	}
+	return float64(a.HealthySamples) / float64(a.TotalSamples)
+}
+
 // PredictHealth evaluates the activity histogram and predicts when the swarm is most active
 func (a *SwarmActivity) PredictHealth() *HealthPrediction {
 	if a == nil || a.TotalSamples == 0 {

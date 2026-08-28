@@ -187,6 +187,11 @@ function renderTorrents() {
       metaString += ` • ↓ ${formatSpeed(t.download_rate)}`;
       const eta = formatETA(t.eta_seconds);
       if (eta) metaString += ` • ETA: ${eta}`;
+    } else if (!isSeeding && !isPaused && t.progress < 100 && t.availability_eta) {
+      const qTooltip = t.qualifier ? 
+        (t.qualifier.description + (t.qualifier.easter_egg ? '\n\n💡 ' + t.qualifier.easter_egg : '')) : 
+        'Projected completion based on seeder duty cycle';
+      metaString += ` • <span style="color: #62a0ea; font-weight: 500;" title="${escapeHtml(qTooltip)}">⏳ Proj. ETA: ${t.availability_eta}</span>`;
     }
     if (t.upload_rate > 0) {
       metaString += ` • ↑ ${formatSpeed(t.upload_rate)}`;
@@ -222,11 +227,20 @@ function renderTorrents() {
       `;
     }
 
+    const qualifierHtml = t.qualifier ? `
+      <span class="torrent-badge badge-qualifier badge-qualifier-${t.qualifier.class}" title="${escapeHtml(t.qualifier.description + (t.qualifier.easter_egg ? '\n\n💡 ' + t.qualifier.easter_egg : ''))}">
+        ${t.qualifier.label}
+      </span>
+    ` : '';
+
     return `
       <div class="torrent-card" ondblclick="openTorrentTarget('${t.info_hash}')" title="Double-click to open downloaded files">
         <div class="card-header">
           <div class="torrent-title" title="${t.name}" style="cursor: pointer;" onclick="openDetailsModal('${t.info_hash}')">${t.name}</div>
-          <span class="torrent-badge badge-${t.state}">${t.state}</span>
+          <div style="display: flex; gap: 6px; align-items: center;">
+            ${qualifierHtml}
+            <span class="torrent-badge badge-${t.state}">${t.state}</span>
+          </div>
         </div>
 
         <div class="progress-bar-container" style="cursor: pointer;" onclick="openDetailsModal('${t.info_hash}')">
@@ -578,6 +592,35 @@ function switchDetailTab(tab) {
             `${currentDetailData.seeders} seed${currentDetailData.seeders !== 1 ? 's' : ''}, ${currentDetailData.leechers !== undefined ? currentDetailData.leechers : 0} peer${currentDetailData.leechers !== 1 ? 's' : ''} (${currentDetailData.total_peers || (currentDetailData.peers ? currentDetailData.peers.length : 0)} total connected)` : 
             `${currentDetailData.peers ? currentDetailData.peers.length : 0} peers connected`}
         </span>
+
+        <span class="detail-label">Swarm Archetype:</span>
+        <div class="detail-val">
+          ${currentDetailData.qualifier ? `
+            <div style="display: flex; flex-direction: column; gap: 4px;">
+              <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                <span class="torrent-badge badge-qualifier badge-qualifier-${currentDetailData.qualifier.class}" style="font-size: 12px; padding: 3px 9px;">
+                  ${currentDetailData.qualifier.label}
+                </span>
+                <span style="font-weight: 500;">${escapeHtml(currentDetailData.qualifier.description)}</span>
+              </div>
+              ${currentDetailData.qualifier.easter_egg ? `
+                <div style="font-style: italic; color: var(--adw-dim-label); font-size: 11.5px; margin-top: 2px;">
+                  💡 "${escapeHtml(currentDetailData.qualifier.easter_egg)}"
+                </div>
+              ` : ''}
+            </div>
+          ` : 'Standard P2P Swarm'}
+        </div>
+
+        ${currentDetailData.availability_eta ? `
+          <span class="detail-label">Availability Forecast:</span>
+          <div class="detail-val" style="color: #62a0ea; font-weight: 600;">
+            ⏳ ${escapeHtml(currentDetailData.availability_eta)}
+            <span style="font-weight: normal; color: var(--adw-dim-label); font-size: 11.5px; margin-left: 6px;">
+              (estimated seeder duty cycle: ${(currentDetailData.qualifier.uptime_ratio * 100).toFixed(0)}%)
+            </span>
+          </div>
+        ` : ''}
 
         <span class="detail-label">Data Integrity:</span>
         <div>

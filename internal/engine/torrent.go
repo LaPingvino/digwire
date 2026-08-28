@@ -77,6 +77,8 @@ type TorrentStatus struct {
 	AddedAt        int64           `json:"added_at"`
 	SuggestedSwarm *SwarmSuggestion `json:"suggested_swarm,omitempty"`
 	WebSeeds       []string        `json:"webseeds,omitempty"`
+	Qualifier      *SwarmQualifier `json:"qualifier,omitempty"`
+	AvailabilityETA string         `json:"availability_eta,omitempty"`
 }
 
 type TorrentFileDetail struct {
@@ -117,6 +119,8 @@ type TorrentDetails struct {
 	CreatedBy      string              `json:"created_by"`
 	Comment        string              `json:"comment"`
 	SuggestedSwarm *SwarmSuggestion    `json:"suggested_swarm,omitempty"`
+	Qualifier      *SwarmQualifier     `json:"qualifier,omitempty"`
+	AvailabilityETA string             `json:"availability_eta,omitempty"`
 }
 
 type GlobalStats struct {
@@ -134,6 +138,8 @@ type rateTracker struct {
 	lastTime            time.Time
 	downloadRate        int64
 	uploadRate          int64
+	avgDLRate           int64
+	lastSampleTime      time.Time
 	addedAt             int64
 	isPaused            bool
 	isVerifying         bool
@@ -583,11 +589,31 @@ func (e *Engine) monitorLoop() {
 					if tracker.uploadRate < 0 {
 						tracker.uploadRate = 0
 					}
+					if tracker.downloadRate > 0 {
+						if tracker.avgDLRate == 0 {
+							tracker.avgDLRate = tracker.downloadRate
+						} else {
+							tracker.avgDLRate = (tracker.avgDLRate*7 + tracker.downloadRate*3) / 10
+						}
+					}
 				}
 
 				tracker.lastBytesRead = stats.BytesReadData.Int64()
 				tracker.lastBytesWritten = stats.BytesWrittenData.Int64()
 				tracker.lastTime = now
+
+				// Periodically sample swarm presence into DHT indexer (every 60 seconds)
+				if now.Sub(tracker.lastSampleTime) >= 60*time.Second {
+					tracker.lastSampleTime = now
+					if e.dhtIndexer != nil {
+						sCount := stats.ConnectedSeeders + len(t.WebseedPeerConns())
+						lCount := stats.ActivePeers - stats.ConnectedSeeders
+						if lCount < 0 {
+							lCount = 0
+						}
+						e.dhtIndexer.RecordSwarmActivity(hash, tracker.displayName, sCount, lCount)
+					}
+				}
 			}
 			e.mu.Unlock()
 
@@ -1244,25 +1270,42 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 		}
 		totalPeers := stats.ActivePeers + len(webConns)
 
+		var activity *dhtindex.SwarmActivity
+		if e.dhtIndexer != nil {
+			if rec := e.dhtIndexer.GetRecord(hash); rec != nil {
+				activity = rec.Activity
+			}
+		}
+
+		qualifier := CalculateSwarmQualifier(
+			totalBytes, completedBytes,
+			seeders, leechers, totalPeers,
+			dlRate, tracker.avgDLRate,
+			activity,
+			false,
+		)
+
 		savePath := e.getTorrentSavePath(t)
 		statuses = append(statuses, TorrentStatus{
-			InfoHash:       hash,
-			Name:           name,
-			MagnetURI:      magURI,
-			TotalBytes:     totalBytes,
-			CompletedBytes: completedBytes,
-			Progress:       progress,
-			DownloadRate:   dlRate,
-			UploadRate:     ulRate,
-			ETASeconds:     eta,
-			State:          state,
-			SavePath:       savePath,
-			Seeders:        seeders,
-			Leechers:       leechers,
-			Peers:          totalPeers,
-			Files:          files,
-			AddedAt:        addedAt,
-			WebSeeds:       webseeds,
+			InfoHash:        hash,
+			Name:            name,
+			MagnetURI:       magURI,
+			TotalBytes:      totalBytes,
+			CompletedBytes:  completedBytes,
+			Progress:        progress,
+			DownloadRate:    dlRate,
+			UploadRate:      ulRate,
+			ETASeconds:      eta,
+			State:           state,
+			SavePath:        savePath,
+			Seeders:         seeders,
+			Leechers:        leechers,
+			Peers:           totalPeers,
+			Files:           files,
+			AddedAt:         addedAt,
+			WebSeeds:        webseeds,
+			Qualifier:       &qualifier,
+			AvailabilityETA: qualifier.AvailabilityETA,
 		})
 	}
 
@@ -1274,24 +1317,33 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 		if task.TotalBytes > 0 {
 			prog = (float64(task.CompletedBytes) / float64(task.TotalBytes)) * 100.0
 		}
+		qualifier := CalculateSwarmQualifier(
+			task.TotalBytes, task.CompletedBytes,
+			len(task.Mirrors), 0, len(task.Mirrors),
+			task.DownloadRate, task.DownloadRate,
+			nil,
+			true,
+		)
 		statuses = append(statuses, TorrentStatus{
-			InfoHash:       task.ID,
-			Name:           task.Name,
-			MagnetURI:      task.URL,
-			TotalBytes:     task.TotalBytes,
-			CompletedBytes: task.CompletedBytes,
-			Progress:       prog,
-			DownloadRate:   task.DownloadRate,
-			UploadRate:     0,
-			ETASeconds:     task.ETASeconds,
-			State:          task.State,
-			SavePath:       task.DestPath,
-			Seeders:        len(task.Mirrors),
-			Peers:          len(task.Mirrors),
-			Files:          []string{task.Name},
-			AddedAt:        task.AddedAt,
-			SuggestedSwarm: task.SuggestedSwarm,
-			WebSeeds:       task.Mirrors,
+			InfoHash:        task.ID,
+			Name:            task.Name,
+			MagnetURI:       task.URL,
+			TotalBytes:      task.TotalBytes,
+			CompletedBytes:  task.CompletedBytes,
+			Progress:        prog,
+			DownloadRate:    task.DownloadRate,
+			UploadRate:      0,
+			ETASeconds:      task.ETASeconds,
+			State:           task.State,
+			SavePath:        task.DestPath,
+			Seeders:         len(task.Mirrors),
+			Peers:           len(task.Mirrors),
+			Files:           []string{task.Name},
+			AddedAt:         task.AddedAt,
+			SuggestedSwarm:  task.SuggestedSwarm,
+			WebSeeds:        task.Mirrors,
+			Qualifier:       &qualifier,
+			AvailabilityETA: qualifier.AvailabilityETA,
 		})
 		task.mu.Unlock()
 	}
@@ -1338,16 +1390,24 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 			})
 		}
 
+		qualifier := CalculateSwarmQualifier(
+			task.TotalBytes, task.CompletedBytes,
+			len(task.Mirrors), 0, len(task.Mirrors),
+			task.DownloadRate, task.DownloadRate,
+			nil,
+			true,
+		)
+
 		return &TorrentDetails{
-			InfoHash:       task.ID,
-			Name:           task.Name,
-			MagnetURI:      task.URL,
-			TotalBytes:     task.TotalBytes,
-			CompletedBytes: task.CompletedBytes,
-			Progress:       prog,
-			DownloadDir:    e.cfg.DownloadDir,
-			SavePath:       task.DestPath,
-			State:          task.State,
+			InfoHash:        task.ID,
+			Name:            task.Name,
+			MagnetURI:       task.URL,
+			TotalBytes:      task.TotalBytes,
+			CompletedBytes:  task.CompletedBytes,
+			Progress:        prog,
+			DownloadDir:     e.cfg.DownloadDir,
+			SavePath:        task.DestPath,
+			State:           task.State,
 			Files: []TorrentFileDetail{
 				{
 					Index:          0,
@@ -1360,13 +1420,15 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 					Completed:      task.State == "completed" || (task.TotalBytes > 0 && task.CompletedBytes >= task.TotalBytes),
 				},
 			},
-			Peers:          peerDetails,
-			Seeders:        len(task.Mirrors),
-			Leechers:       0,
-			TotalPeers:     len(task.Mirrors),
-			WebSeeds:       task.Mirrors,
-			CreatedBy:      "Multi-Source HTTP Downloader",
-			SuggestedSwarm: task.SuggestedSwarm,
+			Peers:           peerDetails,
+			Seeders:         len(task.Mirrors),
+			Leechers:        0,
+			TotalPeers:      len(task.Mirrors),
+			WebSeeds:        task.Mirrors,
+			CreatedBy:       "Multi-Source HTTP Downloader",
+			SuggestedSwarm:  task.SuggestedSwarm,
+			Qualifier:       &qualifier,
+			AvailabilityETA: qualifier.AvailabilityETA,
 		}, nil
 	}
 
@@ -1462,26 +1524,51 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 			}
 			totPeers := st.ActivePeers + len(webConns)
 
+			var activity *dhtindex.SwarmActivity
+			if e.dhtIndexer != nil {
+				if rec := e.dhtIndexer.GetRecord(hashHex); rec != nil {
+					activity = rec.Activity
+				}
+			}
+
+			var avgRate int64
+			var curRate int64
+			if tr := e.rateMap[strings.ToLower(hashHex)]; tr != nil {
+				avgRate = tr.avgDLRate
+				curRate = tr.downloadRate
+			}
+
+			qualifier := CalculateSwarmQualifier(
+				totalBytes, completedBytes,
+				sCount, lCount, totPeers,
+				curRate,
+				avgRate,
+				activity,
+				false,
+			)
+
 			return &TorrentDetails{
-				InfoHash:       hashHex,
-				Name:           name,
-				MagnetURI:      magURI,
-				TotalBytes:     totalBytes,
-				CompletedBytes: completedBytes,
-				Progress:       progress,
-				PieceLength:    pieceLength,
-				NumPieces:      numPieces,
-				DownloadDir:    e.cfg.DownloadDir,
-				SavePath:       e.getTorrentSavePath(t),
-				State:          t.String(),
-				Seeders:        sCount,
-				Leechers:       lCount,
-				TotalPeers:     totPeers,
-				Files:          files,
-				Peers:          peerDetails,
-				Trackers:       trackers,
-				WebSeeds:       webseeds,
-				CreatedBy:      "Digwire P2P",
+				InfoHash:        hashHex,
+				Name:            name,
+				MagnetURI:       magURI,
+				TotalBytes:      totalBytes,
+				CompletedBytes:  completedBytes,
+				Progress:        progress,
+				PieceLength:     pieceLength,
+				NumPieces:       numPieces,
+				DownloadDir:     e.cfg.DownloadDir,
+				SavePath:        e.getTorrentSavePath(t),
+				State:           t.String(),
+				Seeders:         sCount,
+				Leechers:        lCount,
+				TotalPeers:      totPeers,
+				Files:           files,
+				Peers:           peerDetails,
+				Trackers:        trackers,
+				WebSeeds:        webseeds,
+				CreatedBy:       "Digwire P2P",
+				Qualifier:       &qualifier,
+				AvailabilityETA: qualifier.AvailabilityETA,
 			}, nil
 		}
 	}
