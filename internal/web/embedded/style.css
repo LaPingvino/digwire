@@ -300,6 +300,12 @@ body {
   border: 1px solid rgba(100, 116, 139, 0.4);
 }
 
+.badge-qualifier-discovering {
+  background: rgba(53, 132, 228, 0.2);
+  color: #62a0ea;
+  border: 1px solid rgba(53, 132, 228, 0.35);
+}
+
 /* Progress Bar */
 .progress-bar-container {
   background-color: rgba(128, 128, 128, 0.2);

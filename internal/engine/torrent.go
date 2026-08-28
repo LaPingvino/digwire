@@ -139,6 +139,9 @@ type rateTracker struct {
 	downloadRate        int64
 	uploadRate          int64
 	avgDLRate           int64
+	peakDLRate          int64
+	peakSeeders         int
+	peakPeers           int
 	lastSampleTime      time.Time
 	addedAt             int64
 	isPaused            bool
@@ -505,6 +508,15 @@ func (e *Engine) loadSession() {
 			}
 		}
 
+		peakS := 0
+		peakP := 0
+		if e.dhtIndexer != nil {
+			if rec := e.dhtIndexer.GetRecord(hash); rec != nil && rec.Activity != nil {
+				peakS = rec.Activity.LastSeeders
+				peakP = rec.Activity.LastPeers
+			}
+		}
+
 		e.rateMap[hash] = &rateTracker{
 			lastTime:            time.Now(),
 			addedAt:             item.AddedAt,
@@ -512,6 +524,8 @@ func (e *Engine) loadSession() {
 			displayName:         item.Name,
 			savedTotalBytes:     item.TotalBytes,
 			savedCompletedBytes: savedCompleted,
+			peakSeeders:         peakS,
+			peakPeers:           peakP,
 		}
 
 		if len(item.WebSeeds) > 0 {
@@ -602,16 +616,43 @@ func (e *Engine) monitorLoop() {
 				tracker.lastBytesWritten = stats.BytesWrittenData.Int64()
 				tracker.lastTime = now
 
+				webConns := t.WebseedPeerConns()
+				sCount := stats.ConnectedSeeders + len(webConns)
+				aPeers := stats.ActivePeers + len(webConns)
+				totPeers := stats.TotalPeers + len(webConns)
+				if totPeers < aPeers {
+					totPeers = aPeers
+				}
+
+				if sCount > tracker.peakSeeders {
+					tracker.peakSeeders = sCount
+				}
+				if totPeers > tracker.peakPeers {
+					tracker.peakPeers = totPeers
+				}
+				if tracker.downloadRate > tracker.peakDLRate {
+					tracker.peakDLRate = tracker.downloadRate
+				}
+
+				isSeeding := t.Seeding() || (t.Length() > 0 && t.BytesCompleted() >= t.Length())
+
 				// Periodically sample swarm presence into DHT indexer (every 60 seconds)
 				if now.Sub(tracker.lastSampleTime) >= 60*time.Second {
 					tracker.lastSampleTime = now
 					if e.dhtIndexer != nil {
-						sCount := stats.ConnectedSeeders + len(t.WebseedPeerConns())
-						lCount := stats.ActivePeers - stats.ConnectedSeeders
-						if lCount < 0 {
-							lCount = 0
+						dhtSeeders := sCount
+						if isSeeding {
+							if tracker.peakSeeders > 0 {
+								dhtSeeders = tracker.peakSeeders + 1
+							} else {
+								dhtSeeders = 1
+							}
 						}
-						e.dhtIndexer.RecordSwarmActivity(hash, tracker.displayName, sCount, lCount)
+						dhtPeers := totPeers
+						if dhtPeers < dhtSeeders {
+							dhtPeers = dhtSeeders
+						}
+						e.dhtIndexer.RecordSwarmActivity(hash, tracker.displayName, dhtSeeders, dhtPeers)
 					}
 				}
 			}
@@ -1000,10 +1041,20 @@ func (e *Engine) initTracker(hash string, displayName ...string) {
 		name = displayName[0]
 	}
 	if tr, ok := e.rateMap[hash]; !ok {
+		peakS := 0
+		peakP := 0
+		if e.dhtIndexer != nil {
+			if rec := e.dhtIndexer.GetRecord(hash); rec != nil && rec.Activity != nil {
+				peakS = rec.Activity.LastSeeders
+				peakP = rec.Activity.LastPeers
+			}
+		}
 		e.rateMap[hash] = &rateTracker{
 			lastTime:    time.Now(),
 			addedAt:     time.Now().Unix(),
 			displayName: name,
+			peakSeeders: peakS,
+			peakPeers:   peakP,
 		}
 	} else if name != "" && tr.displayName == "" {
 		tr.displayName = name
@@ -1262,13 +1313,31 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 		magURI := fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", hash, url.QueryEscape(name))
 		magURI = AppendWebSeedsToMagnet(SuperchargeMagnet(magURI), webseeds)
 		webConns := t.WebseedPeerConns()
+		isSeeding := state == "seeding" || state == "completed" || (totalBytes > 0 && completedBytes >= totalBytes)
 
 		seeders := stats.ConnectedSeeders + len(webConns)
+		if isSeeding {
+			if tracker != nil && tracker.peakSeeders > 0 {
+				seeders = tracker.peakSeeders + 1
+			} else {
+				seeders = stats.ConnectedSeeders + 1
+			}
+		}
 		leechers := stats.ActivePeers - stats.ConnectedSeeders
+		if isSeeding {
+			leechers = stats.ActivePeers
+		}
 		if leechers < 0 {
 			leechers = 0
 		}
-		totalPeers := stats.ActivePeers + len(webConns)
+		activePeers := stats.ActivePeers + len(webConns)
+		totalPeers := stats.TotalPeers + len(webConns)
+		if totalPeers < activePeers {
+			totalPeers = activePeers
+		}
+		if isSeeding && totalPeers < seeders {
+			totalPeers = seeders + leechers
+		}
 
 		var activity *dhtindex.SwarmActivity
 		if e.dhtIndexer != nil {
@@ -1277,13 +1346,34 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 			}
 		}
 
-		qualifier := CalculateSwarmQualifier(
-			totalBytes, completedBytes,
-			seeders, leechers, totalPeers,
-			dlRate, tracker.avgDLRate,
-			activity,
-			false,
-		)
+		peakS := 0
+		peakP := 0
+		peakDL := int64(0)
+		avgRate := int64(0)
+		if tracker != nil {
+			peakS = tracker.peakSeeders
+			peakP = tracker.peakPeers
+			peakDL = tracker.peakDLRate
+			avgRate = tracker.avgDLRate
+		}
+
+		qualifier := CalculateSwarmQualifier(SwarmContext{
+			TotalBytes:     totalBytes,
+			CompletedBytes: completedBytes,
+			Seeders:        seeders,
+			Leechers:       leechers,
+			ActivePeers:    activePeers,
+			TotalPeers:     totalPeers,
+			PeakSeeders:    peakS,
+			PeakPeers:      peakP,
+			DLRate:         dlRate,
+			PeakDLRate:     peakDL,
+			AvgDLRate:      avgRate,
+			IsSeeding:      isSeeding,
+			IsHTTP:         false,
+			Activity:       activity,
+			AddedAt:        addedAt,
+		})
 
 		savePath := e.getTorrentSavePath(t)
 		statuses = append(statuses, TorrentStatus{
@@ -1317,13 +1407,23 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 		if task.TotalBytes > 0 {
 			prog = (float64(task.CompletedBytes) / float64(task.TotalBytes)) * 100.0
 		}
-		qualifier := CalculateSwarmQualifier(
-			task.TotalBytes, task.CompletedBytes,
-			len(task.Mirrors), 0, len(task.Mirrors),
-			task.DownloadRate, task.DownloadRate,
-			nil,
-			true,
-		)
+		qualifier := CalculateSwarmQualifier(SwarmContext{
+			TotalBytes:     task.TotalBytes,
+			CompletedBytes: task.CompletedBytes,
+			Seeders:        len(task.Mirrors),
+			Leechers:       0,
+			ActivePeers:    len(task.Mirrors),
+			TotalPeers:     len(task.Mirrors),
+			PeakSeeders:    len(task.Mirrors),
+			PeakPeers:      len(task.Mirrors),
+			DLRate:         task.DownloadRate,
+			PeakDLRate:     task.DownloadRate,
+			AvgDLRate:      task.DownloadRate,
+			IsSeeding:      false,
+			IsHTTP:         true,
+			Activity:       nil,
+			AddedAt:        task.AddedAt,
+		})
 		statuses = append(statuses, TorrentStatus{
 			InfoHash:        task.ID,
 			Name:            task.Name,
@@ -1390,13 +1490,23 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 			})
 		}
 
-		qualifier := CalculateSwarmQualifier(
-			task.TotalBytes, task.CompletedBytes,
-			len(task.Mirrors), 0, len(task.Mirrors),
-			task.DownloadRate, task.DownloadRate,
-			nil,
-			true,
-		)
+		qualifier := CalculateSwarmQualifier(SwarmContext{
+			TotalBytes:     task.TotalBytes,
+			CompletedBytes: task.CompletedBytes,
+			Seeders:        len(task.Mirrors),
+			Leechers:       0,
+			ActivePeers:    len(task.Mirrors),
+			TotalPeers:     len(task.Mirrors),
+			PeakSeeders:    len(task.Mirrors),
+			PeakPeers:      len(task.Mirrors),
+			DLRate:         task.DownloadRate,
+			PeakDLRate:     task.DownloadRate,
+			AvgDLRate:      task.DownloadRate,
+			IsSeeding:      false,
+			IsHTTP:         true,
+			Activity:       nil,
+			AddedAt:        task.AddedAt,
+		})
 
 		return &TorrentDetails{
 			InfoHash:        task.ID,
@@ -1517,12 +1627,36 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 
 			st := t.Stats()
 			webConns := t.WebseedPeerConns()
+			tr := e.rateMap[strings.ToLower(hashHex)]
+
+			isSeeding := (totalBytes > 0 && completedBytes >= totalBytes) || t.Seeding()
+			if tr != nil && tr.savedTotalBytes > 0 && tr.savedCompletedBytes >= tr.savedTotalBytes {
+				isSeeding = true
+			}
+
 			sCount := st.ConnectedSeeders + len(webConns)
+			if isSeeding {
+				if tr != nil && tr.peakSeeders > 0 {
+					sCount = tr.peakSeeders + 1
+				} else {
+					sCount = st.ConnectedSeeders + 1
+				}
+			}
 			lCount := st.ActivePeers - st.ConnectedSeeders
+			if isSeeding {
+				lCount = st.ActivePeers
+			}
 			if lCount < 0 {
 				lCount = 0
 			}
-			totPeers := st.ActivePeers + len(webConns)
+			actPeers := st.ActivePeers + len(webConns)
+			totPeers := st.TotalPeers + len(webConns)
+			if totPeers < actPeers {
+				totPeers = actPeers
+			}
+			if isSeeding && totPeers < sCount {
+				totPeers = sCount + lCount
+			}
 
 			var activity *dhtindex.SwarmActivity
 			if e.dhtIndexer != nil {
@@ -1531,21 +1665,44 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 				}
 			}
 
-			var avgRate int64
-			var curRate int64
-			if tr := e.rateMap[strings.ToLower(hashHex)]; tr != nil {
+			var peakS, peakP int
+			var peakDL, avgRate, curRate int64
+			var addedAt int64
+			if tr != nil {
+				peakS = tr.peakSeeders
+				peakP = tr.peakPeers
+				peakDL = tr.peakDLRate
 				avgRate = tr.avgDLRate
 				curRate = tr.downloadRate
+				addedAt = tr.addedAt
 			}
 
-			qualifier := CalculateSwarmQualifier(
-				totalBytes, completedBytes,
-				sCount, lCount, totPeers,
-				curRate,
-				avgRate,
-				activity,
-				false,
-			)
+			qualifier := CalculateSwarmQualifier(SwarmContext{
+				TotalBytes:     totalBytes,
+				CompletedBytes: completedBytes,
+				Seeders:        sCount,
+				Leechers:       lCount,
+				ActivePeers:    actPeers,
+				TotalPeers:     totPeers,
+				PeakSeeders:    peakS,
+				PeakPeers:      peakP,
+				DLRate:         curRate,
+				PeakDLRate:     peakDL,
+				AvgDLRate:      avgRate,
+				IsSeeding:      isSeeding,
+				IsHTTP:         false,
+				Activity:       activity,
+				AddedAt:        addedAt,
+			})
+
+			displayState := "downloading"
+			if isSeeding {
+				displayState = "seeding"
+			} else if tr != nil && tr.isPaused {
+				displayState = "paused"
+			} else if info == nil {
+				displayState = "metadata"
+			}
 
 			return &TorrentDetails{
 				InfoHash:        hashHex,
@@ -1558,7 +1715,7 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 				NumPieces:       numPieces,
 				DownloadDir:     e.cfg.DownloadDir,
 				SavePath:        e.getTorrentSavePath(t),
-				State:           t.String(),
+				State:           displayState,
 				Seeders:         sCount,
 				Leechers:        lCount,
 				TotalPeers:      totPeers,

@@ -65,6 +65,7 @@ function getQualifierBadge(q) {
     case 'long_tail': icon = ICONS.compass; break;
     case 'deep_archive': icon = ICONS.archive; break;
     case 'ghost_ship': icon = ICONS.ghost; break;
+    case 'discovering': icon = ICONS.search; break;
     default: icon = ICONS.zap; break;
   }
   const title = escapeHtml(q.description + (q.easter_egg ? '\n\n' + q.easter_egg : ''));
