@@ -79,7 +79,7 @@ func registerMimeTypes() {
 	}()
 }
 
-var Version = "0.2.2"
+var Version = "0.2.3"
 
 func main() {
 	portFlag := flag.Int("port", 0, "Web interface port (overrides config)")
