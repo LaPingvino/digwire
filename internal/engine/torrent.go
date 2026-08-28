@@ -22,9 +22,11 @@ import (
 	"digwire/internal/search"
 
 	"github.com/anacrolix/dht/v2"
+	g "github.com/anacrolix/generics"
 	"github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/bencode"
 	"github.com/anacrolix/torrent/metainfo"
+	"github.com/anacrolix/torrent/storage"
 )
 
 type SavedTorrent struct {
@@ -304,6 +306,28 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 		WriteBufferSize:       64 * 1024,
 	}
 
+	// Persistent Piece Completion Database (stores verified SHA-1 piece hashes on disk across restarts)
+	configDir, _ := os.UserConfigDir()
+	var pieceCompDir string
+	if configDir != "" {
+		pieceCompDir = filepath.Join(configDir, "digwire")
+	} else {
+		pieceCompDir = cfg.DownloadDir
+	}
+	_ = os.MkdirAll(pieceCompDir, 0755)
+
+	pieceCompletion, pErr := storage.NewDefaultPieceCompletionForDir(pieceCompDir)
+	if pErr != nil {
+		pieceCompletion = storage.NewMapPieceCompletion()
+	}
+
+	storageOpts := storage.NewFileClientOpts{
+		ClientBaseDir:   cfg.DownloadDir,
+		PieceCompletion: pieceCompletion,
+		UsePartFiles:    g.Some(false),
+	}
+	tConfig.DefaultStorage = storage.NewFileOpts(storageOpts)
+
 	client, err := torrent.NewClient(tConfig)
 	if err != nil && tConfig.ListenPort != 0 {
 		tConfig.ListenPort = 0
@@ -360,6 +384,10 @@ func (e *Engine) saveSessionLocked() {
 			e.saveTorrentMetainfo(t)
 		} else {
 			totalBytes = tr.savedTotalBytes
+			completedBytes = tr.savedCompletedBytes
+		}
+
+		if tr.isVerifying && tr.savedCompletedBytes > completedBytes {
 			completedBytes = tr.savedCompletedBytes
 		}
 
@@ -457,13 +485,21 @@ func (e *Engine) loadSession() {
 		// Inject tier-1 trackers
 		t.AddTrackers(GetTier1TrackerList())
 
+		savedCompleted := item.CompletedBytes
+		if t != nil && t.Info() != nil {
+			bComp := t.BytesCompleted()
+			if bComp > savedCompleted {
+				savedCompleted = bComp
+			}
+		}
+
 		e.rateMap[hash] = &rateTracker{
 			lastTime:            time.Now(),
 			addedAt:             item.AddedAt,
 			isPaused:            item.IsPaused,
 			displayName:         item.Name,
 			savedTotalBytes:     item.TotalBytes,
-			savedCompletedBytes: item.CompletedBytes,
+			savedCompletedBytes: savedCompleted,
 		}
 
 		if len(item.WebSeeds) > 0 {
@@ -886,18 +922,15 @@ func (e *Engine) AdoptExistingLocalProgress(tor *torrent.Torrent) {
 	for _, f := range info.UpvertedFiles() {
 		displayPath := f.DisplayPath(info)
 		targetPath := filepath.Join(baseDownloadDir, displayPath)
-		partPath := targetPath + ".part"
 
-		// If target file or its native .part file already exists, anacrolix/torrent will verify it
+		// If target file already exists and has data, keep it
 		if fi, err := os.Stat(targetPath); err == nil && fi.Size() > 0 {
 			continue
 		}
-		if fi, err := os.Stat(partPath); err == nil && fi.Size() > 0 {
-			continue
-		}
 
-		// Candidate external partial extensions and fallback locations
+		// Candidate partial extensions and fallback locations (including .part)
 		candidates := []string{
+			targetPath + ".part",
 			targetPath + ".crdownload",
 			targetPath + ".download",
 			targetPath + ".tmp",
@@ -916,16 +949,12 @@ func (e *Engine) AdoptExistingLocalProgress(tor *torrent.Torrent) {
 			)
 		}
 
-		// Check external candidates and adopt into partPath (or targetPath if full size)
+		// Check candidates and adopt directly into expected targetPath
 		for _, cand := range candidates {
 			fi, err := os.Stat(cand)
 			if err == nil && !fi.IsDir() && fi.Size() > 0 {
 				_ = os.MkdirAll(filepath.Dir(targetPath), 0755)
-				dest := partPath
-				if fi.Size() == f.Length {
-					dest = targetPath
-				}
-				if err := os.Rename(cand, dest); err == nil {
+				if err := os.Rename(cand, targetPath); err == nil {
 					break
 				}
 			}
@@ -1155,6 +1184,9 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 			name = info.Name
 			totalBytes = t.Length()
 			completedBytes = t.BytesCompleted()
+			if tracker.isVerifying && tracker.savedCompletedBytes > completedBytes {
+				completedBytes = tracker.savedCompletedBytes
+			}
 			if totalBytes > 0 {
 				progress = (float64(completedBytes) / float64(totalBytes)) * 100.0
 			}
