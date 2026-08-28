@@ -147,6 +147,11 @@ body {
   border-radius: var(--adw-radius-sm);
 }
 
+.btn svg, .badge-qualifier svg {
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+
 /* Main Container */
 .main-container {
   flex: 1;

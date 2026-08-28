@@ -32,7 +32,7 @@ func CalculateSwarmQualifier(
 	if isHTTP {
 		return SwarmQualifier{
 			Class:           "mainstream",
-			Label:           "⚡ Direct CDN",
+			Label:           "Direct CDN",
 			Badge:           "Direct CDN",
 			Description:     "High-speed HTTP mirror infrastructure with 100% uptime.",
 			EasterEgg:       "No P2P patience required—streaming straight from high-speed web mirrors!",
@@ -82,37 +82,37 @@ func CalculateSwarmQualifier(
 
 	if seeders >= 50 || totalPeers >= 100 {
 		class = "blockbuster"
-		label = "🚀 Blockbuster"
+		label = "Blockbuster"
 		badge = "Blockbuster"
 		desc = "High-velocity mainstream swarm backed by dozens of gigabit seedboxes."
 		easterEgg = "Cruising at lightspeed! The swarm is so fast you could probably watch it uncompressed."
 	} else if seeders >= 12 || (seeders >= 6 && uptimeRatio >= 0.70) {
 		class = "mainstream"
-		label = "⚡ Mainstream"
+		label = "Mainstream"
 		badge = "Mainstream"
 		desc = "Popular everyday swarm with abundant seeders and healthy throughput."
 		easterEgg = "Healthy mainstream torrent. The seedboxes are singing in four-part harmony."
 	} else if seeders >= 4 || (seeders >= 2 && totalPeers >= 6) {
 		class = "cult"
-		label = "📻 Cult Classic"
+		label = "Cult Classic"
 		badge = "Cult Classic"
 		desc = "Mid-tier community swarm with steady enthusiast seeders keeping it alive."
 		easterEgg = "Not on the Billboard top 40, but the dedicated fanbase refuses to let it die."
 	} else if seeders >= 1 || (hasHistory && activity.HealthySamples > 0 && (time.Now().Unix()-activity.LastSeenHealthy) < 86400*3) {
 		class = "long_tail"
-		label = "🐢 Long Tail"
+		label = "Long Tail"
 		badge = "Long Tail"
 		desc = "A niche archival treasure! Seeders are periodic residential peers."
 		easterEgg = "A proud resident of Chris Anderson's Long Tail! Somewhere out there, someone's Raspberry Pi is gently seeding this."
 	} else if hasHistory && activity.HealthySamples > 0 {
 		class = "deep_archive"
-		label = "📜 Deep Archive"
+		label = "Deep Archive"
 		badge = "Deep Archive"
 		desc = "Rare historical specimen. Seeders appear sporadically on weekends or night cycles."
 		easterEgg = "Digital archaeology at its finest! A rare specimen waiting for a friendly night-owl seeder."
 	} else {
 		class = "ghost_ship"
-		label = "🛸 Ghost Ship"
+		label = "Ghost Ship"
 		badge = "Ghost Ship"
 		desc = "Dormant swarm in the Mariana Trench of P2P. Relying on DHT discovery and webseeds."
 		easterEgg = "Captain, we're in the deepest waters of the DHT. Keep the peer search radar spinning."

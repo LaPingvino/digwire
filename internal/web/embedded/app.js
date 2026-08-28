@@ -12,9 +12,10 @@ let currentSortBy = 'relevance';
 let currentDetailData = null;
 let currentDetailTab = 'overview';
 
-// Crisp SVG Icons (Libadwaita / Lucide style)
+// Crisp SVG Icons (Libadwaita / Lucide style - 100% vector, no OS emoji dependencies)
 const ICONS = {
-  magnet: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15v-4a6 6 0 1 1 12 0v4"></path><path d="M6 11H2"></path><path d="M22 11h-4"></path><path d="M2 15h4"></path><path d="M18 15h4"></path></svg>`,
+  // Magnet: Crisp, authentic horseshoe magnet with pole stripes
+  magnet: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h4v7a4 4 0 0 0 8 0V4h4v7a8 8 0 0 1-16 0Z"></path><line x1="4" y1="8" x2="8" y2="8"></line><line x1="16" y1="8" x2="20" y2="8"></line></svg>`,
   info: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>`,
   play: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>`,
   pause: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>`,
@@ -27,9 +28,50 @@ const ICONS = {
   arrowUp: `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 2px;"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>`,
   arrowDown: `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 2px;"><line x1="12" y1="5" x2="12" y2="19"></line><polyline points="19 12 12 19 5 12"></polyline></svg>`,
   zap: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 3px;"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>`,
-  folder: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>`,
-  external: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>`
+  folder: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 3px;"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>`,
+  external: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>`,
+  clock: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1.5px; margin-right: 3px;"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>`,
+  search: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 3px;"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>`,
+  check: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 3px;"><polyline points="20 6 9 17 4 12"></polyline></svg>`,
+  x: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 2px;"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>`,
+  edit: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>`,
+  lightbulb: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 3px;"><path d="M9 18h6"></path><path d="M10 22h4"></path><path d="M12 2a7 7 0 0 0-7 7c0 2.38 1.19 4.47 3 5.74V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.26c1.81-1.27 3-3.36 3-5.74a7 7 0 0 0-7-7z"></path></svg>`,
+  alert: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>`,
+  dot: `<svg width="8" height="8" viewBox="0 0 24 24" fill="currentColor" style="vertical-align: 0px; margin-right: 4px;"><circle cx="12" cy="12" r="10"></circle></svg>`,
+
+  // Swarm Archetype icons
+  rocket: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 3px;"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"></path><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"></path><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"></path><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"></path></svg>`,
+  disc: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 3px;"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="3"></circle></svg>`,
+  compass: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 3px;"><circle cx="12" cy="12" r="10"></circle><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"></polygon></svg>`,
+  archive: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 3px;"><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line></svg>`,
+  ghost: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 3px;"><path d="M9 10h.01"></path><path d="M15 10h.01"></path><path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"></path></svg>`,
+
+  // File Types
+  file: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 4px;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>`,
+  fileVideo: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 4px;"><rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"></rect><line x1="7" y1="2" x2="7" y2="22"></line><line x1="17" y1="2" x2="17" y2="22"></line><line x1="2" y1="12" x2="22" y2="12"></line></svg>`,
+  fileAudio: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 4px;"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>`,
+  fileArchive: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 4px;"><line x1="16.5" y1="9.4" x2="7.5" y2="4.21"></line><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>`,
+  fileImage: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 4px;"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>`,
+  fileCode: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 4px;"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>`
 };
+
+function getQualifierBadge(q) {
+  if (!q) return '';
+  let icon = ICONS.zap;
+  switch (q.class) {
+    case 'blockbuster': icon = ICONS.rocket; break;
+    case 'mainstream': icon = ICONS.zap; break;
+    case 'cult': icon = ICONS.disc; break;
+    case 'long_tail': icon = ICONS.compass; break;
+    case 'deep_archive': icon = ICONS.archive; break;
+    case 'ghost_ship': icon = ICONS.ghost; break;
+    default: icon = ICONS.zap; break;
+  }
+  const title = escapeHtml(q.description + (q.easter_egg ? '\n\n' + q.easter_egg : ''));
+  return `<span class="torrent-badge badge-qualifier badge-qualifier-${q.class}" title="${title}">
+    ${icon}<span>${escapeHtml(q.label || q.badge)}</span>
+  </span>`;
+}
 
 // Helpers
 function formatBytes(bytes, decimals = 1) {
@@ -68,7 +110,7 @@ function copyToClipboard(text, btnElement) {
   navigator.clipboard.writeText(text).then(() => {
     if (btnElement) {
       const orig = btnElement.innerHTML;
-      btnElement.innerHTML = '✓ Copied!';
+      btnElement.innerHTML = `${ICONS.check} Copied!`;
       setTimeout(() => { btnElement.innerHTML = orig; }, 1500);
     } else {
       alert("Copied to clipboard!");
@@ -132,8 +174,8 @@ function initEventStream() {
 }
 
 function renderGlobalStats(stats) {
-  document.getElementById('stat-download-rate').textContent = `↓ ${formatSpeed(stats.download_rate)}`;
-  document.getElementById('stat-upload-rate').textContent = `↑ ${formatSpeed(stats.upload_rate)}`;
+  document.getElementById('stat-download-rate').innerHTML = `${ICONS.arrowDown} ${formatSpeed(stats.download_rate)}`;
+  document.getElementById('stat-upload-rate').innerHTML = `${ICONS.arrowUp} ${formatSpeed(stats.upload_rate)}`;
   document.getElementById('stat-active-count').textContent = `${stats.active_count} active / ${stats.total_count} total`;
   let dhtText = `DHT: ${stats.dht_nodes} nodes`;
   if (stats.dht_indexed_count !== undefined && stats.dht_indexed_count > 0) {
@@ -184,17 +226,17 @@ function renderTorrents() {
     } else if (isVerifying) {
       metaString = `Verifying & hashing local data... (${t.progress.toFixed(1)}%)`;
     } else if (t.download_rate > 0) {
-      metaString += ` • ↓ ${formatSpeed(t.download_rate)}`;
+      metaString += ` • ${ICONS.arrowDown}${formatSpeed(t.download_rate)}`;
       const eta = formatETA(t.eta_seconds);
       if (eta) metaString += ` • ETA: ${eta}`;
     } else if (!isSeeding && !isPaused && t.progress < 100 && t.availability_eta) {
       const qTooltip = t.qualifier ? 
-        (t.qualifier.description + (t.qualifier.easter_egg ? '\n\n💡 ' + t.qualifier.easter_egg : '')) : 
+        (t.qualifier.description + (t.qualifier.easter_egg ? '\n\n' + t.qualifier.easter_egg : '')) : 
         'Projected completion based on seeder duty cycle';
-      metaString += ` • <span style="color: #62a0ea; font-weight: 500;" title="${escapeHtml(qTooltip)}">⏳ Proj. ETA: ${t.availability_eta}</span>`;
+      metaString += ` • <span style="color: #62a0ea; font-weight: 500;" title="${escapeHtml(qTooltip)}">${ICONS.clock}Proj. ETA: ${escapeHtml(t.availability_eta)}</span>`;
     }
     if (t.upload_rate > 0) {
-      metaString += ` • ↑ ${formatSpeed(t.upload_rate)}`;
+      metaString += ` • ${ICONS.arrowUp}${formatSpeed(t.upload_rate)}`;
     }
     if (isWebDownload) {
       const mirrorCount = t.webseeds && t.webseeds.length > 0 ? t.webseeds.length : (t.peers || 1);
@@ -215,8 +257,8 @@ function renderTorrents() {
     let swarmBanner = '';
     if (t.suggested_swarm) {
       const matchText = t.suggested_swarm.is_partial ?
-        `⚡ <strong>Partial Match in Pack!</strong> "${t.suggested_swarm.name}" (${t.suggested_swarm.seeders} seeds). Upgrade to swarm?` :
-        `⚡ <strong>Equivalent Swarm Found!</strong> Verified with ${t.suggested_swarm.seeders} seeds. Upgrade to hybrid swarm?`;
+        `${ICONS.zap}<strong>Partial Match in Pack!</strong> "${escapeHtml(t.suggested_swarm.name)}" (${t.suggested_swarm.seeders} seeds). Upgrade to swarm?` :
+        `${ICONS.zap}<strong>Equivalent Swarm Found!</strong> Verified with ${t.suggested_swarm.seeders} seeds. Upgrade to hybrid swarm?`;
       swarmBanner = `
         <div class="swarm-suggestion-banner">
           <div>${matchText}</div>
@@ -227,18 +269,12 @@ function renderTorrents() {
       `;
     }
 
-    const qualifierHtml = t.qualifier ? `
-      <span class="torrent-badge badge-qualifier badge-qualifier-${t.qualifier.class}" title="${escapeHtml(t.qualifier.description + (t.qualifier.easter_egg ? '\n\n💡 ' + t.qualifier.easter_egg : ''))}">
-        ${t.qualifier.label}
-      </span>
-    ` : '';
-
     return `
       <div class="torrent-card" ondblclick="openTorrentTarget('${t.info_hash}')" title="Double-click to open downloaded files">
         <div class="card-header">
           <div class="torrent-title" title="${t.name}" style="cursor: pointer;" onclick="openDetailsModal('${t.info_hash}')">${t.name}</div>
           <div style="display: flex; gap: 6px; align-items: center;">
-            ${qualifierHtml}
+            ${getQualifierBadge(t.qualifier)}
             <span class="torrent-badge badge-${t.state}">${t.state}</span>
           </div>
         </div>
@@ -274,13 +310,13 @@ function renderTorrents() {
 }
 
 async function verifyTorrent(hash, btn) {
-  showToast("🔄 Rechecking and verifying local piece hashes...", "info", 3000);
+  showToast("Rechecking and verifying local piece hashes...", "info", 3000);
   if (btn) btn.disabled = true;
   try {
     const res = await fetch(`/api/torrents/${hash}/verify`, { method: 'POST' });
     const data = await res.json();
     if (data.status === 'ok') {
-      showToast("✓ Hash verification triggered! Rechecking data...", "accent", 3500);
+      showToast("Hash verification triggered! Rechecking data...", "accent", 3500);
     } else {
       showToast("Verification failed: " + (data.error || 'Unknown error'), "error", 4000);
     }
@@ -321,17 +357,17 @@ async function triggerFindSwarm(hash, btn) {
   if (btn) {
     orig = btn.innerHTML;
     btn.disabled = true;
-    btn.innerHTML = '<span style="font-size: 11px;">🔍</span>';
+    btn.innerHTML = ICONS.search;
   }
 
-  showToast("🔍 Scanning indexers & official host mirrors in background...", "info", 3000);
+  showToast("Scanning indexers & official host mirrors in background...", "info", 3000);
 
   try {
     const res = await fetch(`/api/torrents/${hash}/find-swarm`, { method: 'POST' });
     const data = await res.json();
     if (data.status === 'ok') {
-      if (btn) btn.innerHTML = '✓';
-      showToast("⚡ Equivalent BitTorrent swarm verified! Click 'Upgrade to Swarm' on card.", "accent", 5000);
+      if (btn) btn.innerHTML = ICONS.check;
+      showToast("Equivalent BitTorrent swarm verified! Click 'Upgrade to Swarm' on card.", "accent", 5000);
       if (document.getElementById('modal-details').classList.contains('open')) {
         const dRes = await fetch(`/api/torrents/${hash}/details`);
         if (dRes.ok) {
@@ -355,7 +391,7 @@ async function upgradeToSwarm(hash) {
     const res = await fetch(`/api/torrents/${hash}/upgrade-to-swarm`, { method: 'POST' });
     const data = await res.json();
     if (data.status === 'ok') {
-      showToast("🚀 Upgraded to hybrid P2P swarm with WebSeed acceleration!", "accent", 4000);
+      showToast("Upgraded to hybrid P2P swarm with WebSeed acceleration!", "accent", 4000);
       if (document.getElementById('modal-details').classList.contains('open')) {
         closeDetailsModal();
       }
@@ -430,7 +466,7 @@ async function confirmDelete(deleteFiles) {
     const res = await fetch(`/api/torrents/${encodeURIComponent(hash)}?delete_files=${deleteFiles}`, { method: 'DELETE' });
     const data = await res.json();
     if (data.status === 'ok') {
-      showToast("✓ Transfer removed.", "info", 2500);
+      showToast("Transfer removed.", "info", 2500);
       torrentsData = torrentsData.filter(t => t.info_hash !== hash);
       renderTorrents();
     } else {
@@ -451,7 +487,7 @@ async function openTorrentTarget(hash) {
     const data = await res.json();
     if (data.status === 'ok') {
       const name = data.path ? data.path.split('/').pop() : 'item';
-      showToast(`✓ Opening ${escapeHtml(name)}...`, "info", 2500);
+      showToast(`Opening ${escapeHtml(name)}...`, "info", 2500);
     } else {
       showToast("Could not open: " + (data.error || 'Unknown error'), "error", 4000);
     }
@@ -465,7 +501,7 @@ async function showTorrentInFolder(hash) {
     const res = await fetch(`/api/torrents/${hash}/show-in-folder`, { method: 'POST' });
     const data = await res.json();
     if (data.status === 'ok') {
-      showToast("✓ Revealed in File Manager", "info", 2000);
+      showToast("Revealed in File Manager", "info", 2000);
     } else {
       showToast("Could not show in folder: " + (data.error || 'Unknown error'), "error", 4000);
     }
@@ -480,7 +516,7 @@ async function openTorrentFile(hash, fileIndex) {
     const data = await res.json();
     if (data.status === 'ok') {
       const name = data.path ? data.path.split('/').pop() : 'file';
-      showToast(`✓ Opening ${escapeHtml(name)}...`, "info", 2500);
+      showToast(`Opening ${escapeHtml(name)}...`, "info", 2500);
     } else {
       showToast("Could not open file: " + (data.error || 'Unknown error'), "error", 4000);
     }
@@ -494,7 +530,7 @@ async function showTorrentFileInFolder(hash, fileIndex) {
     const res = await fetch(`/api/torrents/${hash}/files/${fileIndex}/show-in-folder`, { method: 'POST' });
     const data = await res.json();
     if (data.status === 'ok') {
-      showToast("✓ Revealed file in File Manager", "info", 2000);
+      showToast("Revealed file in File Manager", "info", 2000);
     } else {
       showToast("Could not show in folder: " + (data.error || 'Unknown error'), "error", 4000);
     }
@@ -537,7 +573,7 @@ function switchDetailTab(tab) {
     const suggHtml = currentDetailData.suggested_swarm ? `
       <div class="swarm-suggestion-banner" style="grid-column: 1 / -1; margin-bottom: 8px;">
         <div>
-          ⚡ <strong>${currentDetailData.suggested_swarm.is_partial ? 'Partial Match in Collection!' : 'Equivalent BitTorrent Swarm Verified!'}</strong> (${currentDetailData.suggested_swarm.seeders} seeds).
+          ${ICONS.zap} <strong>${currentDetailData.suggested_swarm.is_partial ? 'Partial Match in Collection!' : 'Equivalent BitTorrent Swarm Verified!'}</strong> (${currentDetailData.suggested_swarm.seeders} seeds).
         </div>
         <button class="btn btn-primary" style="padding: 3px 10px; font-size: 11px;" onclick="upgradeToSwarm('${currentDetailData.info_hash}')">
           Upgrade to Swarm
@@ -598,14 +634,12 @@ function switchDetailTab(tab) {
           ${currentDetailData.qualifier ? `
             <div style="display: flex; flex-direction: column; gap: 4px;">
               <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-                <span class="torrent-badge badge-qualifier badge-qualifier-${currentDetailData.qualifier.class}" style="font-size: 12px; padding: 3px 9px;">
-                  ${currentDetailData.qualifier.label}
-                </span>
+                ${getQualifierBadge(currentDetailData.qualifier)}
                 <span style="font-weight: 500;">${escapeHtml(currentDetailData.qualifier.description)}</span>
               </div>
               ${currentDetailData.qualifier.easter_egg ? `
-                <div style="font-style: italic; color: var(--adw-dim-label); font-size: 11.5px; margin-top: 2px;">
-                  💡 "${escapeHtml(currentDetailData.qualifier.easter_egg)}"
+                <div style="color: var(--adw-dim-label); font-size: 11.5px; margin-top: 2px; display: flex; align-items: center; gap: 4px;">
+                  ${ICONS.lightbulb} <span style="font-style: italic;">"${escapeHtml(currentDetailData.qualifier.easter_egg)}"</span>
                 </div>
               ` : ''}
             </div>
@@ -615,7 +649,7 @@ function switchDetailTab(tab) {
         ${currentDetailData.availability_eta ? `
           <span class="detail-label">Availability Forecast:</span>
           <div class="detail-val" style="color: #62a0ea; font-weight: 600;">
-            ⏳ ${escapeHtml(currentDetailData.availability_eta)}
+            ${ICONS.clock} ${escapeHtml(currentDetailData.availability_eta)}
             <span style="font-weight: normal; color: var(--adw-dim-label); font-size: 11.5px; margin-left: 6px;">
               (estimated seeder duty cycle: ${(currentDetailData.qualifier.uptime_ratio * 100).toFixed(0)}%)
             </span>
@@ -875,7 +909,7 @@ async function submitCreateTorrent() {
         document.getElementById('send-result-view').style.display = 'flex';
         document.getElementById('created-magnet-val').value = data.magnet_uri;
         document.getElementById('created-hash-val').value = data.info_hash;
-        showToast("✓ Torrent created and now seeding to DHT network!", "accent");
+        showToast("Torrent created and now seeding to DHT network!", "accent");
       } else {
         showToast("Failed to create torrent: " + (data.error || 'Unknown error'), "error");
       }
@@ -909,7 +943,7 @@ async function submitCreateTorrent() {
         document.getElementById('send-result-view').style.display = 'flex';
         document.getElementById('created-magnet-val').value = data.magnet_uri;
         document.getElementById('created-hash-val').value = data.info_hash;
-        showToast("✓ Web mirror bridged to BitTorrent swarm with WebSeed acceleration!", "accent");
+        showToast("Web mirror bridged to BitTorrent swarm with WebSeed acceleration!", "accent");
       } else {
         showToast("Bridge failed: " + (data.error || 'Unknown error'), "error");
       }
@@ -1046,7 +1080,7 @@ function renderSearchResults() {
   container.innerHTML = sorted.map((r, idx) => {
     const tagClass = `tag-${r.provider_type || 'torrentscsv'}`;
     const scoreText = r.score > 0 ? `<span class="score-badge">Relevance: ${r.score.toFixed(0)}</span>` : '';
-    const fileCountBadge = (r.files && r.files.length > 0) ? `<span style="font-size: 11px; opacity: 0.85;">📁 ${r.files.length} ${r.files.length === 1 ? 'file' : 'files'}</span>` : '';
+    const fileCountBadge = (r.files && r.files.length > 0) ? `<span style="font-size: 11px; opacity: 0.85; display: inline-flex; align-items: center;">${ICONS.folder} ${r.files.length} ${r.files.length === 1 ? 'file' : 'files'}</span>` : '';
 
     let seedersHtml = '';
     if (r.seeders !== undefined && r.seeders >= 0) {
@@ -1068,12 +1102,12 @@ function renderSearchResults() {
       if (r.health.status === 'periodic') {
         const titleTooltip = escapeHtml(`Historical Swarm Pattern: ${r.health.description || ''}`);
         const peakText = r.health.peak_window ? `~${r.health.peak_window}` : 'Periodic';
-        healthBadge = `<span class="health-badge health-periodic" style="background: rgba(230, 162, 60, 0.15); color: #e6a23c; border: 1px solid rgba(230, 162, 60, 0.3); padding: 2px 7px; border-radius: 10px; font-size: 11px; font-weight: 500;" title="${titleTooltip}">🟡 ${peakText}</span>`;
+        healthBadge = `<span class="health-badge health-periodic" style="background: rgba(230, 162, 60, 0.15); color: #e6a23c; border: 1px solid rgba(230, 162, 60, 0.3); padding: 2px 7px; border-radius: 10px; font-size: 11px; font-weight: 500; display: inline-flex; align-items: center;" title="${titleTooltip}">${ICONS.dot}${escapeHtml(peakText)}</span>`;
       } else if (r.health.status === 'dormant') {
         const titleTooltip = escapeHtml(`Swarm History: ${r.health.description || 'No active seeders recorded in checks'}`);
-        healthBadge = `<span class="health-badge health-dormant" style="background: rgba(245, 108, 108, 0.15); color: #f56c6c; border: 1px solid rgba(245, 108, 108, 0.3); padding: 2px 7px; border-radius: 10px; font-size: 11px; font-weight: 500;" title="${titleTooltip}">🔴 Dormant</span>`;
+        healthBadge = `<span class="health-badge health-dormant" style="background: rgba(245, 108, 108, 0.15); color: #f56c6c; border: 1px solid rgba(245, 108, 108, 0.3); padding: 2px 7px; border-radius: 10px; font-size: 11px; font-weight: 500; display: inline-flex; align-items: center;" title="${titleTooltip}">${ICONS.dot}Dormant</span>`;
       } else if (r.health.status === 'active') {
-        healthBadge = `<span class="health-badge health-active" style="background: rgba(103, 194, 58, 0.15); color: #67c23a; border: 1px solid rgba(103, 194, 58, 0.3); padding: 2px 7px; border-radius: 10px; font-size: 11px; font-weight: 500;" title="Live seeders active right now">🟢 Active</span>`;
+        healthBadge = `<span class="health-badge health-active" style="background: rgba(103, 194, 58, 0.15); color: #67c23a; border: 1px solid rgba(103, 194, 58, 0.3); padding: 2px 7px; border-radius: 10px; font-size: 11px; font-weight: 500; display: inline-flex; align-items: center;" title="Live seeders active right now">${ICONS.dot}Active</span>`;
       }
     }
 
@@ -1116,7 +1150,7 @@ async function scrapeSwarmCard(idx, event) {
 
   const targetEl = event ? event.currentTarget : null;
   if (targetEl) {
-    targetEl.innerHTML = '⏳ probing...';
+    targetEl.innerHTML = `${ICONS.clock} probing...`;
   }
 
   try {
@@ -1139,17 +1173,13 @@ async function scrapeSwarmCard(idx, event) {
       targetEl.innerHTML = `${ICONS.arrowUp}0 seeds`;
       result.seeders = 0;
       result.leechers = 0;
-      result.health = { status: 'dormant', description: 'Probe timed out (no responding peers)' };
     }
   }
   renderSearchResults();
 }
 
-let currentInspectData = null;
-let currentInspectFiles = [];
-
-async function openInspectModal(resultIdx) {
-  const result = rawSearchResults[resultIdx];
+async function openInspectModal(idx) {
+  const result = rawSearchResults[idx];
   if (!result) return;
 
   const modal = document.getElementById('modal-inspect');
@@ -1186,7 +1216,7 @@ async function openInspectModal(resultIdx) {
   // Otherwise, query live BEP 9 metadata / DHT inspect endpoint
   filesContainer.innerHTML = `
     <div style="text-align: center; padding: 40px; color: var(--adw-dim-label);">
-      <div style="font-size: 24px; margin-bottom: 8px;">⏳</div>
+      <div style="margin-bottom: 8px;">${ICONS.clock}</div>
       <div style="font-weight: 600; margin-bottom: 4px; color: var(--adw-fg-color);">Resolving torrent metadata...</div>
       <div style="font-size: 11.5px;">Fetching file directory structure from DHT swarm peers</div>
     </div>
@@ -1243,7 +1273,7 @@ async function openInspectModal(resultIdx) {
   } catch (err) {
     filesContainer.innerHTML = `
       <div style="text-align: center; padding: 35px 20px; color: var(--adw-dim-label);">
-        <div style="font-size: 22px; margin-bottom: 6px; color: var(--adw-warning);">⚠️</div>
+        <div style="margin-bottom: 6px; color: var(--adw-warning);">${ICONS.alert}</div>
         <div style="font-size: 13px; font-weight: 600; color: var(--adw-fg-color); margin-bottom: 4px;">Live Metadata Swarm Lookup</div>
         <div style="font-size: 12px; margin-bottom: 12px;">${escapeHtml(err.message)}</div>
         <div style="font-size: 11.5px; opacity: 0.8;">Single file torrent: <strong style="color: var(--adw-fg-color);">${escapeHtml(result.title)}</strong> (${formatBytes(result.size_bytes)})</div>
@@ -1264,13 +1294,13 @@ function renderInspectFiles(files) {
 
   const getIconForFile = (path) => {
     const ext = path.split('.').pop().toLowerCase();
-    if (['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v', 'ts'].includes(ext)) return '🎬';
-    if (['mp3', 'flac', 'wav', 'aac', 'ogg', 'm4a', 'opus', 'wma'].includes(ext)) return '🎵';
-    if (['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'iso'].includes(ext)) return '📦';
-    if (['pdf', 'epub', 'mobi', 'doc', 'docx', 'txt', 'rtf'].includes(ext)) return '📄';
-    if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp'].includes(ext)) return '🖼️';
-    if (['exe', 'msi', 'deb', 'rpm', 'apk', 'dmg', 'AppImage'].includes(ext)) return '⚙️';
-    return '📄';
+    if (['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v', 'ts'].includes(ext)) return ICONS.fileVideo;
+    if (['mp3', 'flac', 'wav', 'aac', 'ogg', 'm4a', 'opus', 'wma'].includes(ext)) return ICONS.fileAudio;
+    if (['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'iso'].includes(ext)) return ICONS.fileArchive;
+    if (['pdf', 'epub', 'mobi', 'doc', 'docx', 'txt', 'rtf'].includes(ext)) return ICONS.file;
+    if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp'].includes(ext)) return ICONS.fileImage;
+    if (['exe', 'msi', 'deb', 'rpm', 'apk', 'dmg', 'AppImage'].includes(ext)) return ICONS.fileCode;
+    return ICONS.file;
   };
 
   container.innerHTML = files.map(f => {
@@ -1279,7 +1309,7 @@ function renderInspectFiles(files) {
     return `
       <div style="display: flex; justify-content: space-between; align-items: center; padding: 7px 12px; border-bottom: 1px solid rgba(128,128,128,0.1); font-size: 12px;">
         <div style="display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; padding-right: 12px;">
-          <span style="font-size: 14px;">${icon}</span>
+          ${icon}
           <span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(f.path)}">${escapeHtml(f.path)}</span>
         </div>
         <div style="color: var(--adw-dim-label); font-weight: 500; font-size: 11.5px; white-space: nowrap;">${sizeStr}</div>
@@ -1348,7 +1378,7 @@ async function downloadFromSearch(encodedURI, btn) {
     });
     const data = await res.json();
     if (data.status === 'ok') {
-      showToast("✓ Transfer started!", "info", 2500);
+      showToast("Transfer started!", "info", 2500);
       switchMainView('torrents');
     } else {
       showToast("Failed to add download: " + (data.error || 'Unknown error'), "error", 4000);
@@ -1391,7 +1421,7 @@ async function submitAddTorrent() {
       const res = await fetch('/api/torrents/add', { method: 'POST', body: formData });
       const data = await res.json();
       if (data.status === 'ok') {
-        showToast("✓ Transfer added!", "info", 2500);
+        showToast("Transfer added!", "info", 2500);
         switchMainView('torrents');
       } else {
         showToast("Failed: " + (data.error || 'Unknown error'), "error", 4000);
@@ -1413,7 +1443,7 @@ async function submitAddTorrent() {
       });
       const data = await res.json();
       if (data.status === 'ok') {
-        showToast("✓ Transfer started!", "info", 2500);
+        showToast("Transfer started!", "info", 2500);
         switchMainView('torrents');
       } else {
         showToast("Failed: " + (data.error || 'Unknown error'), "error", 4000);
@@ -1529,9 +1559,9 @@ function renderProvidersList() {
             <option value="0.7" ${p.weight >= 0.55 && p.weight < 0.85 ? 'selected' : ''}>Moderate (0.7x)</option>
             <option value="0.4" ${p.weight < 0.55 ? 'selected' : ''}>Low (0.4x)</option>
           </select>
-          <button class="btn" style="padding: 3px 8px; font-size: 11px;" id="btn-test-prov-${idx}" onclick="testSingleProvider(${idx}, this)" title="Test live latency and results">⚡ Test</button>
-          <button class="btn" style="padding: 3px 8px; font-size: 11px;" onclick="openEditProviderModal(${idx})" title="Edit provider details">✏️</button>
-          <button class="btn" style="padding: 3px 8px; font-size: 11px; color: var(--adw-error);" onclick="deleteProvider(${idx})" title="Remove provider">🗑️</button>
+          <button class="btn" style="padding: 3px 8px; font-size: 11px; display: inline-flex; align-items: center;" id="btn-test-prov-${idx}" onclick="testSingleProvider(${idx}, this)" title="Test live latency and results">${ICONS.zap} Test</button>
+          <button class="btn btn-icon" style="padding: 3px 6px; font-size: 11px;" onclick="openEditProviderModal(${idx})" title="Edit provider details">${ICONS.edit}</button>
+          <button class="btn btn-icon" style="padding: 3px 6px; font-size: 11px; color: var(--adw-error);" onclick="deleteProvider(${idx})" title="Remove provider">${ICONS.trash}</button>
         </div>
       </div>
     `;
@@ -1554,18 +1584,18 @@ async function testSingleProvider(idx, btnEl) {
     });
     const data = await res.json();
     if (data.ok) {
-      showToast(`✓ ${p.name}: ${data.count} hits (${data.duration_ms}ms)`, "success", 3000);
-      btnEl.textContent = `✓ ${data.count} (${data.duration_ms}ms)`;
+      showToast(`${p.name}: ${data.count} hits (${data.duration_ms}ms)`, "success", 3000);
+      btnEl.innerHTML = `${ICONS.check} ${data.count} (${data.duration_ms}ms)`;
     } else {
-      showToast(`✕ ${p.name} failed: ${data.error || 'Timeout'}`, "warning", 3500);
-      btnEl.textContent = '✕ Fail';
+      showToast(`${p.name} failed: ${data.error || 'Timeout'}`, "warning", 3500);
+      btnEl.innerHTML = `${ICONS.x} Fail`;
     }
   } catch (err) {
     showToast(`Error testing ${p.name}: ${err.message}`, "error", 3000);
-    btnEl.textContent = '✕ Error';
+    btnEl.innerHTML = `${ICONS.x} Error`;
   } finally {
     setTimeout(() => {
-      btnEl.textContent = originalText;
+      btnEl.innerHTML = originalText;
       btnEl.disabled = false;
     }, 4000);
   }
@@ -1687,16 +1717,16 @@ async function testCurrentProviderEdit() {
     if (data.ok) {
       feedback.style.background = 'rgba(46, 194, 126, 0.2)';
       feedback.style.color = '#57e389';
-      feedback.textContent = `✓ Success! Retrieved ${data.count} torrents in ${data.duration_ms}ms.`;
+      feedback.textContent = `Success! Retrieved ${data.count} torrents in ${data.duration_ms}ms.`;
     } else {
       feedback.style.background = 'rgba(224, 27, 36, 0.2)';
       feedback.style.color = '#ff7b63';
-      feedback.textContent = `✕ Test Failed: ${data.error || 'Could not parse response'}`;
+      feedback.textContent = `Test Failed: ${data.error || 'Could not parse response'}`;
     }
   } catch (err) {
     feedback.style.background = 'rgba(224, 27, 36, 0.2)';
     feedback.style.color = '#ff7b63';
-    feedback.textContent = `✕ Network Error: ${err.message}`;
+    feedback.textContent = `Network Error: ${err.message}`;
   }
 }
 
@@ -1830,7 +1860,7 @@ async function triggerPreseedDHT() {
     const res = await fetch('/api/dht/preseed', { method: 'POST' });
     const data = await res.json();
     if (data.status) {
-      showToast(`⚡ TorrentsCSV pre-seed started! Current local cache: ${data.current_size || 0} torrents.`, "success", 4000);
+      showToast(`TorrentsCSV pre-seed started! Current local cache: ${data.current_size || 0} torrents.`, "success", 4000);
     }
   } catch (err) {
     showToast("Pre-seeding error: " + err.message, "error", 3000);
