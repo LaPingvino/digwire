@@ -570,25 +570,23 @@ func (e *Engine) UpgradeHTTPToSwarm(httpTaskID string) (*torrent.Torrent, error)
 
 			_ = os.MkdirAll(filepath.Dir(destFile), 0755)
 
-			// Move .part file if exists
+			// Move .part file if exists into target torrent layout .part path
 			if _, err := os.Stat(partPath); err == nil {
-				_ = os.Rename(partPath, destFile)
+				destPart := destFile + ".part"
+				_ = os.Rename(partPath, destPart)
 			}
 
-			// Cryptographically verify existing local data on disk
-			_ = tor.VerifyData()
-
-			if isPartial {
-				for i, f := range tor.Files() {
-					if i == matchedIdx {
-						f.Download()
-					} else {
-						f.Cancel()
+			e.ConsolidateAndVerify(tor, func() {
+				if isPartial {
+					for i, f := range tor.Files() {
+						if i == matchedIdx {
+							f.Download()
+						} else {
+							f.Cancel()
+						}
 					}
 				}
-			} else {
-				tor.DownloadAll()
-			}
+			})
 		}
 
 		e.mu.Lock()

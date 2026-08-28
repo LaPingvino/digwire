@@ -172,12 +172,15 @@ function renderTorrents() {
     const isPaused = t.state === 'paused';
     const isSeeding = t.state === 'seeding' || t.state === 'completed';
     const isMeta = t.state === 'metadata';
+    const isVerifying = t.state === 'verifying';
 
     const isWebDownload = t.magnet_uri && (t.magnet_uri.startsWith('http://') || t.magnet_uri.startsWith('https://'));
 
     let metaString = `${formatBytes(t.completed_bytes)} of ${formatBytes(t.total_bytes)} (${t.progress.toFixed(1)}%)`;
     if (isMeta) {
       metaString = 'Downloading metadata from peers...';
+    } else if (isVerifying) {
+      metaString = `Verifying & hashing local data... (${t.progress.toFixed(1)}%)`;
     } else if (t.download_rate > 0) {
       metaString += ` • ↓ ${formatSpeed(t.download_rate)}`;
       const eta = formatETA(t.eta_seconds);

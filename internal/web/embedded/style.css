@@ -245,6 +245,11 @@ body {
   color: var(--adw-dim-label);
 }
 
+.badge-verifying, .badge-checking {
+  background: rgba(145, 65, 172, 0.2);
+  color: #c061cb;
+}
+
 /* Progress Bar */
 .progress-bar-container {
   background-color: rgba(128, 128, 128, 0.2);

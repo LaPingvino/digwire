@@ -129,6 +129,7 @@ type rateTracker struct {
 	uploadRate          int64
 	addedAt             int64
 	isPaused            bool
+	isVerifying         bool
 	displayName         string
 	savedTotalBytes     int64
 	savedCompletedBytes int64
@@ -473,32 +474,16 @@ func (e *Engine) loadSession() {
 			t.DisallowDataDownload()
 		}
 
-		go func(tor *torrent.Torrent, seeds []string, isPaused bool, h string) {
+		go func(tor *torrent.Torrent, seeds []string, h string) {
 			<-tor.GotInfo()
-			// Persist .torrent metadata to cache folder so subsequent restarts never lose metadata or piece info
-			e.saveTorrentMetainfo(tor)
-
-			// Adopt any external partial/remnant local files (.crdownload, wget partials) into layout
-			e.AdoptExistingLocalProgress(tor)
-
-			// Cryptographically verify existing local pieces on disk before downloading
-			_ = tor.VerifyData()
-
 			if len(seeds) > 0 && tor.Info() != nil {
 				clean := SanitizeWebSeeds(seeds, tor.Info().IsDir())
 				if len(clean) > 0 {
 					tor.AddWebSeeds(clean)
 				}
 			}
-			if !isPaused {
-				tor.DownloadAll()
-			} else {
-				tor.DisallowDataDownload()
-			}
-			e.mu.Lock()
-			e.saveSessionLocked()
-			e.mu.Unlock()
-		}(t, item.WebSeeds, item.IsPaused, hash)
+			e.ConsolidateAndVerify(tor)
+		}(t, item.WebSeeds, hash)
 	}
 
 	// Restore HTTP downloads
@@ -706,13 +691,6 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 		}
 
 		<-tor.GotInfo()
-		e.saveTorrentMetainfo(tor)
-
-		// Adopt any remnant / partial local files (.part, .crdownload, wget partials)
-		e.AdoptExistingLocalProgress(tor)
-
-		// Always verify existing data on disk first
-		_ = tor.VerifyData()
 
 		if len(seeds) > 0 && tor.Info() != nil {
 			clean := SanitizeWebSeeds(seeds, tor.Info().IsDir())
@@ -720,7 +698,6 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 				tor.AddWebSeeds(clean)
 			}
 		}
-		tor.DownloadAll()
 		if e.dhtIndexer != nil && tor.Info() != nil {
 			var fileNames []string
 			for _, f := range tor.Info().UpvertedFiles() {
@@ -735,9 +712,7 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 				Files:        fileNames,
 			})
 		}
-		e.mu.Lock()
-		e.saveSessionLocked()
-		e.mu.Unlock()
+		e.ConsolidateAndVerify(tor)
 	}(t, wsList, peerInfos)
 
 	return t, nil
@@ -760,12 +735,7 @@ func (e *Engine) AddTorrentFile(reader io.Reader) (*torrent.Torrent, error) {
 	e.initTracker(t.InfoHash().HexString())
 	e.saveSessionLocked()
 
-	go func(tor *torrent.Torrent) {
-		<-tor.GotInfo()
-		e.AdoptExistingLocalProgress(tor)
-		_ = tor.VerifyData()
-		tor.DownloadAll()
-	}(t)
+	e.ConsolidateAndVerify(t)
 	return t, nil
 }
 
@@ -979,18 +949,96 @@ func (e *Engine) initTracker(hash string, displayName ...string) {
 	}
 }
 
+// ConsolidateAndVerify executes a full data consolidation and cryptographic piece verification pipeline:
+// 1. Ensures no duplicate verification races on the same torrent.
+// 2. Temporarily disallows incoming peer data writes to prevent write collisions during disk hashing.
+// 3. Flags the state as "verifying" so the UI and engine accurately reflect rechecking status.
+// 4. Consolidates & adopts any external download remnants (.crdownload, .download, .tmp, wget root files).
+// 5. Executes cryptographic SHA-1 verification across all pieces on disk.
+// 6. Aligns verified byte totals, clears verifying status, and safely resumes downloading if unpaused.
+func (e *Engine) ConsolidateAndVerify(tor *torrent.Torrent, onComplete ...func()) {
+	if tor == nil {
+		return
+	}
+
+	hash := tor.InfoHash().HexString()
+
+	go func() {
+		<-tor.GotInfo()
+
+		e.mu.Lock()
+		tr := e.rateMap[hash]
+		if tr != nil {
+			if tr.isVerifying {
+				e.mu.Unlock()
+				return // Already verifying
+			}
+			tr.isVerifying = true
+		}
+		e.mu.Unlock()
+
+		// 1. Disallow incoming peer data writes while hashing disk files
+		tor.DisallowDataDownload()
+
+		// 2. Persist metainfo
+		e.saveTorrentMetainfo(tor)
+
+		// 3. Consolidate & adopt any external remnants
+		e.AdoptExistingLocalProgress(tor)
+
+		// 4. Run cryptographic verification
+		_ = tor.VerifyData()
+
+		// 5. Post-verification state alignment
+		e.mu.Lock()
+		if tr := e.rateMap[hash]; tr != nil {
+			tr.isVerifying = false
+			tr.savedTotalBytes = tor.Length()
+			tr.savedCompletedBytes = tor.BytesCompleted()
+			if !tr.isPaused {
+				tor.AllowDataDownload()
+				tor.DownloadAll()
+			} else {
+				tor.DisallowDataDownload()
+			}
+		} else {
+			tor.AllowDataDownload()
+			tor.DownloadAll()
+		}
+		e.saveSessionLocked()
+		e.mu.Unlock()
+
+		for _, fn := range onComplete {
+			if fn != nil {
+				fn()
+			}
+		}
+	}()
+}
+
 func (e *Engine) VerifyTorrentData(infoHashHex string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	// Check if HTTP Task
+	e.httpManager.mu.RLock()
+	httpTask, httpExists := e.httpManager.tasks[infoHashHex]
+	e.httpManager.mu.RUnlock()
+
+	if httpExists {
+		go func(task *HTTPTask) {
+			task.mu.Lock()
+			partPath := task.DestPath + ".part"
+			task.completedChunks = loadCompletedChunks(partPath)
+			task.mu.Unlock()
+		}(httpTask)
+		return nil
+	}
+
 	torrents := e.client.Torrents()
 	for _, t := range torrents {
 		if strings.EqualFold(t.InfoHash().HexString(), infoHashHex) {
-			go func(tor *torrent.Torrent) {
-				<-tor.GotInfo()
-				e.AdoptExistingLocalProgress(tor)
-				_ = tor.VerifyData()
-			}(t)
+			e.ConsolidateAndVerify(t)
 			return nil
 		}
 	}
@@ -1035,19 +1083,10 @@ func (e *Engine) Resume(infoHashHex string) error {
 	torrents := e.client.Torrents()
 	for _, t := range torrents {
 		if strings.EqualFold(t.InfoHash().HexString(), infoHashHex) {
-			t.AllowDataDownload()
 			if tr, ok := e.rateMap[infoHashHex]; ok {
 				tr.isPaused = false
 			}
-			go func(tor *torrent.Torrent) {
-				<-tor.GotInfo()
-				e.AdoptExistingLocalProgress(tor)
-				_ = tor.VerifyData()
-				tor.DownloadAll()
-				e.mu.Lock()
-				e.saveSessionLocked()
-				e.mu.Unlock()
-			}(t)
+			e.ConsolidateAndVerify(t)
 			e.saveSessionLocked()
 			return nil
 		}
@@ -1120,7 +1159,9 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 				progress = (float64(completedBytes) / float64(totalBytes)) * 100.0
 			}
 
-			if isPaused {
+			if tracker.isVerifying {
+				state = "verifying"
+			} else if isPaused {
 				state = "paused"
 			} else if completedBytes >= totalBytes && totalBytes > 0 {
 				state = "seeding"
