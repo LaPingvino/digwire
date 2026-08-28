@@ -56,6 +56,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/torrents/inspect", s.handleInspectTorrent)
 	s.mux.HandleFunc("GET /api/torrents/scrape", s.handleScrapeTorrent)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/files/{index}/priority", s.handleSetFilePriority)
+	s.mux.HandleFunc("POST /api/torrents/{hash}/open", s.handleOpenTorrent)
+	s.mux.HandleFunc("POST /api/torrents/{hash}/show-in-folder", s.handleShowTorrentInFolder)
+	s.mux.HandleFunc("POST /api/torrents/{hash}/files/{index}/open", s.handleOpenFile)
+	s.mux.HandleFunc("POST /api/torrents/{hash}/files/{index}/show-in-folder", s.handleShowFileInFolder)
+	s.mux.HandleFunc("GET /api/torrents/{hash}/files/{index}/view", s.handleStreamFile)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/webseeds", s.handleAddWebSeed)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/upgrade-to-swarm", s.handleUpgradeToSwarm)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/find-swarm", s.handleTriggerFindSwarm)
@@ -279,6 +284,124 @@ func (s *Server) handleSetFilePriority(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleOpenTorrent(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	hash := r.PathValue("hash")
+	targetPath, err := s.engine.GetTorrentSavePath(hash)
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	if err := engine.OpenPath(targetPath); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "path": targetPath})
+}
+
+func (s *Server) handleShowTorrentInFolder(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	hash := r.PathValue("hash")
+	targetPath, err := s.engine.GetTorrentSavePath(hash)
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	if err := engine.ShowInFolder(targetPath); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "path": targetPath})
+}
+
+func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	hash := r.PathValue("hash")
+	idxStr := r.PathValue("index")
+	idx, err := strconv.Atoi(idxStr)
+	if err != nil {
+		http.Error(w, `{"error":"invalid file index"}`, http.StatusBadRequest)
+		return
+	}
+
+	filePath, err := s.engine.GetTorrentFilePath(hash, idx)
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	if err := engine.OpenPath(filePath); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "path": filePath})
+}
+
+func (s *Server) handleShowFileInFolder(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	hash := r.PathValue("hash")
+	idxStr := r.PathValue("index")
+	idx, err := strconv.Atoi(idxStr)
+	if err != nil {
+		http.Error(w, `{"error":"invalid file index"}`, http.StatusBadRequest)
+		return
+	}
+
+	filePath, err := s.engine.GetTorrentFilePath(hash, idx)
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	if err := engine.ShowInFolder(filePath); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "path": filePath})
+}
+
+func (s *Server) handleStreamFile(w http.ResponseWriter, r *http.Request) {
+	hash := r.PathValue("hash")
+	idxStr := r.PathValue("index")
+	idx, err := strconv.Atoi(idxStr)
+	if err != nil {
+		http.Error(w, "invalid file index", http.StatusBadRequest)
+		return
+	}
+
+	filePath, err := s.engine.GetTorrentFilePath(hash, idx)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	cleanPath := filepath.Clean(filePath)
+	if _, err := os.Stat(cleanPath); err != nil {
+		if _, pErr := os.Stat(cleanPath + ".part"); pErr == nil {
+			cleanPath = cleanPath + ".part"
+		} else {
+			http.Error(w, "file not found on disk or not downloaded yet", http.StatusNotFound)
+			return
+		}
+	}
+
+	http.ServeFile(w, r, cleanPath)
 }
 
 type addWebSeedRequest struct {

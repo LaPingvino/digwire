@@ -26,7 +26,9 @@ const ICONS = {
   package: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 3px;"><line x1="16.5" y1="9.4" x2="7.5" y2="4.21"></line><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>`,
   arrowUp: `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 2px;"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>`,
   arrowDown: `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 2px;"><line x1="12" y1="5" x2="12" y2="19"></line><polyline points="19 12 12 19 5 12"></polyline></svg>`,
-  zap: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 3px;"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>`
+  zap: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 3px;"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>`,
+  folder: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>`,
+  external: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>`
 };
 
 // Helpers
@@ -221,7 +223,7 @@ function renderTorrents() {
     }
 
     return `
-      <div class="torrent-card">
+      <div class="torrent-card" ondblclick="openTorrentTarget('${t.info_hash}')" title="Double-click to open downloaded files">
         <div class="card-header">
           <div class="torrent-title" title="${t.name}" style="cursor: pointer;" onclick="openDetailsModal('${t.info_hash}')">${t.name}</div>
           <span class="torrent-badge badge-${t.state}">${t.state}</span>
@@ -236,6 +238,10 @@ function renderTorrents() {
         <div class="card-footer">
           <div class="torrent-meta">${metaString}</div>
           <div class="card-actions">
+            ${(t.progress >= 100 || t.state === 'seeding' || t.state === 'completed') ? 
+              `<button class="btn btn-icon" title="Open Downloaded File or Folder" onclick="openTorrentTarget('${t.info_hash}')">${ICONS.play}</button>` : ''
+            }
+            <button class="btn btn-icon" title="Show in File Manager" onclick="showTorrentInFolder('${t.info_hash}')">${ICONS.folder}</button>
             ${!isWebDownload ? 
               `<button class="btn btn-icon" title="Verify Local Data (Recheck)" onclick="verifyTorrent('${t.info_hash}', this)">${ICONS.verify}</button>` : ''
             }
@@ -425,6 +431,64 @@ async function openDownloadFolder() {
   await fetch('/api/open-folder', { method: 'POST' });
 }
 
+async function openTorrentTarget(hash) {
+  try {
+    const res = await fetch(`/api/torrents/${hash}/open`, { method: 'POST' });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      const name = data.path ? data.path.split('/').pop() : 'item';
+      showToast(`✓ Opening ${escapeHtml(name)}...`, "info", 2500);
+    } else {
+      showToast("Could not open: " + (data.error || 'Unknown error'), "error", 4000);
+    }
+  } catch (err) {
+    showToast("Error opening: " + err.message, "error", 4000);
+  }
+}
+
+async function showTorrentInFolder(hash) {
+  try {
+    const res = await fetch(`/api/torrents/${hash}/show-in-folder`, { method: 'POST' });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      showToast("✓ Revealed in File Manager", "info", 2000);
+    } else {
+      showToast("Could not show in folder: " + (data.error || 'Unknown error'), "error", 4000);
+    }
+  } catch (err) {
+    showToast("Error showing in folder: " + err.message, "error", 4000);
+  }
+}
+
+async function openTorrentFile(hash, fileIndex) {
+  try {
+    const res = await fetch(`/api/torrents/${hash}/files/${fileIndex}/open`, { method: 'POST' });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      const name = data.path ? data.path.split('/').pop() : 'file';
+      showToast(`✓ Opening ${escapeHtml(name)}...`, "info", 2500);
+    } else {
+      showToast("Could not open file: " + (data.error || 'Unknown error'), "error", 4000);
+    }
+  } catch (err) {
+    showToast("Error opening file: " + err.message, "error", 4000);
+  }
+}
+
+async function showTorrentFileInFolder(hash, fileIndex) {
+  try {
+    const res = await fetch(`/api/torrents/${hash}/files/${fileIndex}/show-in-folder`, { method: 'POST' });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      showToast("✓ Revealed file in File Manager", "info", 2000);
+    } else {
+      showToast("Could not show in folder: " + (data.error || 'Unknown error'), "error", 4000);
+    }
+  } catch (err) {
+    showToast("Error showing in folder: " + err.message, "error", 4000);
+  }
+}
+
 // Torrent Details Inspector
 async function openDetailsModal(hash) {
   try {
@@ -495,8 +559,18 @@ function switchDetailTab(tab) {
         <span class="detail-label">Pieces:</span>
         <span class="detail-val">${currentDetailData.num_pieces || '1'} pieces (${formatBytes(currentDetailData.piece_length || currentDetailData.total_bytes)} per piece)</span>
 
-        <span class="detail-label">Storage Path:</span>
-        <span class="detail-val" style="font-family: monospace;">${currentDetailData.download_dir}</span>
+        <span class="detail-label">Storage Location:</span>
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
+          <span class="detail-val" style="font-family: monospace; font-size: 11.5px; word-break: break-all;">${escapeHtml(currentDetailData.save_path || currentDetailData.download_dir)}</span>
+          <div style="display: flex; gap: 6px;">
+            <button class="btn" style="padding: 2px 8px; font-size: 11px;" title="Open file or folder with system default app" onclick="openTorrentTarget('${currentDetailData.info_hash}')">
+              ${ICONS.play} Open
+            </button>
+            <button class="btn" style="padding: 2px 8px; font-size: 11px;" title="Reveal in system file manager" onclick="showTorrentInFolder('${currentDetailData.info_hash}')">
+              ${ICONS.folder} Show in Folder
+            </button>
+          </div>
+        </div>
 
         <span class="detail-label">Connected Swarm:</span>
         <span class="detail-val">
@@ -535,34 +609,55 @@ function switchDetailTab(tab) {
           <tr>
             ${isTorrent ? '<th style="width: 32px;"></th>' : ''}
             <th>Filename</th>
-            <th>Size</th>
-            <th>Progress</th>
+            <th style="width: 85px;">Size</th>
+            <th style="width: 75px;">Progress</th>
             ${isTorrent ? '<th style="width: 90px;">Priority</th>' : ''}
+            <th style="width: 120px; text-align: right;">Actions</th>
           </tr>
         </thead>
         <tbody>
           ${currentDetailData.files.map((f, i) => {
-            const isIncluded = f.priority !== 0;
             const fileIdx = f.index !== undefined ? f.index : i;
+            const isCompleted = f.completed || f.progress >= 100;
+            const isSkipped = f.priority === 0 && !isCompleted;
             return `
               <tr>
                 ${isTorrent ? `
                   <td>
-                    <input type="checkbox" ${isIncluded ? 'checked' : ''} onchange="toggleFileDownload('${currentDetailData.info_hash}', ${fileIdx}, this.checked)">
+                    <input type="checkbox" ${!isSkipped ? 'checked' : ''} onchange="toggleFileDownload('${currentDetailData.info_hash}', ${fileIdx}, this.checked)">
                   </td>
                 ` : ''}
-                <td style="word-break: break-all; ${!isIncluded ? 'opacity: 0.5; text-decoration: line-through;' : ''}">${f.path}</td>
+                <td style="word-break: break-all; ${isSkipped ? 'opacity: 0.5; text-decoration: line-through;' : ''}">
+                  <span class="file-name-link" style="${isCompleted ? 'cursor: pointer; font-weight: 500;' : ''}" ${isCompleted ? `title="Click to open with default application" onclick="openTorrentFile('${currentDetailData.info_hash}', ${fileIdx})"` : ''}>
+                    ${escapeHtml(f.path)}
+                  </span>
+                </td>
                 <td style="white-space: nowrap;">${formatBytes(f.length)}</td>
                 <td style="white-space: nowrap;">${f.progress.toFixed(0)}%</td>
                 ${isTorrent ? `
                   <td>
                     <select class="sort-select" style="padding: 2px 4px; font-size: 11px;" onchange="updateFilePriority('${currentDetailData.info_hash}', ${fileIdx}, this.value)">
-                      <option value="1" ${f.priority === 1 || f.priority === undefined ? 'selected' : ''}>Normal</option>
+                      <option value="1" ${!isSkipped && f.priority !== 2 ? 'selected' : ''}>Normal</option>
                       <option value="2" ${f.priority === 2 ? 'selected' : ''}>High</option>
-                      <option value="0" ${f.priority === 0 ? 'selected' : ''}>Skip</option>
+                      <option value="0" ${isSkipped ? 'selected' : ''}>Skip</option>
                     </select>
                   </td>
                 ` : ''}
+                <td style="white-space: nowrap; text-align: right;">
+                  <div style="display: flex; gap: 4px; justify-content: flex-end; align-items: center;">
+                    ${isCompleted ? `
+                      <button class="btn" style="padding: 2px 6px; font-size: 11px;" title="Open with system application" onclick="openTorrentFile('${currentDetailData.info_hash}', ${fileIdx})">
+                        ${ICONS.play} Open
+                      </button>
+                    ` : ''}
+                    <button class="btn btn-icon" style="padding: 2px 6px; font-size: 11px;" title="Show in File Manager" onclick="showTorrentFileInFolder('${currentDetailData.info_hash}', ${fileIdx})">
+                      ${ICONS.folder}
+                    </button>
+                    <a class="btn btn-icon" style="padding: 2px 6px; font-size: 11px; text-decoration: none;" title="Stream or view in browser" target="_blank" href="/api/torrents/${currentDetailData.info_hash}/files/${fileIdx}/view">
+                      ${ICONS.external}
+                    </a>
+                  </div>
+                </td>
               </tr>
             `;
           }).join('')}

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -58,32 +59,35 @@ type SessionState struct {
 }
 
 type TorrentStatus struct {
-	InfoHash       string   `json:"info_hash"`
-	Name           string   `json:"name"`
-	MagnetURI      string   `json:"magnet_uri"`
-	TotalBytes     int64    `json:"total_bytes"`
-	CompletedBytes int64    `json:"completed_bytes"`
-	Progress       float64  `json:"progress"` // 0.0 to 100.0
-	DownloadRate   int64    `json:"download_rate"` // bytes/sec
-	UploadRate     int64    `json:"upload_rate"`   // bytes/sec
-	ETASeconds     int64    `json:"eta_seconds"`
-	State          string           `json:"state"` // "downloading", "seeding", "paused", "metadata", "completed"
-	Seeders        int              `json:"seeders"`
-	Leechers       int              `json:"leechers"`
-	Peers          int              `json:"peers"`
-	Files          []string         `json:"files,omitempty"`
-	AddedAt        int64            `json:"added_at"`
+	InfoHash       string          `json:"info_hash"`
+	Name           string          `json:"name"`
+	MagnetURI      string          `json:"magnet_uri"`
+	TotalBytes     int64           `json:"total_bytes"`
+	CompletedBytes int64           `json:"completed_bytes"`
+	Progress       float64         `json:"progress"` // 0.0 to 100.0
+	DownloadRate   int64           `json:"download_rate"` // bytes/sec
+	UploadRate     int64           `json:"upload_rate"`   // bytes/sec
+	ETASeconds     int64           `json:"eta_seconds"`
+	State          string          `json:"state"` // "downloading", "seeding", "paused", "metadata", "completed"
+	SavePath       string          `json:"save_path,omitempty"` // absolute path to downloaded file or folder
+	Seeders        int             `json:"seeders"`
+	Leechers       int             `json:"leechers"`
+	Peers          int             `json:"peers"`
+	Files          []string        `json:"files,omitempty"`
+	AddedAt        int64           `json:"added_at"`
 	SuggestedSwarm *SwarmSuggestion `json:"suggested_swarm,omitempty"`
-	WebSeeds       []string         `json:"webseeds,omitempty"`
+	WebSeeds       []string        `json:"webseeds,omitempty"`
 }
 
 type TorrentFileDetail struct {
 	Index          int     `json:"index"`
 	Path           string  `json:"path"`
+	FullPath       string  `json:"full_path,omitempty"`
 	Length         int64   `json:"length"`
 	BytesCompleted int64   `json:"bytes_completed"`
 	Progress       float64 `json:"progress"`
 	Priority       int     `json:"priority"` // 0: None, 1: Normal, 2: High
+	Completed      bool    `json:"completed"`
 }
 
 type PeerDetail struct {
@@ -101,6 +105,7 @@ type TorrentDetails struct {
 	PieceLength    int64               `json:"piece_length"`
 	NumPieces      int                 `json:"num_pieces"`
 	DownloadDir    string              `json:"download_dir"`
+	SavePath       string              `json:"save_path,omitempty"` // absolute path to downloaded file or folder
 	State          string              `json:"state"`
 	Seeders        int                 `json:"seeders"`
 	Leechers       int                 `json:"leechers"`
@@ -135,6 +140,7 @@ type rateTracker struct {
 	displayName         string
 	savedTotalBytes     int64
 	savedCompletedBytes int64
+	skippedFiles        map[int]bool
 }
 
 type Engine struct {
@@ -1238,6 +1244,7 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 		}
 		totalPeers := stats.ActivePeers + len(webConns)
 
+		savePath := e.getTorrentSavePath(t)
 		statuses = append(statuses, TorrentStatus{
 			InfoHash:       hash,
 			Name:           name,
@@ -1249,6 +1256,7 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 			UploadRate:     ulRate,
 			ETASeconds:     eta,
 			State:          state,
+			SavePath:       savePath,
 			Seeders:        seeders,
 			Leechers:       leechers,
 			Peers:          totalPeers,
@@ -1277,6 +1285,7 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 			UploadRate:     0,
 			ETASeconds:     task.ETASeconds,
 			State:          task.State,
+			SavePath:       task.DestPath,
 			Seeders:        len(task.Mirrors),
 			Peers:          len(task.Mirrors),
 			Files:          []string{task.Name},
@@ -1337,13 +1346,18 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 			CompletedBytes: task.CompletedBytes,
 			Progress:       prog,
 			DownloadDir:    e.cfg.DownloadDir,
+			SavePath:       task.DestPath,
 			State:          task.State,
 			Files: []TorrentFileDetail{
 				{
+					Index:          0,
 					Path:           task.Name,
+					FullPath:       task.DestPath,
 					Length:         task.TotalBytes,
 					BytesCompleted: task.CompletedBytes,
 					Progress:       prog,
+					Priority:       1,
+					Completed:      task.State == "completed" || (task.TotalBytes > 0 && task.CompletedBytes >= task.TotalBytes),
 				},
 			},
 			Peers:          peerDetails,
@@ -1390,13 +1404,23 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 					if fLen > 0 {
 						fProg = (float64(fComp) / float64(fLen)) * 100.0
 					}
+					prio := int(tf.Priority())
+					tr := e.rateMap[strings.ToLower(hashHex)]
+					if tr != nil && tr.skippedFiles != nil && tr.skippedFiles[idx] {
+						prio = 0
+					} else if prio == 0 {
+						prio = 1 // Default to wanted/Normal
+					}
+					fullPath := filepath.Join(e.cfg.DownloadDir, tf.Path())
 					files = append(files, TorrentFileDetail{
 						Index:          idx,
 						Path:           tf.Path(),
+						FullPath:       fullPath,
 						Length:         fLen,
 						BytesCompleted: fComp,
 						Progress:       fProg,
-						Priority:       int(tf.Priority()),
+						Priority:       prio,
+						Completed:      (fComp >= fLen && fLen > 0) || fProg >= 100.0,
 					})
 				}
 			}
@@ -1448,6 +1472,7 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 				PieceLength:    pieceLength,
 				NumPieces:      numPieces,
 				DownloadDir:    e.cfg.DownloadDir,
+				SavePath:       e.getTorrentSavePath(t),
 				State:          t.String(),
 				Seeders:        sCount,
 				Leechers:       lCount,
@@ -1522,10 +1547,171 @@ func (e *Engine) SetFilePriority(infoHashHex string, fileIndex int, priority int
 			default:
 				f.Download()
 			}
+
+			h := strings.ToLower(t.InfoHash().HexString())
+			if tr := e.rateMap[h]; tr != nil {
+				if tr.skippedFiles == nil {
+					tr.skippedFiles = make(map[int]bool)
+				}
+				if priority == 0 {
+					tr.skippedFiles[fileIndex] = true
+				} else {
+					delete(tr.skippedFiles, fileIndex)
+				}
+			}
 			return nil
 		}
 	}
 	return fmt.Errorf("torrent not found: %s", infoHashHex)
+}
+
+func (e *Engine) GetTorrentSavePath(infoHashHex string) (string, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	// Check HTTP task
+	e.httpManager.mu.RLock()
+	task, exists := e.httpManager.tasks[infoHashHex]
+	e.httpManager.mu.RUnlock()
+	if exists {
+		return task.DestPath, nil
+	}
+
+	// Check torrent
+	torrents := e.client.Torrents()
+	for _, t := range torrents {
+		if strings.EqualFold(t.InfoHash().HexString(), infoHashHex) {
+			return e.getTorrentSavePath(t), nil
+		}
+	}
+	return "", fmt.Errorf("torrent not found: %s", infoHashHex)
+}
+
+func (e *Engine) getTorrentSavePath(t *torrent.Torrent) string {
+	if t == nil {
+		return e.cfg.DownloadDir
+	}
+	info := t.Info()
+	if info != nil {
+		if info.IsDir() {
+			return filepath.Join(e.cfg.DownloadDir, info.Name)
+		}
+		if len(t.Files()) > 0 {
+			return filepath.Join(e.cfg.DownloadDir, t.Files()[0].Path())
+		}
+	}
+	name := t.Name()
+	if name != "" {
+		return filepath.Join(e.cfg.DownloadDir, name)
+	}
+	return e.cfg.DownloadDir
+}
+
+func (e *Engine) GetTorrentFilePath(infoHashHex string, fileIndex int) (string, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	// Check HTTP task
+	e.httpManager.mu.RLock()
+	task, exists := e.httpManager.tasks[infoHashHex]
+	e.httpManager.mu.RUnlock()
+	if exists {
+		if fileIndex != 0 {
+			return "", fmt.Errorf("invalid file index %d for http download", fileIndex)
+		}
+		return task.DestPath, nil
+	}
+
+	// Check torrent
+	torrents := e.client.Torrents()
+	for _, t := range torrents {
+		if strings.EqualFold(t.InfoHash().HexString(), infoHashHex) {
+			files := t.Files()
+			if fileIndex < 0 || fileIndex >= len(files) {
+				return "", fmt.Errorf("file index %d out of bounds (total %d)", fileIndex, len(files))
+			}
+			return filepath.Join(e.cfg.DownloadDir, files[fileIndex].Path()), nil
+		}
+	}
+	return "", fmt.Errorf("torrent not found: %s", infoHashHex)
+}
+
+func OpenPath(targetPath string) error {
+	clean := filepath.Clean(targetPath)
+	if _, err := os.Stat(clean); err != nil {
+		if _, pErr := os.Stat(clean + ".part"); pErr == nil {
+			clean = clean + ".part"
+		}
+	}
+
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "linux":
+		cmd = exec.Command("xdg-open", clean)
+	case "darwin":
+		cmd = exec.Command("open", clean)
+	case "windows":
+		cmd = exec.Command("cmd", "/c", "start", "", clean)
+	default:
+		cmd = exec.Command("xdg-open", clean)
+	}
+	return cmd.Start()
+}
+
+func ShowInFolder(targetPath string) error {
+	clean := filepath.Clean(targetPath)
+	info, err := os.Stat(clean)
+	if err != nil {
+		if pInfo, pErr := os.Stat(clean + ".part"); pErr == nil {
+			clean = clean + ".part"
+			info = pInfo
+		} else {
+			dir := filepath.Dir(clean)
+			if dInfo, dErr := os.Stat(dir); dErr == nil {
+				clean = dir
+				info = dInfo
+			} else {
+				return err
+			}
+		}
+	}
+
+	switch runtime.GOOS {
+	case "linux":
+		if !info.IsDir() {
+			fileURI := "file://" + clean
+			cmd := exec.Command("dbus-send", "--session", "--dest=org.freedesktop.FileManager1",
+				"--type=method_call", "/org/freedesktop/FileManager1",
+				"org.freedesktop.FileManager1.ShowItems", "array:string:"+fileURI, "string:\"\"")
+			if err := cmd.Run(); err == nil {
+				return nil
+			}
+		}
+		dir := clean
+		if !info.IsDir() {
+			dir = filepath.Dir(clean)
+		}
+		return exec.Command("xdg-open", dir).Start()
+
+	case "darwin":
+		if info.IsDir() {
+			return exec.Command("open", clean).Start()
+		}
+		return exec.Command("open", "-R", clean).Start()
+
+	case "windows":
+		if info.IsDir() {
+			return exec.Command("explorer", clean).Start()
+		}
+		return exec.Command("explorer", "/select,", clean).Start()
+
+	default:
+		dir := clean
+		if !info.IsDir() {
+			dir = filepath.Dir(clean)
+		}
+		return exec.Command("xdg-open", dir).Start()
+	}
 }
 
 func (e *Engine) GetGlobalStats() GlobalStats {

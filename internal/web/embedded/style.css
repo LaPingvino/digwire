@@ -654,3 +654,16 @@ body {
   }
 }
 
+.file-name-link {
+  transition: color 0.15s ease;
+}
+
+.file-name-link[style*="cursor: pointer"]:hover {
+  text-decoration: underline !important;
+  color: var(--adw-accent) !important;
+}
+
+.torrent-card[title*="Double-click"] {
+  cursor: pointer;
+}
+
