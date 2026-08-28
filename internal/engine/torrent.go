@@ -414,7 +414,7 @@ func (e *Engine) saveSessionLocked() {
 		mag := fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", hash, url.QueryEscape(name))
 		mag = AppendWebSeedsToMagnet(SuperchargeMagnet(mag), webseeds)
 
-		isSeeding := tr.isSeeding || (totalBytes > 0 && completedBytes >= totalBytes) || t.Seeding()
+		isSeeding := totalBytes > 0 && completedBytes >= totalBytes
 
 		list = append(list, SavedTorrent{
 			InfoHash:       hash,
@@ -504,11 +504,6 @@ func (e *Engine) loadSession() {
 			hash = t.InfoHash().HexString()
 		}
 
-		// Immediately disallow data download so no incoming peer data is requested or written
-		// before data is verified! This prevents redundant downloads or race conditions on restart.
-		t.DisallowDataDownload()
-		t.AllowDataUpload()
-
 		// Inject tier-1 trackers
 		t.AddTrackers(GetTier1TrackerList())
 
@@ -529,7 +524,18 @@ func (e *Engine) loadSession() {
 			}
 		}
 
-		isSeeding := item.IsSeeding || (item.TotalBytes > 0 && item.CompletedBytes >= item.TotalBytes)
+		// A torrent is ONLY seeding if its completed bytes meet or exceed its total size
+		isSeeding := item.TotalBytes > 0 && savedCompleted >= item.TotalBytes
+
+		if isSeeding {
+			t.DisallowDataDownload()
+			t.AllowDataUpload()
+		} else if item.IsPaused {
+			t.DisallowDataDownload()
+		} else {
+			t.AllowDataDownload()
+			t.DownloadAll()
+		}
 
 		e.rateMap[hash] = &rateTracker{
 			lastTime:            time.Now(),
@@ -545,10 +551,6 @@ func (e *Engine) loadSession() {
 
 		if len(item.WebSeeds) > 0 {
 			e.webSeedsMap[hash] = SanitizeWebSeeds(item.WebSeeds, false)
-		}
-
-		if item.IsPaused {
-			t.DisallowDataDownload()
 		}
 
 		go func(tor *torrent.Torrent, seeds []string, h string) {
@@ -649,12 +651,19 @@ func (e *Engine) monitorLoop() {
 					tracker.peakDLRate = tracker.downloadRate
 				}
 
-				isSeeding := t.Seeding() || (t.Length() > 0 && t.BytesCompleted() >= t.Length()) || tracker.isSeeding
-				if isSeeding && !tracker.isSeeding {
-					tracker.isSeeding = true
-					t.DisallowDataDownload()
-					t.AllowDataUpload()
-					e.saveSessionLocked()
+				tLen := t.Length()
+				bComp := t.BytesCompleted()
+				isComplete := tLen > 0 && bComp >= tLen
+
+				if isComplete {
+					if !tracker.isSeeding {
+						tracker.isSeeding = true
+						t.DisallowDataDownload()
+						t.AllowDataUpload()
+						e.saveSessionLocked()
+					}
+				} else {
+					tracker.isSeeding = false
 				}
 
 				// Periodically sample swarm presence into DHT indexer (every 60 seconds)
@@ -662,7 +671,7 @@ func (e *Engine) monitorLoop() {
 					tracker.lastSampleTime = now
 					if e.dhtIndexer != nil {
 						dhtSeeders := sCount
-						if isSeeding {
+						if isComplete {
 							if tracker.peakSeeders > 0 {
 								dhtSeeders = tracker.peakSeeders + 1
 							} else {
@@ -1132,11 +1141,7 @@ func (e *Engine) ConsolidateAndVerify(tor *torrent.Torrent, onComplete ...func()
 			tr.isVerifying = false
 			tr.savedTotalBytes = tLen
 			tr.savedCompletedBytes = bComp
-			if isComplete {
-				tr.isSeeding = true
-			} else if !isComplete && bComp < tLen {
-				tr.isSeeding = false
-			}
+			tr.isSeeding = isComplete
 
 			if isComplete {
 				// 100% complete: seed to the swarm, do not download
@@ -1319,7 +1324,7 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 				state = "verifying"
 			} else if isPaused {
 				state = "paused"
-			} else if (completedBytes >= totalBytes && totalBytes > 0) || tracker.isSeeding {
+			} else if totalBytes > 0 && completedBytes >= totalBytes {
 				state = "seeding"
 			} else {
 				state = "downloading"
@@ -1354,7 +1359,7 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 		magURI := fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", hash, url.QueryEscape(name))
 		magURI = AppendWebSeedsToMagnet(SuperchargeMagnet(magURI), webseeds)
 		webConns := t.WebseedPeerConns()
-		isSeeding := state == "seeding" || state == "completed" || (totalBytes > 0 && completedBytes >= totalBytes) || (tracker != nil && tracker.isSeeding)
+		isSeeding := totalBytes > 0 && completedBytes >= totalBytes
 
 		seeders := stats.ConnectedSeeders + len(webConns)
 		if isSeeding {
@@ -1670,10 +1675,7 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 			webConns := t.WebseedPeerConns()
 			tr := e.rateMap[strings.ToLower(hashHex)]
 
-			isSeeding := (totalBytes > 0 && completedBytes >= totalBytes) || t.Seeding() || (tr != nil && tr.isSeeding)
-			if tr != nil && tr.savedTotalBytes > 0 && tr.savedCompletedBytes >= tr.savedTotalBytes {
-				isSeeding = true
-			}
+			isSeeding := totalBytes > 0 && completedBytes >= totalBytes
 
 			sCount := st.ConnectedSeeders + len(webConns)
 			if isSeeding {
