@@ -1414,12 +1414,19 @@ async function submitAddTorrent() {
   const fileInput = document.getElementById('add-file-input');
 
   if (fileInput.files.length > 0) {
+    const file = fileInput.files[0];
     closeAddModal();
     showToast("Adding .torrent file...", "info", 1800);
     try {
-      const formData = new FormData();
-      formData.append('torrent_file', fileInput.files[0]);
-      const res = await fetch('/api/torrents/add', { method: 'POST', body: formData });
+      const buffer = await file.arrayBuffer();
+      const res = await fetch('/api/torrents/add', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-bittorrent',
+          'X-Torrent-Name': encodeURIComponent(file.name || 'upload.torrent')
+        },
+        body: buffer
+      });
       const data = await res.json();
       if (data.status === 'ok') {
         showToast("Transfer added!", "info", 2500);
@@ -2054,4 +2061,92 @@ window.addEventListener('keydown', (e) => {
 // Initialize on page load
 window.addEventListener('DOMContentLoaded', () => {
   initEventStream();
+});
+
+// Drag and Drop support
+let dragCounter = 0;
+
+window.addEventListener('dragenter', (e) => {
+  e.preventDefault();
+  dragCounter++;
+  const overlay = document.getElementById('drag-drop-overlay');
+  if (overlay) overlay.classList.add('active');
+});
+
+window.addEventListener('dragleave', (e) => {
+  e.preventDefault();
+  dragCounter--;
+  if (dragCounter <= 0) {
+    dragCounter = 0;
+    const overlay = document.getElementById('drag-drop-overlay');
+    if (overlay) overlay.classList.remove('active');
+  }
+});
+
+window.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+});
+
+window.addEventListener('drop', async (e) => {
+  e.preventDefault();
+  dragCounter = 0;
+  const overlay = document.getElementById('drag-drop-overlay');
+  if (overlay) overlay.classList.remove('active');
+
+  const files = e.dataTransfer ? e.dataTransfer.files : null;
+  if (files && files.length > 0) {
+    for (const file of files) {
+      if (file.name.endsWith('.torrent') || file.type === 'application/x-bittorrent' || file.size > 0) {
+        showToast(`Adding ${file.name}...`, "info", 1800);
+        try {
+          const buffer = await file.arrayBuffer();
+          const res = await fetch('/api/torrents/add', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/x-bittorrent',
+              'X-Torrent-Name': encodeURIComponent(file.name)
+            },
+            body: buffer
+          });
+          const data = await res.json();
+          if (data.status === 'ok') {
+            showToast(`Added: ${file.name}`, "info", 2500);
+            switchMainView('torrents');
+          } else {
+            showToast(`Failed to add ${file.name}: ` + (data.error || 'Unknown error'), "error", 4000);
+          }
+        } catch (err) {
+          showToast(`Error adding ${file.name}: ` + err.message, "error", 4000);
+        }
+      }
+    }
+    return;
+  }
+
+  // Check for dropped URL / magnet link
+  const text = e.dataTransfer ? (e.dataTransfer.getData('text/uri-list') || e.dataTransfer.getData('text/plain') || '').trim() : '';
+  if (text) {
+    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+    for (const line of lines) {
+      if (line.startsWith('#')) continue;
+      showToast("Adding dropped link...", "info", 1800);
+      try {
+        const res = await fetch('/api/torrents/add', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: line })
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+          showToast("Transfer added!", "info", 2500);
+          switchMainView('torrents');
+        } else {
+          showToast("Failed: " + (data.error || 'Unknown error'), "error", 4000);
+        }
+      } catch (err) {
+        showToast("Request error: " + err.message, "error", 4000);
+      }
+    }
+  }
 });

@@ -704,6 +704,38 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 		uriOrURL = "magnet:?xt=urn:btih:" + uriOrURL
 	}
 
+	// Support file:// URI
+	if strings.HasPrefix(uriOrURL, "file://") {
+		filePath := strings.TrimPrefix(uriOrURL, "file://")
+		if unescaped, err := url.PathUnescape(filePath); err == nil {
+			filePath = unescaped
+		}
+		if info, err := os.Stat(filePath); err == nil && !info.IsDir() {
+			f, err := os.Open(filePath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to open local torrent file: %w", err)
+			}
+			defer f.Close()
+			return e.AddTorrentFile(f)
+		}
+	}
+
+	// Support local file path (.torrent file on disk)
+	candidatePath := uriOrURL
+	if strings.HasPrefix(candidatePath, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			candidatePath = filepath.Join(home, strings.TrimPrefix(candidatePath, "~/"))
+		}
+	}
+	if info, err := os.Stat(candidatePath); err == nil && !info.IsDir() {
+		f, err := os.Open(candidatePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to open local torrent file: %w", err)
+		}
+		defer f.Close()
+		return e.AddTorrentFile(f)
+	}
+
 	// If it's a web URL to a .torrent file
 	if (strings.HasPrefix(uriOrURL, "http://") || strings.HasPrefix(uriOrURL, "https://")) && strings.HasSuffix(strings.ToLower(uriOrURL), ".torrent") {
 		req, err := http.NewRequest(http.MethodGet, uriOrURL, nil)

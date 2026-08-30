@@ -113,27 +113,92 @@ func (s *Server) handleAddTorrent(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Check if multipart form upload (.torrent file)
-	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
-		err := r.ParseMultipartForm(32 << 20) // 32MB max
-		if err != nil {
-			http.Error(w, `{"error":"failed to parse multipart form"}`, http.StatusBadRequest)
-			return
-		}
-		file, _, err := r.FormFile("torrent_file")
-		if err != nil {
-			http.Error(w, `{"error":"missing torrent_file field"}`, http.StatusBadRequest)
-			return
-		}
-		defer file.Close()
+	ct := r.Header.Get("Content-Type")
 
-		t, err := s.engine.AddTorrentFile(file)
+	// Case 1: Raw binary upload of .torrent file (application/x-bittorrent or application/octet-stream)
+	if strings.HasPrefix(ct, "application/x-bittorrent") || strings.HasPrefix(ct, "application/octet-stream") {
+		limitedBody := io.LimitReader(r.Body, 32<<20)
+		t, err := s.engine.AddTorrentFile(limitedBody)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "info_hash": t.InfoHash().HexString()})
+		return
+	}
+
+	// Case 2: Multipart form upload (.torrent file)
+	if strings.HasPrefix(ct, "multipart/form-data") {
+		err := r.ParseMultipartForm(32 << 20) // 32MB max
+		if err != nil {
+			http.Error(w, `{"error":"failed to parse multipart form"}`, http.StatusBadRequest)
+			return
+		}
+
+		var file io.ReadCloser
+
+		// 1) Try standard form file field names
+		for _, key := range []string{"torrent_file", "file", "torrent", "upload"} {
+			if f, _, err := r.FormFile(key); err == nil {
+				file = f
+				break
+			}
+		}
+
+		// 2) Fallback: if no named file matched, pick any file uploaded in the multipart form
+		if file == nil && r.MultipartForm != nil && r.MultipartForm.File != nil {
+			for _, headers := range r.MultipartForm.File {
+				if len(headers) > 0 {
+					if f, err := headers[0].Open(); err == nil {
+						file = f
+						break
+					}
+				}
+			}
+		}
+
+		if file != nil {
+			defer file.Close()
+			t, err := s.engine.AddTorrentFile(file)
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "info_hash": t.InfoHash().HexString()})
+			return
+		}
+
+		// 3) Fallback: check if the .torrent content or path was sent as a form value (e.g. filename was omitted)
+		if r.MultipartForm != nil && r.MultipartForm.Value != nil {
+			for _, key := range []string{"torrent_file", "file", "torrent", "url", "path"} {
+				if vals := r.MultipartForm.Value[key]; len(vals) > 0 && len(vals[0]) > 0 {
+					val := vals[0]
+					if len(val) > 10 && val[0] == 'd' && val[len(val)-1] == 'e' {
+						t, err := s.engine.AddTorrentFile(strings.NewReader(val))
+						if err == nil {
+							_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "info_hash": t.InfoHash().HexString()})
+							return
+						}
+					}
+					t, err := s.engine.Add(val)
+					if err != nil {
+						w.WriteHeader(http.StatusInternalServerError)
+						_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+						return
+					}
+					if t != nil {
+						_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "info_hash": t.InfoHash().HexString()})
+					} else {
+						_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "info_hash": engine.HashURL(val), "type": "http"})
+					}
+					return
+				}
+			}
+		}
+
+		http.Error(w, `{"error":"missing torrent_file field"}`, http.StatusBadRequest)
 		return
 	}
 

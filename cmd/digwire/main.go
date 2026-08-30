@@ -9,6 +9,7 @@ import (
 	"log"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -24,17 +25,30 @@ import (
 )
 
 func sendToRunningInstance(port int, arg string) bool {
-	client := &http.Client{Timeout: 1200 * time.Millisecond}
+	client := &http.Client{Timeout: 15 * time.Second}
 	apiURL := fmt.Sprintf("http://127.0.0.1:%d/api/torrents/add", port)
 
+	candPath := arg
+	if strings.HasPrefix(candPath, "file://") {
+		candPath = strings.TrimPrefix(candPath, "file://")
+		if unescaped, err := url.PathUnescape(candPath); err == nil {
+			candPath = unescaped
+		}
+	}
+	if strings.HasPrefix(candPath, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			candPath = filepath.Join(home, strings.TrimPrefix(candPath, "~/"))
+		}
+	}
+
 	// Case 1: Check if file exists on disk (.torrent)
-	if info, err := os.Stat(arg); err == nil && !info.IsDir() {
-		f, err := os.Open(arg)
+	if info, err := os.Stat(candPath); err == nil && !info.IsDir() {
+		f, err := os.Open(candPath)
 		if err == nil {
 			defer f.Close()
 			var b bytes.Buffer
 			w := multipart.NewWriter(&b)
-			fw, err := w.CreateFormFile("torrent_file", filepath.Base(arg))
+			fw, err := w.CreateFormFile("torrent_file", filepath.Base(candPath))
 			if err == nil {
 				_, _ = io.Copy(fw, f)
 				_ = w.Close()
@@ -52,6 +66,7 @@ func sendToRunningInstance(port int, arg string) bool {
 				}
 			}
 		}
+		return false
 	}
 
 	// Case 2: URL / Magnet / InfoHash

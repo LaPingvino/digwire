@@ -723,3 +723,36 @@ body {
   cursor: pointer;
 }
 
+.drag-drop-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(26, 26, 26, 0.85);
+  backdrop-filter: blur(8px);
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  border: 3px dashed var(--adw-accent);
+}
+
+.drag-drop-overlay.active {
+  opacity: 1;
+}
+
+.drag-drop-box {
+  background: var(--adw-card-bg);
+  padding: 32px 48px;
+  border-radius: 16px;
+  box-shadow: 0 16px 40px rgba(0,0,0,0.5);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+
