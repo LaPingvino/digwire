@@ -727,13 +727,26 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 			candidatePath = filepath.Join(home, strings.TrimPrefix(candidatePath, "~/"))
 		}
 	}
-	if info, err := os.Stat(candidatePath); err == nil && !info.IsDir() {
-		f, err := os.Open(candidatePath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to open local torrent file: %w", err)
+	var pathsToCheck []string
+	pathsToCheck = append(pathsToCheck, candidatePath)
+	if strings.HasSuffix(strings.ToLower(candidatePath), ".torrent") {
+		if home, err := os.UserHomeDir(); err == nil {
+			pathsToCheck = append(pathsToCheck, filepath.Join(home, candidatePath))
 		}
-		defer f.Close()
-		return e.AddTorrentFile(f)
+		if e.cfg.DownloadDir != "" {
+			pathsToCheck = append(pathsToCheck, filepath.Join(e.cfg.DownloadDir, candidatePath))
+		}
+	}
+
+	for _, p := range pathsToCheck {
+		if info, err := os.Stat(p); err == nil && !info.IsDir() {
+			f, err := os.Open(p)
+			if err != nil {
+				return nil, fmt.Errorf("failed to open local torrent file: %w", err)
+			}
+			defer f.Close()
+			return e.AddTorrentFile(f)
+		}
 	}
 
 	// If it's a web URL to a .torrent file
