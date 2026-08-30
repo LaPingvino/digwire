@@ -561,7 +561,6 @@ func (e *Engine) loadSession() {
 					tor.AddWebSeeds(clean)
 				}
 			}
-			e.ConsolidateAndVerify(tor)
 		}(t, item.WebSeeds, hash)
 	}
 
@@ -1151,6 +1150,17 @@ func (e *Engine) ConsolidateAndVerify(tor *torrent.Torrent, onComplete ...func()
 	hash := tor.InfoHash().HexString()
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("⚠️ Recovered from verification error for %s: %v", hash, r)
+				e.mu.Lock()
+				if tr := e.rateMap[hash]; tr != nil {
+					tr.isVerifying = false
+				}
+				e.mu.Unlock()
+			}
+		}()
+
 		<-tor.GotInfo()
 
 		e.mu.Lock()
@@ -1164,16 +1174,13 @@ func (e *Engine) ConsolidateAndVerify(tor *torrent.Torrent, onComplete ...func()
 		}
 		e.mu.Unlock()
 
-		// 1. Disallow incoming peer data writes while hashing disk files
-		tor.DisallowDataDownload()
-
-		// 2. Persist metainfo
+		// 1. Persist metainfo
 		e.saveTorrentMetainfo(tor)
 
-		// 3. Consolidate & adopt any external remnants
+		// 2. Consolidate & adopt any external remnants
 		e.AdoptExistingLocalProgress(tor)
 
-		// 4. Run cryptographic verification
+		// 3. Run cryptographic verification
 		_ = tor.VerifyData()
 
 		// 5. Post-verification state alignment
