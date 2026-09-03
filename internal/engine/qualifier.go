@@ -142,21 +142,21 @@ func CalculateSwarmQualifier(ctx SwarmContext) SwarmQualifier {
 	var class, label, badge, desc, easterEgg string
 
 	// Tier 1: Blockbuster
-	// 20+ seeders, 40+ known swarm peers, or peak throughput >= 2 MB/s
-	if effSeeders >= 20 || effPeers >= 40 || effDLRate >= 2*1024*1024 {
+	// Genuinely massive swarms: 50+ seeders, 25+ seeders with 100+ peers, or 10 MB/s+ sustained with 15+ seeders
+	if effSeeders >= 50 || (effSeeders >= 25 && effPeers >= 100) || (effDLRate >= 10*1024*1024 && effSeeders >= 15) {
 		class = "blockbuster"
 		label = "Blockbuster"
 		badge = "Blockbuster"
 		if ctx.IsSeeding {
-			desc = "High-velocity blockbuster swarm! You are actively seeding as a verified donor."
+			desc = "Massive blockbuster swarm! You are actively seeding to an enormous global audience."
 			easterEgg = "Cruising at lightspeed! The swarm is thriving and your seed helps keep downloads instantaneous."
 		} else {
-			desc = "High-velocity mainstream swarm backed by dozens of gigabit seedboxes."
+			desc = "Massive blockbuster swarm backed by dozens of high-speed seedboxes."
 			easterEgg = "Cruising at lightspeed! The swarm is so fast you could probably watch it uncompressed."
 		}
 	// Tier 2: Mainstream
-	// 6+ seeders, 12+ known peers, or peak throughput >= 350 KB/s
-	} else if effSeeders >= 6 || effPeers >= 12 || effDLRate >= 350*1024 {
+	// Popular active swarms: 15+ seeders, 6+ seeders with 30+ peers, or 2 MB/s+ with 5+ seeders
+	} else if effSeeders >= 15 || (effSeeders >= 6 && effPeers >= 30) || (effDLRate >= 2*1024*1024 && effSeeders >= 5) {
 		class = "mainstream"
 		label = "Mainstream"
 		badge = "Mainstream"
@@ -168,8 +168,8 @@ func CalculateSwarmQualifier(ctx SwarmContext) SwarmQualifier {
 			easterEgg = "Healthy mainstream torrent. The seedboxes are singing in four-part harmony."
 		}
 	// Tier 3: Cult Classic
-	// 2+ seeders, 4+ known peers, or peak throughput >= 50 KB/s
-	} else if effSeeders >= 2 || effPeers >= 4 || effDLRate >= 50*1024 {
+	// Mid-tier community swarms: 3+ seeders, 8+ known peers, or 200 KB/s+ with 2+ seeders
+	} else if effSeeders >= 3 || effPeers >= 8 || (effDLRate >= 200*1024 && effSeeders >= 2) {
 		class = "cult"
 		label = "Cult Classic"
 		badge = "Cult Classic"
@@ -181,7 +181,7 @@ func CalculateSwarmQualifier(ctx SwarmContext) SwarmQualifier {
 			easterEgg = "Not on the Billboard top 40, but the dedicated fanbase refuses to let it die."
 		}
 	// Tier 4: Long Tail
-	// 1+ seeder, 1+ peer, or healthy DHT record in past 7 days
+	// Rare or periodic residential seeders (1-2 seeders or recent DHT record)
 	} else if effSeeders >= 1 || effPeers >= 1 || (hasHistory && ctx.Activity.HealthySamples > 0 && (now-ctx.Activity.LastSeenHealthy) < 86400*7) {
 		class = "long_tail"
 		label = "Long Tail"

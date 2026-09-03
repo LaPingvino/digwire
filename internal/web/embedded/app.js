@@ -11,6 +11,46 @@ let currentSortBy = 'relevance';
 // Details Modal state
 let currentDetailData = null;
 let currentDetailTab = 'overview';
+let lastActiveFocusElement = null;
+
+// Accessibility: Screen reader live announcement helper
+function announceA11y(message) {
+  if (!message) return;
+  const el = document.getElementById('a11y-announcer');
+  if (el) {
+    el.textContent = '';
+    setTimeout(() => {
+      el.textContent = message;
+    }, 50);
+  }
+}
+
+// Accessibility: Safe focus management for modals
+function saveFocusAndOpen(modalId, defaultFocusSelector) {
+  lastActiveFocusElement = document.activeElement;
+  const modal = document.getElementById(modalId);
+  if (modal) {
+    modal.classList.add('open');
+    setTimeout(() => {
+      const focusTarget = (defaultFocusSelector ? modal.querySelector(defaultFocusSelector) : null) || 
+                          modal.querySelector('input:not([type=hidden]), button:not(.btn-icon), select, textarea, [tabindex="0"]');
+      if (focusTarget) focusTarget.focus();
+    }, 80);
+    const title = modal.querySelector('.modal-title');
+    if (title) announceA11y(title.textContent + " dialog opened");
+  }
+}
+
+function restoreFocusAndClose(modalId) {
+  const modal = document.getElementById(modalId);
+  if (modal) {
+    modal.classList.remove('open');
+  }
+  if (lastActiveFocusElement && typeof lastActiveFocusElement.focus === 'function') {
+    lastActiveFocusElement.focus();
+  }
+  announceA11y("Dialog closed");
+}
 
 // Crisp SVG Icons (Libadwaita / Lucide style - 100% vector, no OS emoji dependencies)
 const ICONS = {
@@ -131,21 +171,42 @@ function copyValue(inputId) {
 // Navigation & Filters
 function switchMainView(view) {
   currentView = view;
-  document.getElementById('tab-torrents').classList.toggle('active', view === 'torrents');
-  document.getElementById('tab-search').classList.toggle('active', view === 'search');
+  const tabTorrents = document.getElementById('tab-torrents');
+  const tabSearch = document.getElementById('tab-search');
   
-  document.getElementById('view-torrents').style.display = view === 'torrents' ? 'block' : 'none';
-  document.getElementById('view-search').style.display = view === 'search' ? 'block' : 'none';
-  document.getElementById('torrent-filters').style.display = view === 'torrents' ? 'flex' : 'none';
+  if (tabTorrents) {
+    tabTorrents.classList.toggle('active', view === 'torrents');
+    tabTorrents.setAttribute('aria-selected', view === 'torrents' ? 'true' : 'false');
+  }
+  if (tabSearch) {
+    tabSearch.classList.toggle('active', view === 'search');
+    tabSearch.setAttribute('aria-selected', view === 'search' ? 'true' : 'false');
+  }
+  
+  const viewTorrents = document.getElementById('view-torrents');
+  const viewSearch = document.getElementById('view-search');
+  const torrentFilters = document.getElementById('torrent-filters');
+  
+  if (viewTorrents) viewTorrents.style.display = view === 'torrents' ? 'block' : 'none';
+  if (viewSearch) viewSearch.style.display = view === 'search' ? 'block' : 'none';
+  if (torrentFilters) torrentFilters.style.display = view === 'torrents' ? 'flex' : 'none';
+  
+  announceA11y(`Switched to ${view === 'torrents' ? 'Torrents transfer' : 'Indexer Search'} view`);
+  if (view === 'search') {
+    const sInput = document.getElementById('search-input');
+    if (sInput) sInput.focus();
+  }
 }
 
 function setFilter(filter) {
   currentFilter = filter;
   const filterBtns = document.getElementById('torrent-filters').querySelectorAll('.view-btn');
   filterBtns.forEach(btn => {
-    btn.classList.toggle('active', btn.textContent.toLowerCase() === filter);
+    const isActive = btn.textContent.toLowerCase().includes(filter);
+    btn.classList.toggle('active', isActive);
   });
   renderTorrents();
+  announceA11y(`Showing ${filter} transfers`);
 }
 
 // Real-time Event Stream (SSE)
@@ -270,17 +331,18 @@ function renderTorrents() {
       `;
     }
 
+    const cardAriaLabel = `Torrent: ${escapeHtml(t.name)}, state: ${t.state}, ${t.progress.toFixed(1)} percent, size: ${formatBytes(t.total_bytes)}`;
     return `
-      <div class="torrent-card" ondblclick="openTorrentTarget('${t.info_hash}')" title="Double-click to open downloaded files">
+      <div class="torrent-card" tabindex="0" role="region" aria-label="${cardAriaLabel}" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openDetailsModal('${t.info_hash}');}" ondblclick="openTorrentTarget('${t.info_hash}')" title="Double-click or press Enter to inspect">
         <div class="card-header">
-          <div class="torrent-title" title="${t.name}" style="cursor: pointer;" onclick="openDetailsModal('${t.info_hash}')">${t.name}</div>
+          <div class="torrent-title" title="${escapeHtml(t.name)}" style="cursor: pointer;" onclick="openDetailsModal('${t.info_hash}')">${escapeHtml(t.name)}</div>
           <div style="display: flex; gap: 6px; align-items: center;">
             ${getQualifierBadge(t.qualifier)}
-            <span class="torrent-badge badge-${t.state}">${t.state}</span>
+            <span class="torrent-badge badge-${t.state}" aria-label="Status: ${t.state}">${t.state}</span>
           </div>
         </div>
 
-        <div class="progress-bar-container" style="cursor: pointer;" onclick="openDetailsModal('${t.info_hash}')">
+        <div class="progress-bar-container" role="progressbar" aria-valuenow="${t.progress.toFixed(1)}" aria-valuemin="0" aria-valuemax="100" aria-valuetext="${t.progress.toFixed(1)} percent complete" style="cursor: pointer;" onclick="openDetailsModal('${t.info_hash}')" title="Progress: ${t.progress.toFixed(1)}%">
           <div class="progress-bar-fill ${isSeeding ? 'seeding' : ''}" style="width: ${Math.min(100, Math.max(0, t.progress))}%;"></div>
         </div>
 
@@ -290,19 +352,19 @@ function renderTorrents() {
           <div class="torrent-meta">${metaString}</div>
           <div class="card-actions">
             ${(t.progress >= 100 || t.state === 'seeding' || t.state === 'completed') ? 
-              `<button class="btn btn-icon" title="Open Downloaded File or Folder" onclick="openTorrentTarget('${t.info_hash}')">${ICONS.play}</button>` : ''
+              `<button class="btn btn-icon" title="Open Downloaded File or Folder" aria-label="Open downloaded file for ${escapeHtml(t.name)}" onclick="openTorrentTarget('${t.info_hash}')">${ICONS.play}</button>` : ''
             }
-            <button class="btn btn-icon" title="Show in File Manager" onclick="showTorrentInFolder('${t.info_hash}')">${ICONS.folder}</button>
+            <button class="btn btn-icon" title="Show in File Manager" aria-label="Show ${escapeHtml(t.name)} in file manager" onclick="showTorrentInFolder('${t.info_hash}')">${ICONS.folder}</button>
             ${!isWebDownload ? 
-              `<button class="btn btn-icon" title="Verify Local Data (Recheck)" onclick="verifyTorrent('${t.info_hash}', this)">${ICONS.verify}</button>` : ''
+              `<button class="btn btn-icon" title="Verify Local Data (Recheck)" aria-label="Verify local data for ${escapeHtml(t.name)}" onclick="verifyTorrent('${t.info_hash}', this)">${ICONS.verify}</button>` : ''
             }
-            <button class="btn btn-icon" title="Copy Magnet / URL" onclick="copyToClipboard('${encodeURI(t.magnet_uri || '')}', this)">${ICONS.magnet}</button>
-            <button class="btn btn-icon" title="Inspect Details & Peers" onclick="openDetailsModal('${t.info_hash}')">${ICONS.info}</button>
+            <button class="btn btn-icon" title="Copy Magnet / URL" aria-label="Copy Magnet link for ${escapeHtml(t.name)}" onclick="copyToClipboard('${encodeURI(t.magnet_uri || '')}', this)">${ICONS.magnet}</button>
+            <button class="btn btn-icon" title="Inspect Details & Peers" aria-label="Inspect details and peers for ${escapeHtml(t.name)}" onclick="openDetailsModal('${t.info_hash}')">${ICONS.info}</button>
             ${isPaused ? 
-              `<button class="btn btn-icon" title="Resume" onclick="resumeTorrent('${t.info_hash}')">${ICONS.play}</button>` :
-              `<button class="btn btn-icon" title="Pause" onclick="pauseTorrent('${t.info_hash}')">${ICONS.pause}</button>`
+              `<button class="btn btn-icon" title="Resume" aria-label="Resume download for ${escapeHtml(t.name)}" onclick="resumeTorrent('${t.info_hash}')">${ICONS.play}</button>` :
+              `<button class="btn btn-icon" title="Pause" aria-label="Pause download for ${escapeHtml(t.name)}" onclick="pauseTorrent('${t.info_hash}')">${ICONS.pause}</button>`
             }
-            <button class="btn btn-icon" style="color: var(--adw-error);" title="Delete" onclick="promptDeleteTorrent('${t.info_hash}', '${t.name.replace(/'/g, "\\'")}')">${ICONS.trash}</button>
+            <button class="btn btn-icon" style="color: var(--adw-error);" title="Delete" aria-label="Delete ${escapeHtml(t.name)}" onclick="promptDeleteTorrent('${t.info_hash}', '${t.name.replace(/'/g, "\\'")}')">${ICONS.trash}</button>
           </div>
         </div>
       </div>
@@ -336,6 +398,10 @@ function showToast(message, type = 'info', duration = 4000) {
   toast.className = `toast ${type === 'accent' ? 'toast-accent' : type === 'error' ? 'toast-error' : ''}`;
   toast.innerHTML = message;
   container.appendChild(toast);
+
+  // Announce to screen readers (strip HTML tags)
+  const plainText = String(message).replace(/<[^>]*>/g, '').trim();
+  announceA11y(plainText);
 
   setTimeout(() => {
     toast.style.opacity = '0';
@@ -451,11 +517,11 @@ let pendingDeleteHash = null;
 function promptDeleteTorrent(hash, name) {
   pendingDeleteHash = hash;
   document.getElementById('delete-modal-msg').textContent = `Are you sure you want to remove "${name}"?`;
-  document.getElementById('modal-delete').classList.add('open');
+  saveFocusAndOpen('modal-delete');
 }
 
 function closeDeleteModal() {
-  document.getElementById('modal-delete').classList.remove('open');
+  restoreFocusAndClose('modal-delete');
   pendingDeleteHash = null;
 }
 
@@ -549,14 +615,14 @@ async function openDetailsModal(hash) {
 
     document.getElementById('detail-modal-title').textContent = currentDetailData.name || currentDetailData.info_hash;
     switchDetailTab('overview');
-    document.getElementById('modal-details').classList.add('open');
+    saveFocusAndOpen('modal-details');
   } catch (err) {
-    alert("Error loading torrent details: " + err.message);
+    showToast("Error loading torrent details: " + err.message, "error");
   }
 }
 
 function closeDetailsModal() {
-  document.getElementById('modal-details').classList.remove('open');
+  restoreFocusAndClose('modal-details');
   currentDetailData = null;
 }
 
@@ -874,11 +940,11 @@ function openSendModal() {
   document.getElementById('send-url-input').value = '';
   document.getElementById('send-comment-input').value = '';
   switchSendTab('local');
-  document.getElementById('modal-send').classList.add('open');
+  saveFocusAndOpen('modal-send', '#send-path-input');
 }
 
 function closeSendModal() {
-  document.getElementById('modal-send').classList.remove('open');
+  restoreFocusAndClose('modal-send');
 }
 
 async function submitCreateTorrent() {
@@ -1189,10 +1255,7 @@ async function openInspectModal(idx) {
   const countEl = document.getElementById('inspect-file-count');
   const hashEl = document.getElementById('inspect-hash');
   const filesContainer = document.getElementById('inspect-files-container');
-  const filterInput = document.getElementById('inspect-file-filter');
-  if (filterInput) filterInput.value = '';
-
-  modal.classList.add('open');
+  saveFocusAndOpen('modal-inspect', '#inspect-file-filter');
 
   titleEl.textContent = result.title || 'Unknown Torrent';
   sizeEl.textContent = `Total Size: ${formatBytes(result.size_bytes)}`;
@@ -1330,7 +1393,7 @@ function filterInspectFiles(query) {
 }
 
 function closeInspectModal() {
-  document.getElementById('modal-inspect').classList.remove('open');
+  restoreFocusAndClose('modal-inspect');
   currentInspectData = null;
   currentInspectFiles = [];
 }
@@ -1399,12 +1462,13 @@ async function downloadFromSearch(encodedURI, btn) {
 
 // Add Modal
 function openAddModal() {
-  document.getElementById('modal-add').classList.add('open');
-  document.getElementById('add-magnet-input').focus();
+// Add Modal
+function openAddModal() {
+  saveFocusAndOpen('modal-add', '#add-magnet-input');
 }
 
 function closeAddModal() {
-  document.getElementById('modal-add').classList.remove('open');
+  restoreFocusAndClose('modal-add');
   document.getElementById('add-magnet-input').value = '';
   document.getElementById('add-file-input').value = '';
 }
@@ -1494,8 +1558,7 @@ async function openSettingsModal() {
 
     renderProvidersList();
     switchSettingsTab('providers');
-    const modal = document.getElementById('modal-settings');
-    if (modal) modal.classList.add('open');
+    saveFocusAndOpen('modal-settings', '#stab-providers');
   } catch (err) {
     console.error('Error opening settings modal:', err);
     showToast('Failed to open settings: ' + err.message, 'error', 3500);
@@ -1503,7 +1566,7 @@ async function openSettingsModal() {
 }
 
 function closeSettingsModal() {
-  document.getElementById('modal-settings').classList.remove('open');
+  restoreFocusAndClose('modal-settings');
 }
 
 function switchSettingsTab(tab) {
@@ -1621,7 +1684,7 @@ function openAddProviderModal() {
   document.getElementById('ped-test-feedback').style.display = 'none';
 
   onProviderTypeChange();
-  document.getElementById('modal-provider-edit').classList.add('open');
+  saveFocusAndOpen('modal-provider-edit', '#ped-name');
 }
 
 function openEditProviderModal(idx) {
@@ -1651,11 +1714,11 @@ function openEditProviderModal(idx) {
   document.getElementById('ped-test-feedback').style.display = 'none';
 
   onProviderTypeChange();
-  document.getElementById('modal-provider-edit').classList.add('open');
+  saveFocusAndOpen('modal-provider-edit', '#ped-name');
 }
 
 function closeProviderEditModal() {
-  document.getElementById('modal-provider-edit').classList.remove('open');
+  restoreFocusAndClose('modal-provider-edit');
 }
 
 function onProviderTypeChange() {
@@ -1903,12 +1966,12 @@ async function openFilePicker(type = 'file') {
 async function openInAppFileBrowser(type = 'file', initialPath = '') {
   browserPickerType = type;
   document.getElementById('browser-modal-title').textContent = type === 'folder' ? 'Choose Folder to Seed' : 'Choose File to Seed';
-  document.getElementById('modal-file-browser').classList.add('open');
+  saveFocusAndOpen('modal-file-browser', '#btn-browser-select');
   await loadBrowserDir(initialPath);
 }
 
 function closeFileBrowser() {
-  document.getElementById('modal-file-browser').classList.remove('open');
+  restoreFocusAndClose('modal-file-browser');
 }
 
 async function loadBrowserDir(dirPath = '') {
@@ -2051,10 +2114,76 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'F11') {
     e.preventDefault();
     windowToggleMaximize();
+    return;
   }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'q') {
     e.preventDefault();
     windowClose();
+    return;
+  }
+
+  // Escape: Close topmost open modal and return focus
+  if (e.key === 'Escape') {
+    const openModals = [
+      'modal-file-browser', 'modal-provider-edit', 'modal-inspect',
+      'modal-details', 'modal-delete', 'modal-send', 'modal-settings', 'modal-add'
+    ];
+    for (const mId of openModals) {
+      const el = document.getElementById(mId);
+      if (el && el.classList.contains('open')) {
+        e.preventDefault();
+        if (mId === 'modal-file-browser') closeFileBrowser();
+        else if (mId === 'modal-provider-edit') closeProviderEditModal();
+        else if (mId === 'modal-inspect') closeInspectModal();
+        else if (mId === 'modal-details') closeDetailsModal();
+        else if (mId === 'modal-delete') closeDeleteModal();
+        else if (mId === 'modal-send') closeSendModal();
+        else if (mId === 'modal-settings') closeSettingsModal();
+        else if (mId === 'modal-add') closeAddModal();
+        return;
+      }
+    }
+  }
+
+  const isInput = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement ? document.activeElement.tagName : '');
+
+  // Shortcuts when not typing in text fields
+  if (!isInput) {
+    if (e.key === '1' || (e.altKey && e.key === '1') || ((e.ctrlKey || e.metaKey) && e.key === '1')) {
+      e.preventDefault();
+      switchMainView('torrents');
+    } else if (e.key === '2' || (e.altKey && e.key === '2') || ((e.ctrlKey || e.metaKey) && e.key === '2')) {
+      e.preventDefault();
+      switchMainView('search');
+    } else if (e.key === '/') {
+      e.preventDefault();
+      switchMainView('search');
+      const sIn = document.getElementById('search-input');
+      if (sIn) sIn.focus();
+    }
+  }
+
+  // Ctrl+N / Ctrl+O: Open Add Modal
+  if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'n' || e.key.toLowerCase() === 'o')) {
+    e.preventDefault();
+    openAddModal();
+  }
+  // Ctrl+S: Open Send/Create Torrent Modal
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+    e.preventDefault();
+    openSendModal();
+  }
+  // Ctrl+,: Open Preferences / Settings Modal
+  if ((e.ctrlKey || e.metaKey) && e.key === ',') {
+    e.preventDefault();
+    openSettingsModal();
+  }
+  // Ctrl+F: Focus search
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+    e.preventDefault();
+    switchMainView('search');
+    const sIn = document.getElementById('search-input');
+    if (sIn) sIn.focus();
   }
 });
 
