@@ -257,8 +257,8 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 	tConfig.ListenPort = cfg.ListenPort
 
 	// BEP 10 / BEP 20 Protocol Identity & Extension Handshake
-	tConfig.ExtendedHandshakeClientVersion = "Digwire 0.2.3"
-	tConfig.Bep20 = "-DW0203-"
+	tConfig.ExtendedHandshakeClientVersion = "Digwire 0.2.4"
+	tConfig.Bep20 = "-DW0204-"
 
 	// Swarm Altruism & Reliable Metadata Exchange (BEP 9 / ut_metadata)
 	tConfig.Seed = true
