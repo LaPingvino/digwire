@@ -307,27 +307,28 @@ function getTorrentMetaString(t) {
       const eta = formatETA(t.eta_seconds);
       if (eta) metaString += ` • ETA: ${eta}`;
     } else if (!isSeeding && !isPaused && t.progress < 100 && t.availability_eta) {
-    const qTooltip = t.qualifier ? 
-      (t.qualifier.description + (t.qualifier.easter_egg ? '\n\n' + t.qualifier.easter_egg : '')) : 
-      'Projected completion based on seeder duty cycle';
-    metaString += ` • <span style="color: #62a0ea; font-weight: 500;" title="${escapeHtml(qTooltip)}">${ICONS.clock}Proj. ETA: ${escapeHtml(t.availability_eta)}</span>`;
-  }
-  if (t.upload_rate > 0) {
-    metaString += ` • ${ICONS.arrowUp}${formatSpeed(t.upload_rate)}`;
-  }
-  if (isWebDownload) {
-    const mirrorCount = t.webseeds && t.webseeds.length > 0 ? t.webseeds.length : (t.peers || 1);
-    metaString += ` • ${mirrorCount} mirror${mirrorCount !== 1 ? 's' : ''}`;
-  } else {
-    const seeds = t.seeders || 0;
-    const leechers = t.leechers !== undefined ? t.leechers : Math.max(0, (t.peers || 0) - seeds);
-    if (isSeeding) {
-      metaString += ` • ${leechers} peer${leechers !== 1 ? 's' : ''}`;
-    } else {
-      metaString += ` • ${seeds} seed${seeds !== 1 ? 's' : ''}, ${leechers} peer${leechers !== 1 ? 's' : ''}`;
+      const qTooltip = t.qualifier ? 
+        (t.qualifier.description + (t.qualifier.easter_egg ? '\n\n' + t.qualifier.easter_egg : '')) : 
+        'Projected completion based on seeder duty cycle';
+      metaString += ` • <span style="color: #62a0ea; font-weight: 500;" title="${escapeHtml(qTooltip)}">${ICONS.clock}Proj. ETA: ${escapeHtml(t.availability_eta)}</span>`;
     }
-    if (t.webseeds && t.webseeds.length > 0) {
-      metaString += ` • <span style="color: #57e389; font-weight: 600;">${ICONS.globe}${t.webseeds.length} WebSeed${t.webseeds.length > 1 ? 's' : ''}</span>`;
+    if (t.upload_rate > 0) {
+      metaString += ` • ${ICONS.arrowUp}${formatSpeed(t.upload_rate)}`;
+    }
+    if (isWebDownload) {
+      const mirrorCount = t.webseeds && t.webseeds.length > 0 ? t.webseeds.length : (t.peers || 1);
+      metaString += ` • ${mirrorCount} mirror${mirrorCount !== 1 ? 's' : ''}`;
+    } else {
+      const seeds = t.seeders || 0;
+      const leechers = t.leechers !== undefined ? t.leechers : Math.max(0, (t.peers || 0) - seeds);
+      if (isSeeding) {
+        metaString += ` • ${leechers} peer${leechers !== 1 ? 's' : ''}`;
+      } else {
+        metaString += ` • ${seeds} seed${seeds !== 1 ? 's' : ''}, ${leechers} peer${leechers !== 1 ? 's' : ''}`;
+      }
+      if (t.webseeds && t.webseeds.length > 0) {
+        metaString += ` • <span style="color: #57e389; font-weight: 600;">${ICONS.globe}${t.webseeds.length} WebSeed${t.webseeds.length > 1 ? 's' : ''}</span>`;
+      }
     }
   }
   return metaString;
