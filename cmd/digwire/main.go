@@ -128,13 +128,44 @@ func main() {
 		cfg.DownloadDir = *dirFlag
 	}
 
+	var configDir string
+	if cfg.GetConfigPath() != "" {
+		configDir = filepath.Dir(cfg.GetConfigPath())
+	} else {
+		userCfg, _ := os.UserConfigDir()
+		if userCfg != "" {
+			configDir = filepath.Join(userCfg, "digwire")
+		} else {
+			configDir = "."
+		}
+	}
+	lockPath := filepath.Join(configDir, "digwire.lock")
+	appLock, lockErr := AcquireAppLock(lockPath)
+
 	// Single-instance handling: check if Digwire is already running
 	cliArgs := flag.Args()
 	checkURL := fmt.Sprintf("http://127.0.0.1:%d/api/config", cfg.WebPort)
-	probeClient := &http.Client{Timeout: 350 * time.Millisecond}
-	if resp, err := probeClient.Get(checkURL); err == nil {
-		if resp.StatusCode == http.StatusOK {
-			resp.Body.Close()
+
+	if lockErr != nil {
+		// Another instance of Digwire is already running or launching!
+		log.Printf("⚡ Digwire instance is already active (lock held). Forwarding request...\n")
+		probeClient := &http.Client{Timeout: 500 * time.Millisecond}
+		var connected bool
+		for i := 0; i < 6; i++ {
+			if resp, err := probeClient.Get(checkURL); err == nil {
+				if resp.StatusCode == http.StatusOK {
+					resp.Body.Close()
+					connected = true
+					break
+				}
+				if resp != nil {
+					resp.Body.Close()
+				}
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
+
+		if connected {
 			if len(cliArgs) > 0 {
 				for _, arg := range cliArgs {
 					arg = strings.TrimSpace(arg)
@@ -147,8 +178,6 @@ func main() {
 				}
 				return
 			}
-			// No positional arguments: user launched another instance while one is already running
-			log.Printf("⚡ Digwire is already running at http://127.0.0.1:%d\n", cfg.WebPort)
 			if !*headlessFlag {
 				cmd := launchNativeWindow(fmt.Sprintf("http://127.0.0.1:%d", cfg.WebPort), *noGTKFlag, *browserFlag)
 				if cmd != nil {
@@ -157,10 +186,10 @@ func main() {
 			}
 			return
 		}
-		if resp.Body != nil {
-			resp.Body.Close()
-		}
+		log.Printf("Digwire is already running in another process. Exiting duplicate instance.\n")
+		return
 	}
+	defer appLock.Release()
 
 	log.Println("⚡ Starting Digwire BitTorrent Client...")
 	registerMimeTypes()

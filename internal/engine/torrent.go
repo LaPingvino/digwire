@@ -208,20 +208,22 @@ func (tr *rateTracker) getVerifyProgress() float64 {
 }
 
 type Engine struct {
-	mu           sync.RWMutex
-	client       *torrent.Client
-	pieceComp    storage.PieceCompletion
-	httpManager  *HTTPManager
-	mediaManager *MediaManager
-	searchMgr    *search.Manager
-	dhtIndexer   *dhtindex.Indexer
-	cfg          *config.Config
-	rateMap      map[string]*rateTracker
-	webSeedsMap  map[string][]string
-	stopMonitor   chan struct{}
-	verifySem     chan struct{}
-	sessionLoaded chan struct{}
-	closeOnce     sync.Once
+	mu                       sync.RWMutex
+	client                   *torrent.Client
+	pieceComp                storage.PieceCompletion
+	httpManager              *HTTPManager
+	mediaManager             *MediaManager
+	searchMgr                *search.Manager
+	dhtIndexer               *dhtindex.Indexer
+	cfg                      *config.Config
+	rateMap                  map[string]*rateTracker
+	webSeedsMap              map[string][]string
+	savedTorrentsMap         map[string]SavedTorrent
+	sessionExplicitlyEmptied bool
+	stopMonitor              chan struct{}
+	verifySem                chan struct{}
+	sessionLoaded            chan struct{}
+	closeOnce                sync.Once
 }
 
 // WaitForSession blocks until the session has finished loading or the timeout expires
@@ -346,6 +348,24 @@ func (e *Engine) saveTorrentMetainfo(t *torrent.Torrent) {
 	_ = os.Rename(tmpFile, filePath)
 }
 
+func tuneAndCheckpointSQLite(dbPath string) {
+	if dbPath == "" {
+		return
+	}
+	if _, err := os.Stat(dbPath); err != nil && !os.IsNotExist(err) {
+		return
+	}
+	if db, err := sql.Open("sqlite", dbPath); err == nil {
+		defer db.Close()
+		_, _ = db.Exec("PRAGMA busy_timeout = 5000;")
+		_, _ = db.Exec("PRAGMA journal_mode = WAL;")
+		_, _ = db.Exec("PRAGMA journal_size_limit = 16777216;") // 16 MB max WAL limit
+		_, _ = db.Exec("PRAGMA wal_autocheckpoint = 1000;")
+		_, _ = db.Exec("PRAGMA synchronous = NORMAL;")
+		_, _ = db.Exec("PRAGMA wal_checkpoint(TRUNCATE);")
+	}
+}
+
 func NewEngine(cfg *config.Config) (*Engine, error) {
 	if err := os.MkdirAll(cfg.DownloadDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create download directory: %w", err)
@@ -441,21 +461,13 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 	}
 	_ = os.MkdirAll(pieceCompDir, 0755)
 
+	// Optimize and truncate SQLite piece completion WAL before opening to ensure instant startup
+	torrentDBPath := filepath.Join(pieceCompDir, ".torrent.db")
+	tuneAndCheckpointSQLite(torrentDBPath)
+
 	pieceCompletion, pErr := storage.NewDefaultPieceCompletionForDir(pieceCompDir)
 	if pErr != nil {
 		pieceCompletion = storage.NewMapPieceCompletion()
-	} else {
-		// Optimize SQLite piece completion database (.torrent.db) to prevent WAL bloat
-		torrentDBPath := filepath.Join(pieceCompDir, ".torrent.db")
-		if db, dErr := sql.Open("sqlite", torrentDBPath); dErr == nil {
-			_, _ = db.Exec("PRAGMA journal_mode = WAL;")
-			_, _ = db.Exec("PRAGMA journal_size_limit = 67108864;") // 64 MB WAL limit
-			_, _ = db.Exec("PRAGMA wal_autocheckpoint = 1000;")
-			_, _ = db.Exec("PRAGMA busy_timeout = 5000;")
-			_, _ = db.Exec("PRAGMA synchronous = NORMAL;")
-			_, _ = db.Exec("PRAGMA wal_checkpoint(PASSIVE);")
-			_ = db.Close()
-		}
 	}
 
 	storageOpts := storage.NewFileClientOpts{
@@ -477,16 +489,17 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 	dhtIdx, _ := dhtindex.NewIndexer(client)
 
 	e := &Engine{
-		client:        client,
-		pieceComp:     pieceCompletion,
-		httpManager:   NewHTTPManager(cfg.DownloadDir),
-		dhtIndexer:    dhtIdx,
-		cfg:           cfg,
-		rateMap:       make(map[string]*rateTracker),
-		webSeedsMap:   make(map[string][]string),
-		stopMonitor:   make(chan struct{}),
-		verifySem:     make(chan struct{}, 2),
-		sessionLoaded: make(chan struct{}),
+		client:           client,
+		pieceComp:        pieceCompletion,
+		httpManager:      NewHTTPManager(cfg.DownloadDir),
+		dhtIndexer:       dhtIdx,
+		cfg:              cfg,
+		rateMap:          make(map[string]*rateTracker),
+		webSeedsMap:      make(map[string][]string),
+		savedTorrentsMap: make(map[string]SavedTorrent),
+		stopMonitor:      make(chan struct{}),
+		verifySem:        make(chan struct{}, 2),
+		sessionLoaded:    make(chan struct{}),
 	}
 	e.mediaManager = NewMediaManager(cfg.DownloadDir, e)
 
@@ -499,26 +512,38 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 		})
 	}
 
-	// Restore active session across restarts asynchronously
-	go func() {
-		e.loadSession()
-		close(e.sessionLoaded)
-	}()
+	// Restore active session synchronously so all items are fully loaded before handling requests
+	e.loadSession()
+	close(e.sessionLoaded)
 
 	go e.monitorLoop()
 	return e, nil
 }
 
 func (e *Engine) saveSessionLocked() {
+	if !e.IsSessionLoaded() {
+		return
+	}
+
 	filePath := e.getSessionFilePath()
 	_ = os.MkdirAll(filepath.Dir(filePath), 0755)
 
-	torrents := e.client.Torrents()
-	var list []SavedTorrent
+	if e.savedTorrentsMap == nil {
+		e.savedTorrentsMap = make(map[string]SavedTorrent)
+	}
 
+	torrents := e.client.Torrents()
 	for _, t := range torrents {
-		hash := t.InfoHash().HexString()
+		hash := strings.ToLower(t.InfoHash().HexString())
 		tr := e.rateMap[hash]
+		if tr == nil {
+			for k, v := range e.rateMap {
+				if strings.EqualFold(k, hash) {
+					tr = v
+					break
+				}
+			}
+		}
 		if tr == nil {
 			continue // Do not persist probing torrents
 		}
@@ -551,7 +576,7 @@ func (e *Engine) saveSessionLocked() {
 		isSeeding := totalBytes > 0 && completedBytes >= totalBytes
 
 		var skipped []int
-		if tr != nil && tr.skippedFiles != nil {
+		if tr.skippedFiles != nil {
 			for idx, isSkipped := range tr.skippedFiles {
 				if isSkipped {
 					skipped = append(skipped, idx)
@@ -559,7 +584,7 @@ func (e *Engine) saveSessionLocked() {
 			}
 		}
 
-		list = append(list, SavedTorrent{
+		e.savedTorrentsMap[hash] = SavedTorrent{
 			InfoHash:       hash,
 			MagnetURI:      mag,
 			Name:           name,
@@ -570,28 +595,35 @@ func (e *Engine) saveSessionLocked() {
 			TotalBytes:     totalBytes,
 			CompletedBytes: completedBytes,
 			SkippedFiles:   skipped,
-		})
+		}
+	}
+
+	var list []SavedTorrent
+	for _, st := range e.savedTorrentsMap {
+		list = append(list, st)
 	}
 
 	// Save HTTP tasks
 	var httpList []SavedHTTPTask
-	e.httpManager.mu.RLock()
-	for _, task := range e.httpManager.tasks {
-		task.mu.Lock()
-		httpList = append(httpList, SavedHTTPTask{
-			ID:             task.ID,
-			URL:            task.URL,
-			Mirrors:        task.Mirrors,
-			Name:           task.Name,
-			TotalBytes:     task.TotalBytes,
-			CompletedBytes: task.CompletedBytes,
-			State:          task.State,
-			DestPath:       task.DestPath,
-			AddedAt:        task.AddedAt,
-		})
-		task.mu.Unlock()
+	if e.httpManager != nil {
+		e.httpManager.mu.RLock()
+		for _, task := range e.httpManager.tasks {
+			task.mu.Lock()
+			httpList = append(httpList, SavedHTTPTask{
+				ID:             task.ID,
+				URL:            task.URL,
+				Mirrors:        task.Mirrors,
+				Name:           task.Name,
+				TotalBytes:     task.TotalBytes,
+				CompletedBytes: task.CompletedBytes,
+				State:          task.State,
+				DestPath:       task.DestPath,
+				AddedAt:        task.AddedAt,
+			})
+			task.mu.Unlock()
+		}
+		e.httpManager.mu.RUnlock()
 	}
-	e.httpManager.mu.RUnlock()
 
 	// Save Media tasks
 	var mediaList []SavedMediaTask
@@ -618,6 +650,13 @@ func (e *Engine) saveSessionLocked() {
 			task.mu.Unlock()
 		}
 		e.mediaManager.mu.RUnlock()
+	}
+
+	// Safety check: if all lists are empty, only save if explicitly emptied by user
+	if len(list) == 0 && len(httpList) == 0 && len(mediaList) == 0 {
+		if !e.sessionExplicitlyEmptied {
+			return
+		}
 	}
 
 	data, err := json.MarshalIndent(SessionState{Torrents: list, HTTPTasks: httpList, MediaTasks: mediaList}, "", "  ")
@@ -703,6 +742,9 @@ func (e *Engine) loadSession() {
 	}
 
 	for _, item := range state.Torrents {
+		if item.InfoHash != "" {
+			e.savedTorrentsMap[strings.ToLower(item.InfoHash)] = item
+		}
 		if item.MagnetURI == "" && item.InfoHash != "" {
 			item.MagnetURI = "magnet:?xt=urn:btih:" + item.InfoHash
 		}
@@ -1038,6 +1080,8 @@ func (e *Engine) loadSession() {
 			}
 		}
 	}
+
+	e.sessionExplicitlyEmptied = (len(e.savedTorrentsMap) == 0 && len(state.HTTPTasks) == 0 && len(state.MediaTasks) == 0)
 }
 
 func (e *Engine) checkpointDatabases() {
@@ -1055,15 +1099,7 @@ func (e *Engine) checkpointDatabases() {
 
 	for _, dbName := range []string{".torrent.db", "dht_index.sqlite"} {
 		dbPath := filepath.Join(configDir, dbName)
-		if _, err := os.Stat(dbPath); err == nil {
-			if db, err := sql.Open("sqlite", dbPath); err == nil {
-				_, _ = db.Exec("PRAGMA journal_mode = WAL;")
-				_, _ = db.Exec("PRAGMA journal_size_limit = 67108864;")
-				_, _ = db.Exec("PRAGMA wal_autocheckpoint = 1000;")
-				_, _ = db.Exec("PRAGMA wal_checkpoint(PASSIVE);")
-				_ = db.Close()
-			}
-		}
+		tuneAndCheckpointSQLite(dbPath)
 	}
 }
 
@@ -2401,6 +2437,11 @@ func (e *Engine) Remove(infoHashHex string, deleteFiles bool) error {
 					delete(e.webSeedsMap, k)
 				}
 			}
+			for k := range e.savedTorrentsMap {
+				if strings.EqualFold(k, hex) {
+					delete(e.savedTorrentsMap, k)
+				}
+			}
 			_ = os.Remove(e.getTorrentCacheFilePath(hex))
 
 			if deleteFiles && name != "" {
@@ -2412,7 +2453,25 @@ func (e *Engine) Remove(infoHashHex string, deleteFiles bool) error {
 		}
 	}
 
+	for k := range e.savedTorrentsMap {
+		if strings.EqualFold(k, infoHashHex) {
+			delete(e.savedTorrentsMap, k)
+			removed = true
+		}
+	}
+
 	if removed {
+		mediaCount := 0
+		if e.mediaManager != nil {
+			mediaCount = len(e.mediaManager.tasks)
+		}
+		httpCount := 0
+		if e.httpManager != nil {
+			httpCount = len(e.httpManager.tasks)
+		}
+		if len(e.savedTorrentsMap) == 0 && httpCount == 0 && mediaCount == 0 {
+			e.sessionExplicitlyEmptied = true
+		}
 		e.saveSessionLocked()
 		return nil
 	}
@@ -3663,6 +3722,7 @@ func (e *Engine) Close() {
 		if e.pieceComp != nil {
 			_ = e.pieceComp.Close()
 		}
+		e.checkpointDatabases()
 	})
 }
 

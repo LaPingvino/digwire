@@ -107,6 +107,9 @@ func (s *Server) routes() {
 
 func (s *Server) handleGetTorrents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	if s.engine != nil {
+		s.engine.WaitForSession(3 * time.Second)
+	}
 	torrents := s.engine.GetTorrents()
 	_ = json.NewEncoder(w).Encode(torrents)
 }
