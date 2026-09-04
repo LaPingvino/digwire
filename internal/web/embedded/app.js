@@ -2456,6 +2456,16 @@ window.addEventListener('keydown', (e) => {
 // Initialize on page load
 window.addEventListener('DOMContentLoaded', () => {
   initEventStream();
+  // Immediate initial load so UI populates instantly without waiting for SSE tick
+  fetch('/api/torrents').then(r => r.json()).then(data => {
+    if (data && Array.isArray(data)) {
+      torrentsData = data;
+      if (currentView === 'torrents') renderTorrents();
+    }
+  }).catch(() => {});
+  fetch('/api/stats').then(r => r.json()).then(stats => {
+    if (stats) renderGlobalStats(stats);
+  }).catch(() => {});
 });
 
 // Drag and Drop support

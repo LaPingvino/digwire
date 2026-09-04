@@ -97,9 +97,15 @@ func registerMimeTypes() {
 var Version = "0.2.4"
 
 func main() {
+	// WebKit2GTK Linux rendering compatibility flags (prevents black screen with DMA-BUF compositing on Linux GPUs)
+	_ = os.Setenv("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
+	_ = os.Setenv("WEBKIT_DISABLE_COMPOSITING_MODE", "1")
+
 	portFlag := flag.Int("port", 0, "Web interface port (overrides config)")
 	dirFlag := flag.String("dir", "", "Download directory (overrides config)")
-	headlessFlag := flag.Bool("headless", false, "Do not automatically launch web browser")
+	headlessFlag := flag.Bool("headless", false, "Do not automatically launch web browser or app window")
+	noGTKFlag := flag.Bool("no-gtk", false, "Disable WebKitGTK native window, fallback to Chrome/Chromium app mode")
+	browserFlag := flag.Bool("browser", false, "Launch default web browser instead of standalone window")
 	versionFlag := flag.Bool("version", false, "Print version and exit")
 	vFlag := flag.Bool("v", false, "Print version and exit")
 	flag.Parse()
@@ -178,11 +184,31 @@ func main() {
 	log.Printf("✨ Digwire is running at: %s\n", uiURL)
 	log.Printf("📁 Downloads folder: %s\n", cfg.DownloadDir)
 
+	go func() {
+		if err := srv.Start(); err != nil {
+			log.Printf("Server stopped: %v\n", err)
+		}
+	}()
+
 	if !*headlessFlag {
 		go func() {
-			time.Sleep(300 * time.Millisecond)
-			log.Println("🖥️  Opening native application window...")
-			cmd := launchNativeWindow(uiURL)
+			// Poll local web server until ready before opening UI window
+			checkURL := fmt.Sprintf("http://127.0.0.1:%d/api/config", cfg.WebPort)
+			client := &http.Client{Timeout: 500 * time.Millisecond}
+			for i := 0; i < 40; i++ {
+				resp, err := client.Get(checkURL)
+				if err == nil && resp.StatusCode == http.StatusOK {
+					resp.Body.Close()
+					break
+				}
+				if resp != nil {
+					resp.Body.Close()
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+
+			log.Println("🖥️  Opening application window...")
+			cmd := launchNativeWindow(uiURL, *noGTKFlag, *browserFlag)
 			if cmd != nil {
 				_ = cmd.Wait()
 				log.Println("Window closed by user, exiting...")
@@ -195,12 +221,6 @@ func main() {
 	// Graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
-	go func() {
-		if err := srv.Start(); err != nil {
-			log.Printf("Server stopped: %v\n", err)
-		}
-	}()
 
 	<-sigChan
 	log.Println("\n🛑 Shutting down Digwire...")

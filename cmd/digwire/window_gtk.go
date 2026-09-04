@@ -43,7 +43,40 @@ static void on_script_message(WebKitUserContentManager *manager, WebKitJavascrip
     }
 }
 
+typedef struct {
+    WebKitWebView *web_view;
+    char *uri;
+} RetryLoadData;
+
+static gboolean retry_load_cb(gpointer user_data) {
+    RetryLoadData *data = (RetryLoadData*)user_data;
+    if (data != NULL) {
+        if (data->web_view != NULL && data->uri != NULL) {
+            webkit_web_view_load_uri(data->web_view, data->uri);
+        }
+        if (data->uri != NULL) {
+            g_free(data->uri);
+        }
+        g_free(data);
+    }
+    return G_SOURCE_REMOVE;
+}
+
+static gboolean on_load_failed(WebKitWebView *web_view, WebKitLoadEvent load_event, gchar *failing_uri, GError *error, gpointer user_data) {
+    if (failing_uri != NULL) {
+        RetryLoadData *data = g_new0(RetryLoadData, 1);
+        data->web_view = web_view;
+        data->uri = g_strdup(failing_uri);
+        g_timeout_add(300, retry_load_cb, data);
+    }
+    return TRUE;
+}
+
 static int launch_gtk_window(const char* url, const char* icon_path) {
+    // Disable DMA-BUF hardware renderer and broken compositing modes that trigger black screen on Linux GPUs
+    setenv("WEBKIT_DISABLE_DMABUF_RENDERER", "1", 1);
+    setenv("WEBKIT_DISABLE_COMPOSITING_MODE", "1", 1);
+
     g_set_prgname("digwire");
     g_set_application_name("Digwire");
     
@@ -82,22 +115,30 @@ static int launch_gtk_window(const char* url, const char* icon_path) {
 
     // Create WebKit View with ucm
     WebKitWebView *webView = WEBKIT_WEB_VIEW(webkit_web_view_new_with_user_content_manager(ucm));
-    webkit_web_view_load_uri(webView, url);
 
-    // Enable WebKit developer tools
+    // Configure WebKit settings to prevent black screens and ensure fast rendering
     WebKitSettings *wkSettings = webkit_web_view_get_settings(webView);
     if (wkSettings != NULL) {
         webkit_settings_set_enable_developer_extras(wkSettings, TRUE);
-        webkit_settings_set_enable_page_cache(wkSettings, TRUE);
+        webkit_settings_set_enable_page_cache(wkSettings, FALSE);
+        webkit_settings_set_enable_javascript(wkSettings, TRUE);
+        webkit_settings_set_enable_smooth_scrolling(wkSettings, TRUE);
+        webkit_settings_set_hardware_acceleration_policy(wkSettings, WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
     }
 
-    GdkRGBA bg = {0.14, 0.14, 0.14, 1.0};
+    // Connect load failure handler
+    g_signal_connect(webView, "load-failed", G_CALLBACK(on_load_failed), NULL);
+
+    webkit_web_view_load_uri(webView, url);
+
+    GdkRGBA bg = {0.141, 0.141, 0.141, 1.0};
     webkit_web_view_set_background_color(webView, &bg);
 
     gtk_container_add(GTK_CONTAINER(window), GTK_WIDGET(webView));
     g_signal_connect(window, "destroy", G_CALLBACK(on_destroy), NULL);
 
     gtk_widget_show_all(window);
+    gtk_widget_grab_focus(GTK_WIDGET(webView));
     gtk_main();
     return 1;
 }
