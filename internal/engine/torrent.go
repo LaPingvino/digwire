@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -155,12 +156,26 @@ type rateTracker struct {
 	addedAt             int64
 	isPaused            bool
 	isSeeding           bool
-	isVerifying         bool
-	verifyProgress      float64
+	isVerifying         atomic.Bool
+	verifyProgressBits  uint64
 	displayName         string
 	savedTotalBytes     int64
 	savedCompletedBytes int64
 	skippedFiles        map[int]bool
+}
+
+func (tr *rateTracker) setVerifyProgress(pct float64) {
+	if tr == nil {
+		return
+	}
+	atomic.StoreUint64(&tr.verifyProgressBits, math.Float64bits(pct))
+}
+
+func (tr *rateTracker) getVerifyProgress() float64 {
+	if tr == nil {
+		return 0
+	}
+	return math.Float64frombits(atomic.LoadUint64(&tr.verifyProgressBits))
 }
 
 type Engine struct {
@@ -174,6 +189,7 @@ type Engine struct {
 	rateMap     map[string]*rateTracker
 	webSeedsMap map[string][]string
 	stopMonitor chan struct{}
+	verifySem   chan struct{}
 	closeOnce   sync.Once
 }
 
@@ -384,6 +400,7 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 		rateMap:     make(map[string]*rateTracker),
 		webSeedsMap: make(map[string][]string),
 		stopMonitor: make(chan struct{}),
+		verifySem:   make(chan struct{}, 2),
 	}
 
 	if dhtIdx != nil {
@@ -433,7 +450,7 @@ func (e *Engine) saveSessionLocked() {
 			completedBytes = tr.savedCompletedBytes
 		}
 
-		if tr.isVerifying && tr.savedCompletedBytes > completedBytes {
+		if tr.isVerifying.Load() && tr.savedCompletedBytes > completedBytes {
 			completedBytes = tr.savedCompletedBytes
 		}
 
@@ -601,15 +618,29 @@ func (e *Engine) loadSession() {
 			}
 		}
 
-		// Run ConsolidateAndVerify in background to verify cryptographic piece hashes and correct on the fly
-		e.ConsolidateAndVerify(t, func() {
-			if len(item.WebSeeds) > 0 && t.Info() != nil {
-				clean := SanitizeWebSeeds(item.WebSeeds, t.Info().IsDir())
-				if len(clean) > 0 {
-					t.AddWebSeeds(clean)
+		// If complete and seeding, skip startup piece hashing so start is instant and disk is idle!
+		// Only run background verification if incomplete or partial download.
+		if !isSeeding && !(item.TotalBytes > 0 && savedCompleted >= item.TotalBytes) {
+			e.ConsolidateAndVerify(t, func() {
+				if len(item.WebSeeds) > 0 && t.Info() != nil {
+					clean := SanitizeWebSeeds(item.WebSeeds, t.Info().IsDir())
+					if len(clean) > 0 {
+						t.AddWebSeeds(clean)
+					}
 				}
-			}
-		})
+			})
+		} else {
+			// If already seeding, inject webseeds directly when info is available
+			go func(tor *torrent.Torrent, seeds []string) {
+				<-tor.GotInfo()
+				if len(seeds) > 0 && tor.Info() != nil {
+					clean := SanitizeWebSeeds(seeds, tor.Info().IsDir())
+					if len(clean) > 0 {
+						tor.AddWebSeeds(clean)
+					}
+				}
+			}(t, item.WebSeeds)
+		}
 	}
 
 	// Restore HTTP downloads
@@ -1301,12 +1332,12 @@ func (e *Engine) verifyTorrentPiecesConcurrent(ctx context.Context, tor *torrent
 		return nil
 	}
 
-	numWorkers := runtime.GOMAXPROCS(0) * 4
-	if numWorkers < 8 {
-		numWorkers = 8
+	numWorkers := runtime.GOMAXPROCS(0)
+	if numWorkers < 2 {
+		numWorkers = 2
 	}
-	if numWorkers > 64 {
-		numWorkers = 64
+	if numWorkers > 8 {
+		numWorkers = 8
 	}
 
 	var checkedCount int64
@@ -1366,12 +1397,13 @@ func (e *Engine) ConsolidateAndVerify(tor *torrent.Torrent, onComplete ...func()
 		defer func() {
 			if r := recover(); r != nil {
 				log.Printf("⚠️ Recovered from verification error for %s: %v", hash, r)
-				e.mu.Lock()
-				if tr := e.rateMap[hash]; tr != nil {
-					tr.isVerifying = false
-					tr.verifyProgress = 0
+				e.mu.RLock()
+				tr := e.rateMap[hash]
+				e.mu.RUnlock()
+				if tr != nil {
+					tr.isVerifying.Store(false)
+					tr.setVerifyProgress(0)
 				}
-				e.mu.Unlock()
 			}
 		}()
 
@@ -1387,12 +1419,12 @@ func (e *Engine) ConsolidateAndVerify(tor *torrent.Torrent, onComplete ...func()
 		tr := e.rateMap[hash]
 		isGermanMode := e.cfg != nil && e.cfg.GermanyMode
 		if tr != nil {
-			if tr.isVerifying {
+			if tr.isVerifying.Load() {
 				e.mu.Unlock()
 				return // Already verifying
 			}
-			tr.isVerifying = true
-			tr.verifyProgress = 0
+			tr.isVerifying.Store(true)
+			tr.setVerifyProgress(0)
 			onDisk := e.checkExistingLocalFileSize(tor)
 			if onDisk > tr.savedCompletedBytes {
 				tr.savedCompletedBytes = onDisk
@@ -1425,17 +1457,19 @@ func (e *Engine) ConsolidateAndVerify(tor *torrent.Torrent, onComplete ...func()
 		}
 		e.mu.Unlock()
 
-		// 3. Fast concurrent piece verification
+		// Acquire global verification slot so background hashing never overwhelms the disk
+		if e.verifySem != nil {
+			e.verifySem <- struct{}{}
+			defer func() { <-e.verifySem }()
+		}
+
+		// 3. Fast concurrent piece verification (lock-free progress reporting!)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
 
 		_ = e.verifyTorrentPiecesConcurrent(ctx, tor, func(checked, total int) {
-			if total > 0 {
-				e.mu.Lock()
-				if tr := e.rateMap[hash]; tr != nil {
-					tr.verifyProgress = (float64(checked) / float64(total)) * 100.0
-				}
-				e.mu.Unlock()
+			if total > 0 && tr != nil {
+				tr.setVerifyProgress((float64(checked) / float64(total)) * 100.0)
 			}
 		})
 
@@ -1448,8 +1482,8 @@ func (e *Engine) ConsolidateAndVerify(tor *torrent.Torrent, onComplete ...func()
 		isGermanMode = e.cfg != nil && e.cfg.GermanyMode
 
 		if tr := e.rateMap[hash]; tr != nil {
-			tr.isVerifying = false
-			tr.verifyProgress = 0
+			tr.isVerifying.Store(false)
+			tr.setVerifyProgress(0)
 			tr.savedTotalBytes = tLen
 			tr.savedCompletedBytes = bComp
 			tr.isSeeding = isComplete && !isGermanMode
@@ -1691,8 +1725,8 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 				progress = (float64(completedBytes) / float64(totalBytes)) * 100.0
 			}
 
-			if tracker.isVerifying {
-				verifyProg = tracker.verifyProgress
+			if tracker.isVerifying.Load() {
+				verifyProg = tracker.getVerifyProgress()
 			}
 			if isPaused {
 				state = "paused"
@@ -1818,7 +1852,7 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 			WebSeeds:        webseeds,
 			Qualifier:       &qualifier,
 			AvailabilityETA: qualifier.AvailabilityETA,
-			IsVerifying:     tracker.isVerifying,
+			IsVerifying:     tracker.isVerifying.Load(),
 			VerifyProgress:  verifyProg,
 		})
 	}
@@ -1984,8 +2018,8 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 				if tr.savedCompletedBytes > completedBytes {
 					completedBytes = tr.savedCompletedBytes
 				}
-				if tr.isVerifying {
-					verifyProg = tr.verifyProgress
+				if tr.isVerifying.Load() {
+					verifyProg = tr.getVerifyProgress()
 				}
 			}
 			var progress float64
@@ -2162,7 +2196,7 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 				CreatedBy:       "Digwire P2P",
 				Qualifier:       &qualifier,
 				AvailabilityETA: qualifier.AvailabilityETA,
-				IsVerifying:     tr != nil && tr.isVerifying,
+				IsVerifying:     tr != nil && tr.isVerifying.Load(),
 				VerifyProgress:  verifyProg,
 			}, nil
 		}
