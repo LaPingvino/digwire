@@ -546,31 +546,8 @@ func (e *Engine) loadSession() {
 			}
 		}
 
-		// A torrent is ONLY seeding if its completed bytes meet or exceed its total size
-		isSeeding := item.TotalBytes > 0 && savedCompleted >= item.TotalBytes
-
-		if isSeeding {
-			t.DisallowDataDownload()
-			if e.cfg != nil && e.cfg.GermanyMode {
-				t.DisallowDataUpload()
-				isSeeding = false
-			} else {
-				t.AllowDataUpload()
-			}
-		} else if item.IsPaused {
-			t.DisallowDataDownload()
-			if e.cfg != nil && e.cfg.GermanyMode {
-				t.DisallowDataUpload()
-			}
-		} else {
-			t.AllowDataDownload()
-			if t.Info() != nil {
-				t.DownloadAll()
-			}
-			if e.cfg != nil && e.cfg.GermanyMode {
-				t.DisallowDataUpload()
-			}
-		}
+		isGermanMode := e.cfg != nil && e.cfg.GermanyMode
+		isSeeding := item.TotalBytes > 0 && savedCompleted >= item.TotalBytes && !isGermanMode
 
 		e.rateMap[hash] = &rateTracker{
 			lastTime:            time.Now(),
@@ -588,32 +565,15 @@ func (e *Engine) loadSession() {
 			e.webSeedsMap[hash] = SanitizeWebSeeds(item.WebSeeds, false)
 		}
 
-		go func(tor *torrent.Torrent, seeds []string, h string) {
-			<-tor.GotInfo()
-			if tor.Info() != nil {
-				e.mu.Lock()
-				tr, exists := e.rateMap[h]
-				isPaused := exists && tr.isPaused
-				isSeeding := exists && tr.isSeeding
-				isGerman := e.cfg != nil && e.cfg.GermanyMode
-				e.mu.Unlock()
-
-				if !isPaused && !isSeeding {
-					tor.AllowDataDownload()
-					tor.DownloadAll()
-					if isGerman {
-						tor.DisallowDataUpload()
-					}
-				}
-
-				if len(seeds) > 0 {
-					clean := SanitizeWebSeeds(seeds, tor.Info().IsDir())
-					if len(clean) > 0 {
-						tor.AddWebSeeds(clean)
-					}
+		// Run ConsolidateAndVerify on startup so local files are discovered and verified before downloading
+		e.ConsolidateAndVerify(t, func() {
+			if len(item.WebSeeds) > 0 && t.Info() != nil {
+				clean := SanitizeWebSeeds(item.WebSeeds, t.Info().IsDir())
+				if len(clean) > 0 {
+					t.AddWebSeeds(clean)
 				}
 			}
-		}(t, item.WebSeeds, hash)
+		})
 	}
 
 	// Restore HTTP downloads
