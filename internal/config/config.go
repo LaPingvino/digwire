@@ -43,6 +43,7 @@ type Config struct {
 	FallbackDNS     []string               `yaml:"fallback_dns" json:"fallback_dns"`
 	AutoPreseedDHT  bool                   `yaml:"auto_preseed_dht" json:"auto_preseed_dht"`
 	DHTCrawlWorkers int                    `yaml:"dht_crawl_workers" json:"dht_crawl_workers"`
+	GermanyMode     bool                   `yaml:"germany_mode" json:"germany_mode"`
 	SearchProviders []SearchProviderConfig `yaml:"search_providers" json:"search_providers"`
 	configPath      string                 `yaml:"-" json:"-"`
 }
@@ -71,6 +72,7 @@ func DefaultConfig() *Config {
 		},
 		AutoPreseedDHT:  true,
 		DHTCrawlWorkers: 8,
+		GermanyMode:     false,
 		SearchProviders: []SearchProviderConfig{
 			{
 				Name:    "BTDigg (DHT)",

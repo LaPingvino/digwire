@@ -133,6 +133,7 @@ type GlobalStats struct {
 	TotalCount      int   `json:"total_count"`
 	DHTNodes        int   `json:"dht_nodes"`
 	DHTIndexedCount int   `json:"dht_indexed_count"`
+	GermanyMode     bool  `json:"germany_mode"`
 }
 
 type rateTracker struct {
@@ -539,12 +540,23 @@ func (e *Engine) loadSession() {
 
 		if isSeeding {
 			t.DisallowDataDownload()
-			t.AllowDataUpload()
+			if e.cfg != nil && e.cfg.GermanyMode {
+				t.DisallowDataUpload()
+				isSeeding = false
+			} else {
+				t.AllowDataUpload()
+			}
 		} else if item.IsPaused {
 			t.DisallowDataDownload()
+			if e.cfg != nil && e.cfg.GermanyMode {
+				t.DisallowDataUpload()
+			}
 		} else {
 			t.AllowDataDownload()
 			t.DownloadAll()
+			if e.cfg != nil && e.cfg.GermanyMode {
+				t.DisallowDataUpload()
+			}
 		}
 
 		e.rateMap[hash] = &rateTracker{
@@ -665,7 +677,11 @@ func (e *Engine) monitorLoop() {
 				isComplete := tLen > 0 && bComp >= tLen
 
 				if isComplete {
-					if !tracker.isSeeding {
+					if e.cfg != nil && e.cfg.GermanyMode {
+						tracker.isSeeding = false
+						t.DisallowDataDownload()
+						t.DisallowDataUpload()
+					} else if !tracker.isSeeding {
 						tracker.isSeeding = true
 						t.DisallowDataDownload()
 						t.AllowDataUpload()
@@ -673,6 +689,9 @@ func (e *Engine) monitorLoop() {
 					}
 				} else {
 					tracker.isSeeding = false
+					if e.cfg != nil && e.cfg.GermanyMode {
+						t.DisallowDataUpload()
+					}
 				}
 
 				// Periodically sample swarm presence into DHT indexer (every 60 seconds)
@@ -835,6 +854,9 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 	if err != nil {
 		return nil, err
 	}
+	if e.IsGermanyMode() {
+		t.DisallowDataUpload()
+	}
 
 	// Immediately inject Tier-1 Trackers
 	t.AddTrackers(GetTier1TrackerList())
@@ -918,6 +940,9 @@ func (e *Engine) AddTorrentFile(reader io.Reader) (*torrent.Torrent, error) {
 	t, err := e.client.AddTorrent(mi)
 	if err != nil {
 		return nil, err
+	}
+	if e.cfg != nil && e.cfg.GermanyMode {
+		t.DisallowDataUpload()
 	}
 	e.saveTorrentMetainfo(t)
 	e.initTracker(t.InfoHash().HexString())
@@ -1003,14 +1028,19 @@ func (e *Engine) CreateTorrent(sourcePath, comment string) (string, string, erro
 		})
 	}
 
+	isGermanMode := e.cfg != nil && e.cfg.GermanyMode
 	e.initTracker(hash, torrentName)
 	if tr := e.rateMap[hash]; tr != nil {
-		tr.isSeeding = true
+		tr.isSeeding = !isGermanMode
 		tr.savedTotalBytes = info.TotalLength()
 		tr.savedCompletedBytes = info.TotalLength()
 	}
 	t.DisallowDataDownload()
-	t.AllowDataUpload()
+	if isGermanMode {
+		t.DisallowDataUpload()
+	} else {
+		t.AllowDataUpload()
+	}
 	_ = t.VerifyData()
 	e.saveSessionLocked()
 	return hash, magnetURI, nil
@@ -1234,30 +1264,53 @@ func (e *Engine) ConsolidateAndVerify(tor *torrent.Torrent, onComplete ...func()
 		tLen := tor.Length()
 		isComplete := (tLen > 0 && bComp >= tLen)
 
+		isGermanMode := e.cfg != nil && e.cfg.GermanyMode
+
 		if tr := e.rateMap[hash]; tr != nil {
 			tr.isVerifying = false
 			tr.savedTotalBytes = tLen
 			tr.savedCompletedBytes = bComp
-			tr.isSeeding = isComplete
+			tr.isSeeding = isComplete && !isGermanMode
 
 			if isComplete {
-				// 100% complete: seed to the swarm, do not download
+				// 100% complete
 				tor.DisallowDataDownload()
-				tor.AllowDataUpload()
+				if isGermanMode {
+					tor.DisallowDataUpload()
+				} else {
+					tor.AllowDataUpload()
+				}
 			} else if !tr.isPaused {
 				// Has missing pieces and not paused: resume downloading
 				tor.AllowDataDownload()
 				tor.DownloadAll()
+				if isGermanMode {
+					tor.DisallowDataUpload()
+				} else {
+					tor.AllowDataUpload()
+				}
 			} else {
 				tor.DisallowDataDownload()
+				if isGermanMode {
+					tor.DisallowDataUpload()
+				}
 			}
 		} else {
 			if isComplete {
 				tor.DisallowDataDownload()
-				tor.AllowDataUpload()
+				if isGermanMode {
+					tor.DisallowDataUpload()
+				} else {
+					tor.AllowDataUpload()
+				}
 			} else {
 				tor.AllowDataDownload()
 				tor.DownloadAll()
+				if isGermanMode {
+					tor.DisallowDataUpload()
+				} else {
+					tor.AllowDataUpload()
+				}
 			}
 		}
 		e.saveSessionLocked()
@@ -1335,6 +1388,7 @@ func (e *Engine) Resume(infoHashHex string) error {
 		return nil
 	}
 
+	isGermanMode := e.cfg != nil && e.cfg.GermanyMode
 	torrents := e.client.Torrents()
 	for _, t := range torrents {
 		if strings.EqualFold(t.InfoHash().HexString(), infoHashHex) {
@@ -1342,14 +1396,29 @@ func (e *Engine) Resume(infoHashHex string) error {
 				tr.isPaused = false
 				if tr.isSeeding {
 					t.DisallowDataDownload()
-					t.AllowDataUpload()
+					if isGermanMode {
+						t.DisallowDataUpload()
+						tr.isSeeding = false
+					} else {
+						t.AllowDataUpload()
+					}
 				} else {
 					t.AllowDataDownload()
 					t.DownloadAll()
+					if isGermanMode {
+						t.DisallowDataUpload()
+					} else {
+						t.AllowDataUpload()
+					}
 				}
 			} else {
 				t.AllowDataDownload()
 				t.DownloadAll()
+				if isGermanMode {
+					t.DisallowDataUpload()
+				} else {
+					t.AllowDataUpload()
+				}
 			}
 			e.saveSessionLocked()
 			return nil
@@ -1408,6 +1477,11 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 		dlRate := tracker.downloadRate
 		ulRate := tracker.uploadRate
 
+		isGermanMode := e.cfg != nil && e.cfg.GermanyMode
+		if isGermanMode {
+			ulRate = 0
+		}
+
 		info := t.Info()
 		var totalBytes, completedBytes int64
 		var progress float64
@@ -1431,7 +1505,11 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 			} else if isPaused {
 				state = "paused"
 			} else if totalBytes > 0 && completedBytes >= totalBytes {
-				state = "seeding"
+				if isGermanMode {
+					state = "completed"
+				} else {
+					state = "seeding"
+				}
 			} else {
 				state = "downloading"
 			}
@@ -1465,7 +1543,7 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 		magURI := fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", hash, url.QueryEscape(name))
 		magURI = AppendWebSeedsToMagnet(SuperchargeMagnet(magURI), webseeds)
 		webConns := t.WebseedPeerConns()
-		isSeeding := totalBytes > 0 && completedBytes >= totalBytes
+		isSeeding := totalBytes > 0 && completedBytes >= totalBytes && !isGermanMode
 
 		seeders := stats.ConnectedSeeders + len(webConns)
 		if isSeeding {
@@ -1781,7 +1859,8 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 			webConns := t.WebseedPeerConns()
 			tr := e.rateMap[strings.ToLower(hashHex)]
 
-			isSeeding := totalBytes > 0 && completedBytes >= totalBytes
+			isGermanMode := e.cfg != nil && e.cfg.GermanyMode
+			isSeeding := totalBytes > 0 && completedBytes >= totalBytes && !isGermanMode
 
 			sCount := st.ConnectedSeeders + len(webConns)
 			if isSeeding {
@@ -1847,8 +1926,12 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 			displayState := "downloading"
 			if tr != nil && tr.isVerifying {
 				displayState = "verifying"
-			} else if isSeeding {
-				displayState = "seeding"
+			} else if totalBytes > 0 && completedBytes >= totalBytes {
+				if isGermanMode {
+					displayState = "completed"
+				} else {
+					displayState = "seeding"
+				}
 			} else if tr != nil && tr.isPaused {
 				displayState = "paused"
 			} else if info == nil {
@@ -2146,6 +2229,14 @@ func (e *Engine) GetGlobalStats() GlobalStats {
 		indexedCount = e.dhtIndexer.Size()
 	}
 
+	germanyMode := false
+	if e.cfg != nil {
+		germanyMode = e.cfg.GermanyMode
+	}
+	if germanyMode {
+		totalUL = 0
+	}
+
 	return GlobalStats{
 		DownloadRate:    totalDL,
 		UploadRate:      totalUL,
@@ -2153,7 +2244,51 @@ func (e *Engine) GetGlobalStats() GlobalStats {
 		TotalCount:      len(e.rateMap) + len(e.httpManager.tasks),
 		DHTNodes:        dhtNodes,
 		DHTIndexedCount: indexedCount,
+		GermanyMode:     germanyMode,
 	}
+}
+
+func (e *Engine) SetGermanyMode(enabled bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.cfg != nil {
+		e.cfg.GermanyMode = enabled
+	}
+
+	torrents := e.client.Torrents()
+	for _, t := range torrents {
+		hash := t.InfoHash().HexString()
+		tr := e.rateMap[hash]
+		if enabled {
+			t.DisallowDataUpload()
+			if tr != nil {
+				tr.isSeeding = false
+				tr.uploadRate = 0
+			}
+		} else {
+			if tr != nil && tr.isPaused {
+				t.DisallowDataDownload()
+				t.AllowDataUpload()
+			} else if tr != nil && tr.savedTotalBytes > 0 && tr.savedCompletedBytes >= tr.savedTotalBytes {
+				tr.isSeeding = true
+				t.DisallowDataDownload()
+				t.AllowDataUpload()
+			} else {
+				t.AllowDataUpload()
+			}
+		}
+	}
+	e.saveSessionLocked()
+}
+
+func (e *Engine) IsGermanyMode() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.cfg == nil {
+		return false
+	}
+	return e.cfg.GermanyMode
 }
 
 func (e *Engine) Close() {

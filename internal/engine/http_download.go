@@ -594,7 +594,7 @@ func (t *HTTPTask) AddMirror(mirrorURL string) {
 
 	// If actively downloading with range support, launch workers for the new mirror immediately!
 	if t.State == "downloading" && t.chunkQueue != nil && t.cancel != nil {
-		ctx, _ := context.WithCancel(context.Background())
+		ctx := context.Background()
 		partPath := t.DestPath + ".part"
 		for w := 0; w < 2; w++ {
 			t.activeWorkers.Add(1)

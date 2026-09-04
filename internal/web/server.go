@@ -72,6 +72,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/stats", s.handleStats)
 	s.mux.HandleFunc("GET /api/config", s.handleGetConfig)
 	s.mux.HandleFunc("POST /api/config", s.handleSaveConfig)
+	s.mux.HandleFunc("POST /api/config/germany-mode", s.handleToggleGermanyMode)
 	s.mux.HandleFunc("GET /api/config/yaml", s.handleGetConfigYAML)
 	s.mux.HandleFunc("POST /api/config/yaml", s.handleSaveConfigYAML)
 	s.mux.HandleFunc("POST /api/providers/test", s.handleTestProvider)
@@ -651,8 +652,31 @@ func (s *Server) handleSaveConfig(w http.ResponseWriter, r *http.Request) {
 	*s.cfg = newCfg
 	_ = s.cfg.Save()
 	s.search.UpdateProviders(s.cfg)
+	s.engine.SetGermanyMode(s.cfg.GermanyMode)
 
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "saved"})
+}
+
+type toggleGermanyModeRequest struct {
+	Enabled *bool `json:"enabled"`
+}
+
+func (s *Server) handleToggleGermanyMode(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	var req toggleGermanyModeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Enabled == nil {
+		newVal := !s.engine.IsGermanyMode()
+		s.cfg.GermanyMode = newVal
+		_ = s.cfg.Save()
+		s.engine.SetGermanyMode(newVal)
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "germany_mode": newVal})
+		return
+	}
+
+	s.cfg.GermanyMode = *req.Enabled
+	_ = s.cfg.Save()
+	s.engine.SetGermanyMode(*req.Enabled)
+	_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "germany_mode": *req.Enabled})
 }
 
 func (s *Server) handleGetConfigYAML(w http.ResponseWriter, r *http.Request) {
@@ -689,6 +713,7 @@ func (s *Server) handleSaveConfigYAML(w http.ResponseWriter, r *http.Request) {
 	*s.cfg = newCfg
 	_ = s.cfg.Save()
 	s.search.UpdateProviders(s.cfg)
+	s.engine.SetGermanyMode(s.cfg.GermanyMode)
 
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "saved"})
 }

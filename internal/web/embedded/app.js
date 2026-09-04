@@ -244,6 +244,11 @@ function renderGlobalStats(stats) {
     dhtText += ` • ${stats.dht_indexed_count} indexed`;
   }
   document.getElementById('stat-dht-nodes').textContent = dhtText;
+
+  const germanyBadge = document.getElementById('germany-mode-badge');
+  if (germanyBadge) {
+    germanyBadge.style.display = stats.germany_mode ? 'inline-flex' : 'none';
+  }
 }
 
 // Torrent Keyboard Navigation
@@ -1789,6 +1794,9 @@ async function openSettingsModal() {
     const upnpEl = document.getElementById('cfg-enable-upnp');
     if (upnpEl) upnpEl.checked = activeConfig.enable_upnp !== false;
 
+    const gerEl = document.getElementById('cfg-germany-mode');
+    if (gerEl) gerEl.checked = activeConfig.germany_mode === true;
+
     const dnsEl = document.getElementById('cfg-fallback-dns');
     if (dnsEl) dnsEl.value = (activeConfig.fallback_dns || ['8.8.8.8:53', '1.1.1.1:53', '8.8.4.4:53', '9.9.9.9:53']).join(', ');
 
@@ -2139,6 +2147,7 @@ async function saveSettings() {
       activeConfig.upload_limit_kb = parseInt(document.getElementById('cfg-ul-limit').value, 10) || 0;
       activeConfig.enable_dht = document.getElementById('cfg-enable-dht').checked;
       activeConfig.enable_upnp = document.getElementById('cfg-enable-upnp').checked;
+      activeConfig.germany_mode = document.getElementById('cfg-germany-mode').checked;
 
       const rawDNS = document.getElementById('cfg-fallback-dns').value.trim();
       if (rawDNS) {
@@ -2171,6 +2180,27 @@ async function triggerPreseedDHT() {
     }
   } catch (err) {
     showToast("Pre-seeding error: " + err.message, "error", 3000);
+  }
+}
+
+async function toggleGermanyMode(enabled) {
+  try {
+    const res = await fetch('/api/config/germany-mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: enabled })
+    });
+    const data = await res.json();
+    if (activeConfig) {
+      activeConfig.germany_mode = data.germany_mode;
+    }
+    const gerEl = document.getElementById('cfg-germany-mode');
+    if (gerEl) gerEl.checked = data.germany_mode;
+    const gBadge = document.getElementById('germany-mode-badge');
+    if (gBadge) gBadge.style.display = data.germany_mode ? 'inline-flex' : 'none';
+    showToast(data.germany_mode ? "🇩🇪 Germany Safe Mode: Uploads strictly disabled (0 B/s)" : "Germany Mode Disabled: Normal P2P seeding enabled", "info", 3000);
+  } catch (err) {
+    showToast("Failed to toggle Germany mode: " + err.message, "error", 3000);
   }
 }
 

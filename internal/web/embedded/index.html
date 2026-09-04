@@ -26,6 +26,7 @@
         <img src="digwire.png" alt="Digwire application logo" style="width: 26px; height: 26px; border-radius: 6px; box-shadow: 0 1px 4px rgba(0,0,0,0.4);">
         <span>Digwire</span>
         <span class="app-badge" aria-label="Peer to peer BitTorrent and Web client">P2P</span>
+        <span id="germany-mode-badge" class="germany-badge" style="display: none; cursor: pointer;" title="Germany Safe Leech Mode Active: Piece uploads and post-completion seeding are completely disabled. Click to configure." aria-label="Germany Mode Active: Uploads disabled" onclick="openSettingsModal()">🇩🇪 Zero-Upload Mode</span>
       </div>
 
       <!-- Main Navigation -->
@@ -422,6 +423,24 @@
           <input type="text" id="cfg-fallback-dns" class="input-text" placeholder="8.8.8.8:53, 1.1.1.1:53, 8.8.4.4:53, 9.9.9.9:53">
           <div style="font-size: 11px; color: var(--adw-dim-label); margin-top: 4px;">Comma-separated upstream DNS resolvers used automatically if system DNS fails or blocks trackers.</div>
         </div>
+        <!-- Germany Mode (Zero-Upload Safe Leech) -->
+        <div class="germany-mode-card">
+          <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 14px;">
+            <div>
+              <div style="display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13.5px; color: var(--adw-fg-color);">
+                <span>🇩🇪 Germany Mode (Safe Leech / Zero Upload)</span>
+              </div>
+              <div style="font-size: 12px; color: var(--adw-dim-label); margin-top: 4px; line-height: 1.4;">
+                Completely disables piece uploads to peers and prevents post-completion seeding. Designed to protect users against automated copyright monitoring honeypots and legal letters (Abmahnung).
+              </div>
+            </div>
+            <label class="toggle-switch" style="flex-shrink: 0; margin-top: 2px;">
+              <input type="checkbox" id="cfg-germany-mode" onchange="toggleGermanyMode(this.checked)" aria-label="Toggle Germany Zero-Upload Mode">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+
         <div style="display: flex; gap: 20px; margin-top: 4px;">
           <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer;">
             <input type="checkbox" id="cfg-enable-dht"> Enable Mainline DHT
