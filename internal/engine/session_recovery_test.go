@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"digwire/internal/config"
 	"github.com/anacrolix/torrent/bencode"
@@ -62,6 +63,8 @@ func TestSessionAutoRecoveryFromCache(t *testing.T) {
 		t.Fatalf("failed to create engine: %v", err)
 	}
 	defer eng.Close()
+
+	eng.WaitForSession(5 * time.Second)
 
 	torrents := eng.GetTorrents()
 	if len(torrents) == 0 {

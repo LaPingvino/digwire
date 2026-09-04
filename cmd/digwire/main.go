@@ -128,24 +128,37 @@ func main() {
 		cfg.DownloadDir = *dirFlag
 	}
 
-	// Check for CLI positional arguments (magnet links, .torrent files, or URLs)
+	// Single-instance handling: check if Digwire is already running
 	cliArgs := flag.Args()
-	if len(cliArgs) > 0 {
-		allSent := true
-		for _, arg := range cliArgs {
-			arg = strings.TrimSpace(arg)
-			if arg == "" {
-				continue
+	checkURL := fmt.Sprintf("http://127.0.0.1:%d/api/config", cfg.WebPort)
+	probeClient := &http.Client{Timeout: 350 * time.Millisecond}
+	if resp, err := probeClient.Get(checkURL); err == nil {
+		if resp.StatusCode == http.StatusOK {
+			resp.Body.Close()
+			if len(cliArgs) > 0 {
+				for _, arg := range cliArgs {
+					arg = strings.TrimSpace(arg)
+					if arg == "" {
+						continue
+					}
+					if sendToRunningInstance(cfg.WebPort, arg) {
+						log.Printf("✓ Forwarded '%s' to running Digwire instance.\n", arg)
+					}
+				}
+				return
 			}
-			if sendToRunningInstance(cfg.WebPort, arg) {
-				log.Printf("✓ Forwarded '%s' to running Digwire instance.\n", arg)
-			} else {
-				allSent = false
-				break
+			// No positional arguments: user launched another instance while one is already running
+			log.Printf("⚡ Digwire is already running at http://127.0.0.1:%d\n", cfg.WebPort)
+			if !*headlessFlag {
+				cmd := launchNativeWindow(fmt.Sprintf("http://127.0.0.1:%d", cfg.WebPort), *noGTKFlag, *browserFlag)
+				if cmd != nil {
+					_ = cmd.Wait()
+				}
 			}
-		}
-		if allSent {
 			return
+		}
+		if resp.Body != nil {
+			resp.Body.Close()
 		}
 	}
 

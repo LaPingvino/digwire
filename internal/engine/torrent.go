@@ -218,9 +218,36 @@ type Engine struct {
 	cfg          *config.Config
 	rateMap      map[string]*rateTracker
 	webSeedsMap  map[string][]string
-	stopMonitor  chan struct{}
-	verifySem    chan struct{}
-	closeOnce    sync.Once
+	stopMonitor   chan struct{}
+	verifySem     chan struct{}
+	sessionLoaded chan struct{}
+	closeOnce     sync.Once
+}
+
+// WaitForSession blocks until the session has finished loading or the timeout expires
+func (e *Engine) WaitForSession(timeout time.Duration) bool {
+	if e == nil || e.sessionLoaded == nil {
+		return true
+	}
+	select {
+	case <-e.sessionLoaded:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
+// IsSessionLoaded reports whether the session has finished loading from disk
+func (e *Engine) IsSessionLoaded() bool {
+	if e == nil || e.sessionLoaded == nil {
+		return true
+	}
+	select {
+	case <-e.sessionLoaded:
+		return true
+	default:
+		return false
+	}
 }
 
 func (e *Engine) DHTIndexer() *dhtindex.Indexer {
@@ -450,15 +477,16 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 	dhtIdx, _ := dhtindex.NewIndexer(client)
 
 	e := &Engine{
-		client:       client,
-		pieceComp:    pieceCompletion,
-		httpManager:  NewHTTPManager(cfg.DownloadDir),
-		dhtIndexer:   dhtIdx,
-		cfg:          cfg,
-		rateMap:      make(map[string]*rateTracker),
-		webSeedsMap:  make(map[string][]string),
-		stopMonitor:  make(chan struct{}),
-		verifySem:    make(chan struct{}, 2),
+		client:        client,
+		pieceComp:     pieceCompletion,
+		httpManager:   NewHTTPManager(cfg.DownloadDir),
+		dhtIndexer:    dhtIdx,
+		cfg:           cfg,
+		rateMap:       make(map[string]*rateTracker),
+		webSeedsMap:   make(map[string][]string),
+		stopMonitor:   make(chan struct{}),
+		verifySem:     make(chan struct{}, 2),
+		sessionLoaded: make(chan struct{}),
 	}
 	e.mediaManager = NewMediaManager(cfg.DownloadDir, e)
 
@@ -471,8 +499,11 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 		})
 	}
 
-	// Restore active session across restarts
-	e.loadSession()
+	// Restore active session across restarts asynchronously
+	go func() {
+		e.loadSession()
+		close(e.sessionLoaded)
+	}()
 
 	go e.monitorLoop()
 	return e, nil
@@ -731,7 +762,7 @@ func (e *Engine) loadSession() {
 		savedCompleted := item.CompletedBytes
 		isPlausiblePureSeed := item.IsSeeding || (item.TotalBytes > 0 && savedCompleted >= item.TotalBytes)
 
-		if t != nil && t.Info() != nil {
+		if !isPlausiblePureSeed && t != nil && t.Info() != nil {
 			tLen := t.Length()
 			bComp := t.BytesCompleted()
 			if bComp > savedCompleted {
@@ -780,6 +811,7 @@ func (e *Engine) loadSession() {
 			}
 		}
 
+		e.mu.Lock()
 		e.rateMap[hash] = &rateTracker{
 			lastTime:            time.Now(),
 			addedAt:             item.AddedAt,
@@ -793,6 +825,11 @@ func (e *Engine) loadSession() {
 			skippedFiles:        skippedMap,
 		}
 
+		if len(item.WebSeeds) > 0 {
+			e.webSeedsMap[hash] = SanitizeWebSeeds(item.WebSeeds, false)
+		}
+		e.mu.Unlock()
+
 		if len(item.SkippedFiles) > 0 {
 			go func(tor *torrent.Torrent, skipped []int) {
 				<-tor.GotInfo()
@@ -803,10 +840,6 @@ func (e *Engine) loadSession() {
 					}
 				}
 			}(t, item.SkippedFiles)
-		}
-
-		if len(item.WebSeeds) > 0 {
-			e.webSeedsMap[hash] = SanitizeWebSeeds(item.WebSeeds, false)
 		}
 
 		// Super quick check: immediately start torrent based on local disk files!
