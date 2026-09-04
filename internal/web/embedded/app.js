@@ -1462,8 +1462,6 @@ async function downloadFromSearch(encodedURI, btn) {
 
 // Add Modal
 function openAddModal() {
-// Add Modal
-function openAddModal() {
   saveFocusAndOpen('modal-add', '#add-magnet-input');
 }
 
