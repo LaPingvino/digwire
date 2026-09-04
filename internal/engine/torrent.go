@@ -318,7 +318,8 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 	if numCPU < 4 {
 		numCPU = 4
 	}
-	tConfig.PieceHashersPerTorrent = numCPU
+	_ = os.Setenv("TORRENT_MAX_ACTIVE_PIECE_HASHERS", fmt.Sprintf("%d", numCPU*8))
+	tConfig.PieceHashersPerTorrent = numCPU * 4
 
 	tConfig.WebTransport = &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
@@ -1209,12 +1210,12 @@ func (e *Engine) verifyTorrentPiecesConcurrent(ctx context.Context, tor *torrent
 		return nil
 	}
 
-	numWorkers := runtime.GOMAXPROCS(0) * 2
-	if numWorkers < 4 {
-		numWorkers = 4
+	numWorkers := runtime.GOMAXPROCS(0) * 4
+	if numWorkers < 8 {
+		numWorkers = 8
 	}
-	if numWorkers > 32 {
-		numWorkers = 32
+	if numWorkers > 64 {
+		numWorkers = 64
 	}
 
 	var checkedCount int64
