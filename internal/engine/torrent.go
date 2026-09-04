@@ -44,6 +44,7 @@ type SavedTorrent struct {
 	WebSeeds       []string `json:"webseeds"`
 	TotalBytes     int64    `json:"total_bytes,omitempty"`
 	CompletedBytes int64    `json:"completed_bytes,omitempty"`
+	SkippedFiles   []int    `json:"skipped_files,omitempty"`
 }
 
 type SavedHTTPTask struct {
@@ -504,6 +505,15 @@ func (e *Engine) saveSessionLocked() {
 
 		isSeeding := totalBytes > 0 && completedBytes >= totalBytes
 
+		var skipped []int
+		if tr != nil && tr.skippedFiles != nil {
+			for idx, isSkipped := range tr.skippedFiles {
+				if isSkipped {
+					skipped = append(skipped, idx)
+				}
+			}
+		}
+
 		list = append(list, SavedTorrent{
 			InfoHash:       hash,
 			MagnetURI:      mag,
@@ -514,6 +524,7 @@ func (e *Engine) saveSessionLocked() {
 			WebSeeds:       webseeds,
 			TotalBytes:     totalBytes,
 			CompletedBytes: completedBytes,
+			SkippedFiles:   skipped,
 		})
 	}
 
@@ -685,6 +696,14 @@ func (e *Engine) loadSession() {
 			}
 		}
 
+		var skippedMap map[int]bool
+		if len(item.SkippedFiles) > 0 {
+			skippedMap = make(map[int]bool)
+			for _, idx := range item.SkippedFiles {
+				skippedMap[idx] = true
+			}
+		}
+
 		e.rateMap[hash] = &rateTracker{
 			lastTime:            time.Now(),
 			addedAt:             item.AddedAt,
@@ -695,6 +714,19 @@ func (e *Engine) loadSession() {
 			savedCompletedBytes: savedCompleted,
 			peakSeeders:         peakS,
 			peakPeers:           peakP,
+			skippedFiles:        skippedMap,
+		}
+
+		if len(item.SkippedFiles) > 0 {
+			go func(tor *torrent.Torrent, skipped []int) {
+				<-tor.GotInfo()
+				files := tor.Files()
+				for _, idx := range skipped {
+					if idx >= 0 && idx < len(files) {
+						files[idx].Cancel()
+					}
+				}
+			}(t, item.SkippedFiles)
 		}
 
 		if len(item.WebSeeds) > 0 {
@@ -1259,6 +1291,81 @@ func (e *Engine) AddTorrentFile(reader io.Reader) (*torrent.Torrent, error) {
 
 	e.ConsolidateAndVerify(t)
 	return t, nil
+}
+
+// AddWithSelection adds a torrent with selective file priorities/indices
+func (e *Engine) AddWithSelection(uriOrURL string, selectedFiles []int, filePriorities map[int]int) (*torrent.Torrent, error) {
+	t, err := e.Add(uriOrURL)
+	if err != nil {
+		return nil, err
+	}
+	if t != nil {
+		e.applyFileSelection(t, selectedFiles, filePriorities)
+	}
+	return t, nil
+}
+
+// AddTorrentFileWithSelection adds a torrent file with selective file priorities/indices
+func (e *Engine) AddTorrentFileWithSelection(reader io.Reader, selectedFiles []int, filePriorities map[int]int) (*torrent.Torrent, error) {
+	t, err := e.AddTorrentFile(reader)
+	if err != nil {
+		return nil, err
+	}
+	if t != nil {
+		e.applyFileSelection(t, selectedFiles, filePriorities)
+	}
+	return t, nil
+}
+
+func (e *Engine) applyFileSelection(t *torrent.Torrent, selectedFiles []int, filePriorities map[int]int) {
+	if len(selectedFiles) == 0 && len(filePriorities) == 0 {
+		return
+	}
+	hash := strings.ToLower(t.InfoHash().HexString())
+	go func() {
+		<-t.GotInfo()
+		e.mu.Lock()
+		defer e.mu.Unlock()
+
+		tr := e.rateMap[hash]
+		if tr == nil {
+			return
+		}
+		if tr.skippedFiles == nil {
+			tr.skippedFiles = make(map[int]bool)
+		}
+
+		files := t.Files()
+		selectedSet := make(map[int]bool)
+		for _, idx := range selectedFiles {
+			selectedSet[idx] = true
+		}
+
+		for idx, f := range files {
+			prio := 1
+			if len(selectedFiles) > 0 {
+				if !selectedSet[idx] {
+					prio = 0
+				}
+			}
+			if p, ok := filePriorities[idx]; ok {
+				prio = p
+			}
+
+			switch prio {
+			case 0:
+				f.Cancel()
+				tr.skippedFiles[idx] = true
+			case 2:
+				f.SetPriority(torrent.PiecePriorityHigh)
+				delete(tr.skippedFiles, idx)
+			default:
+				f.Download()
+				delete(tr.skippedFiles, idx)
+			}
+		}
+		e.saveSessionLocked()
+	}()
 }
 
 func (e *Engine) CreateTorrent(sourcePath, comment string) (string, string, error) {

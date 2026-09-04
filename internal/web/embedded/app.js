@@ -13,6 +13,12 @@ let currentDetailData = null;
 let currentDetailTab = 'overview';
 let lastActiveFocusElement = null;
 
+// Inspect & Selective Download state
+let currentInspectData = null;
+let currentInspectFiles = [];
+let inspectSelectedIndices = new Set();
+let inspectCurrentFilter = '';
+
 // Accessibility: Screen reader live announcement helper
 function announceA11y(message) {
   if (!message) return;
@@ -741,6 +747,31 @@ async function setAllFilesPriority(hash, priority) {
   }
 }
 
+async function setFolderFilesPriority(hash, dirPath, priority) {
+  if (!currentDetailData || !currentDetailData.files) return;
+  const filesToUpdate = currentDetailData.files.filter(f => {
+    const rawPath = f.path || '';
+    const lastSlash = rawPath.lastIndexOf('/');
+    const lastBackslash = rawPath.lastIndexOf('\\');
+    const splitIdx = Math.max(lastSlash, lastBackslash);
+    const dir = splitIdx !== -1 ? rawPath.substring(0, splitIdx) : '';
+    return dir === dirPath;
+  });
+  for (const f of filesToUpdate) {
+    const idx = f.index !== undefined ? f.index : 0;
+    await fetch(`/api/torrents/${hash}/files/${idx}/priority`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ priority: parseInt(priority, 10) })
+    });
+  }
+  const res = await fetch(`/api/torrents/${hash}/details`);
+  if (res.ok) {
+    currentDetailData = await res.json();
+    switchDetailTab('files');
+  }
+}
+
 // Distinct Delete Confirmation
 let pendingDeleteHash = null;
 
@@ -968,6 +999,124 @@ function switchDetailTab(tab) {
     }
     const isTorrent = currentDetailData.created_by !== 'Multi-Source HTTP Downloader' && currentDetailData.created_by !== 'Direct HTTP Downloader';
 
+    // Group files by directory
+    const groups = new Map();
+    currentDetailData.files.forEach((f, i) => {
+      const fileIdx = f.index !== undefined ? f.index : i;
+      const rawPath = f.path || '';
+      const lastSlash = rawPath.lastIndexOf('/');
+      const lastBackslash = rawPath.lastIndexOf('\\');
+      const splitIdx = Math.max(lastSlash, lastBackslash);
+      let dir = '';
+      let name = rawPath;
+      if (splitIdx !== -1) {
+        dir = rawPath.substring(0, splitIdx);
+        name = rawPath.substring(splitIdx + 1);
+      }
+      if (!groups.has(dir)) {
+        groups.set(dir, []);
+      }
+      groups.get(dir).push({
+        ...f,
+        origIndex: fileIdx,
+        basename: name,
+        dir: dir
+      });
+    });
+
+    const hasMultipleDirs = groups.size > 1 || (!groups.has('') && groups.size > 0);
+
+    let rowsHtml = '';
+    groups.forEach((groupFiles, dirPath) => {
+      const dirTitle = dirPath || 'Root Directory';
+      const allGroupSkipped = groupFiles.every(f => f.priority === 0 && !(f.completed || f.progress >= 100));
+      const groupTotalBytes = groupFiles.reduce((acc, f) => acc + (f.length || 0), 0);
+      const groupProgress = groupTotalBytes > 0
+        ? (groupFiles.reduce((acc, f) => acc + ((f.length || 0) * (f.progress || 0)), 0) / groupTotalBytes)
+        : 0;
+
+      if (hasMultipleDirs) {
+        rowsHtml += `
+          <tr style="background: rgba(255,255,255,0.04); font-weight: 600; border-top: 1px solid rgba(128,128,128,0.2);">
+            ${isTorrent ? `
+              <td>
+                <input type="checkbox" title="Toggle entire directory" ${!allGroupSkipped ? 'checked' : ''} onchange="setFolderFilesPriority('${currentDetailData.info_hash}', '${escapeHtml(dirPath)}', this.checked ? 1 : 0)">
+              </td>
+            ` : ''}
+            <td colspan="${isTorrent ? 4 : 3}" style="padding: 7px 10px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px;">
+                <div style="display: flex; align-items: center; gap: 6px; min-width: 0;">
+                  ${ICONS.folder}
+                  <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(dirTitle)}">${escapeHtml(dirTitle)}</span>
+                  <span style="font-size: 11px; font-weight: normal; color: var(--adw-dim-label); margin-left: 6px;">
+                    (${groupFiles.length} files • ${formatBytes(groupTotalBytes)} • ${groupProgress.toFixed(0)}%)
+                  </span>
+                </div>
+                ${isTorrent ? `
+                  <div style="display: flex; gap: 4px;">
+                    <button class="btn" style="padding: 1px 6px; font-size: 10.5px;" onclick="setFolderFilesPriority('${currentDetailData.info_hash}', '${escapeHtml(dirPath)}', 1)">Select</button>
+                    <button class="btn" style="padding: 1px 6px; font-size: 10.5px;" onclick="setFolderFilesPriority('${currentDetailData.info_hash}', '${escapeHtml(dirPath)}', 0)">Skip</button>
+                    <button class="btn" style="padding: 1px 6px; font-size: 10.5px;" onclick="setFolderFilesPriority('${currentDetailData.info_hash}', '${escapeHtml(dirPath)}', 2)">High</button>
+                  </div>
+                ` : ''}
+              </div>
+            </td>
+            <td style="text-align: right; padding: 7px 10px;"></td>
+          </tr>
+        `;
+      }
+
+      groupFiles.forEach(f => {
+        const fileIdx = f.origIndex;
+        const isCompleted = f.completed || f.progress >= 100;
+        const isSkipped = f.priority === 0 && !isCompleted;
+        const icon = getIconForFile(f.path);
+        rowsHtml += `
+          <tr>
+            ${isTorrent ? `
+              <td>
+                <input type="checkbox" ${!isSkipped ? 'checked' : ''} onchange="toggleFileDownload('${currentDetailData.info_hash}', ${fileIdx}, this.checked)">
+              </td>
+            ` : ''}
+            <td style="word-break: break-all; ${isSkipped ? 'opacity: 0.5; text-decoration: line-through;' : ''}">
+              <div style="display: flex; align-items: center; gap: 6px; padding-left: ${hasMultipleDirs ? '16px' : '0'};">
+                ${icon}
+                <span class="file-name-link" style="${isCompleted ? 'cursor: pointer; font-weight: 500;' : ''}" ${isCompleted ? `title="Click to open with default application" onclick="openTorrentFile('${currentDetailData.info_hash}', ${fileIdx})"` : ''}>
+                  ${escapeHtml(hasMultipleDirs ? (f.basename || f.path) : f.path)}
+                </span>
+              </div>
+            </td>
+            <td style="white-space: nowrap;">${formatBytes(f.length)}</td>
+            <td style="white-space: nowrap;">${f.progress.toFixed(0)}%</td>
+            ${isTorrent ? `
+              <td>
+                <select class="sort-select" style="padding: 2px 4px; font-size: 11px;" onchange="updateFilePriority('${currentDetailData.info_hash}', ${fileIdx}, this.value)">
+                  <option value="1" ${!isSkipped && f.priority !== 2 ? 'selected' : ''}>Normal</option>
+                  <option value="2" ${f.priority === 2 ? 'selected' : ''}>High</option>
+                  <option value="0" ${isSkipped ? 'selected' : ''}>Skip</option>
+                </select>
+              </td>
+            ` : ''}
+            <td style="white-space: nowrap; text-align: right;">
+              <div style="display: flex; gap: 4px; justify-content: flex-end; align-items: center;">
+                ${isCompleted ? `
+                  <button class="btn" style="padding: 2px 6px; font-size: 11px;" title="Open with system application" onclick="openTorrentFile('${currentDetailData.info_hash}', ${fileIdx})">
+                    ${ICONS.play} Open
+                  </button>
+                ` : ''}
+                <button class="btn btn-icon" style="padding: 2px 6px; font-size: 11px;" title="Show in File Manager" onclick="showTorrentFileInFolder('${currentDetailData.info_hash}', ${fileIdx})">
+                  ${ICONS.folder}
+                </button>
+                <a class="btn btn-icon" style="padding: 2px 6px; font-size: 11px; text-decoration: none;" title="Stream or view in browser" target="_blank" href="/api/torrents/${currentDetailData.info_hash}/files/${fileIdx}/view">
+                  ${ICONS.external}
+                </a>
+              </div>
+            </td>
+          </tr>
+        `;
+      });
+    });
+
     content.innerHTML = `
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
         <span style="color: var(--adw-dim-label); font-size: 12px;">Total ${currentDetailData.files.length} file(s)</span>
@@ -990,51 +1139,7 @@ function switchDetailTab(tab) {
           </tr>
         </thead>
         <tbody>
-          ${currentDetailData.files.map((f, i) => {
-            const fileIdx = f.index !== undefined ? f.index : i;
-            const isCompleted = f.completed || f.progress >= 100;
-            const isSkipped = f.priority === 0 && !isCompleted;
-            return `
-              <tr>
-                ${isTorrent ? `
-                  <td>
-                    <input type="checkbox" ${!isSkipped ? 'checked' : ''} onchange="toggleFileDownload('${currentDetailData.info_hash}', ${fileIdx}, this.checked)">
-                  </td>
-                ` : ''}
-                <td style="word-break: break-all; ${isSkipped ? 'opacity: 0.5; text-decoration: line-through;' : ''}">
-                  <span class="file-name-link" style="${isCompleted ? 'cursor: pointer; font-weight: 500;' : ''}" ${isCompleted ? `title="Click to open with default application" onclick="openTorrentFile('${currentDetailData.info_hash}', ${fileIdx})"` : ''}>
-                    ${escapeHtml(f.path)}
-                  </span>
-                </td>
-                <td style="white-space: nowrap;">${formatBytes(f.length)}</td>
-                <td style="white-space: nowrap;">${f.progress.toFixed(0)}%</td>
-                ${isTorrent ? `
-                  <td>
-                    <select class="sort-select" style="padding: 2px 4px; font-size: 11px;" onchange="updateFilePriority('${currentDetailData.info_hash}', ${fileIdx}, this.value)">
-                      <option value="1" ${!isSkipped && f.priority !== 2 ? 'selected' : ''}>Normal</option>
-                      <option value="2" ${f.priority === 2 ? 'selected' : ''}>High</option>
-                      <option value="0" ${isSkipped ? 'selected' : ''}>Skip</option>
-                    </select>
-                  </td>
-                ` : ''}
-                <td style="white-space: nowrap; text-align: right;">
-                  <div style="display: flex; gap: 4px; justify-content: flex-end; align-items: center;">
-                    ${isCompleted ? `
-                      <button class="btn" style="padding: 2px 6px; font-size: 11px;" title="Open with system application" onclick="openTorrentFile('${currentDetailData.info_hash}', ${fileIdx})">
-                        ${ICONS.play} Open
-                      </button>
-                    ` : ''}
-                    <button class="btn btn-icon" style="padding: 2px 6px; font-size: 11px;" title="Show in File Manager" onclick="showTorrentFileInFolder('${currentDetailData.info_hash}', ${fileIdx})">
-                      ${ICONS.folder}
-                    </button>
-                    <a class="btn btn-icon" style="padding: 2px 6px; font-size: 11px; text-decoration: none;" title="Stream or view in browser" target="_blank" href="/api/torrents/${currentDetailData.info_hash}/files/${fileIdx}/view">
-                      ${ICONS.external}
-                    </a>
-                  </div>
-                </td>
-              </tr>
-            `;
-          }).join('')}
+          ${rowsHtml}
         </tbody>
       </table>
     `;
@@ -1614,18 +1719,23 @@ function handleSearchCardKeydown(e, idx) {
     const fileCountBadge = (r.files && r.files.length > 0) ? `<span style="font-size: 11px; opacity: 0.85; display: inline-flex; align-items: center;">${ICONS.folder} ${r.files.length} ${r.files.length === 1 ? 'file' : 'files'}</span>` : '';
 
     let seedersHtml = '';
+    let leechersHtml = '';
     if (r.seeders !== undefined && r.seeders >= 0) {
       const seedColor = r.seeders > 0 ? 'var(--adw-success)' : 'var(--adw-dim-label)';
       seedersHtml = `<span style="color: ${seedColor}; font-weight: 600;">${ICONS.arrowUp}${r.seeders} seeds</span>`;
+      if (r.leechers !== undefined && r.leechers >= 0) {
+        leechersHtml = `<span>${ICONS.arrowDown}${r.leechers} peers</span>`;
+      }
     } else {
-      seedersHtml = `<span class="seed-probe-btn" style="color: var(--adw-dim-label); opacity: 0.85; cursor: pointer; text-decoration: underline dotted;" title="Swarm health unknown. Click to probe live swarm." onclick="scrapeSwarmCard(${idx}, event)">${ICONS.arrowUp}? seeds</span>`;
-    }
-
-    let leechersHtml = '';
-    if (r.leechers !== undefined && r.leechers >= 0) {
-      leechersHtml = `<span>${ICONS.arrowDown}${r.leechers} peers</span>`;
-    } else {
-      leechersHtml = `<span style="color: var(--adw-dim-label); opacity: 0.85;" title="Peer count unknown">${ICONS.arrowDown}? peers</span>`;
+      if (r.provider_type === 'soulseek') {
+        seedersHtml = `<span class="health-badge" style="background: rgba(53, 132, 228, 0.15); color: var(--adw-accent-color); border: 1px solid rgba(53, 132, 228, 0.3); padding: 2px 7px; border-radius: 10px; font-size: 11px; font-weight: 500;" title="Lossless P2P Music Audio">${ICONS.dot}P2P Audio</span><span class="seed-probe-btn" style="color: var(--adw-dim-label); opacity: 0.85; cursor: pointer; text-decoration: underline dotted; margin-left: 4px;" title="Probe live BitTorrent swarm & WebSeeds" onclick="scrapeSwarmCard(${idx}, event)">${ICONS.arrowUp}? seeds</span>`;
+      } else if (r.provider_type === 'documents') {
+        seedersHtml = `<span class="health-badge" style="background: rgba(145, 65, 172, 0.15); color: #c061cb; border: 1px solid rgba(145, 65, 172, 0.3); padding: 2px 7px; border-radius: 10px; font-size: 11px; font-weight: 500;" title="Digital Library & Document Archive">${ICONS.dot}Library</span><span class="seed-probe-btn" style="color: var(--adw-dim-label); opacity: 0.85; cursor: pointer; text-decoration: underline dotted; margin-left: 4px;" title="Probe live swarm peers" onclick="scrapeSwarmCard(${idx}, event)">${ICONS.arrowUp}? seeds</span>`;
+      } else if (r.provider_type === 'archiveorg') {
+        seedersHtml = `<span class="health-badge" style="background: rgba(229, 165, 10, 0.15); color: var(--adw-warning); border: 1px solid rgba(229, 165, 10, 0.3); padding: 2px 7px; border-radius: 10px; font-size: 11px; font-weight: 500;" title="Archive.org Direct WebSeed & Swarm">${ICONS.dot}WebSeed</span><span class="seed-probe-btn" style="color: var(--adw-dim-label); opacity: 0.85; cursor: pointer; text-decoration: underline dotted; margin-left: 4px;" title="Probe live swarm peers" onclick="scrapeSwarmCard(${idx}, event)">${ICONS.arrowUp}? seeds</span>`;
+      } else {
+        seedersHtml = `<span class="seed-probe-btn" style="color: var(--adw-dim-label); opacity: 0.85; cursor: pointer; text-decoration: underline dotted;" title="Swarm health unknown. Click to probe live swarm." onclick="scrapeSwarmCard(${idx}, event)">${ICONS.arrowUp}? seeds</span>`;
+      }
     }
 
     let healthBadge = '';
@@ -1720,6 +1830,9 @@ async function openInspectModal(idx) {
   const countEl = document.getElementById('inspect-file-count');
   const hashEl = document.getElementById('inspect-hash');
   const filesContainer = document.getElementById('inspect-files-container');
+  const filterInput = document.getElementById('inspect-file-filter');
+  if (filterInput) filterInput.value = '';
+  inspectCurrentFilter = '';
   saveFocusAndOpen('modal-inspect', '#inspect-file-filter');
 
   titleEl.textContent = result.title || 'Unknown Torrent';
@@ -1733,12 +1846,14 @@ async function openInspectModal(idx) {
   // If the search result already contains files list
   if (result.files && result.files.length > 0) {
     currentInspectFiles = result.files.map((f, i) => ({
-      index: i,
+      index: f.index !== undefined ? f.index : i,
       path: f.path || f,
-      length: f.size_bytes || 0
+      length: f.size_bytes !== undefined ? f.size_bytes : (f.length || 0)
     }));
+    inspectSelectedIndices = new Set(currentInspectFiles.map(f => f.index));
     renderInspectFiles(currentInspectFiles);
     countEl.textContent = `Files: ${currentInspectFiles.length}`;
+    updateInspectSelectionSummary();
     return;
   }
 
@@ -1747,14 +1862,14 @@ async function openInspectModal(idx) {
     <div style="text-align: center; padding: 40px; color: var(--adw-dim-label);">
       <div style="margin-bottom: 8px;">${ICONS.clock}</div>
       <div style="font-weight: 600; margin-bottom: 4px; color: var(--adw-fg-color);">Resolving torrent metadata...</div>
-      <div style="font-size: 11.5px;">Fetching file directory structure from DHT swarm peers</div>
+      <div style="font-size: 11.5px;">Fetching file directory structure from DHT swarm peers & WebSeeds</div>
     </div>
   `;
 
   try {
     const res = await fetch(`/api/torrents/inspect?hash=${encodeURIComponent(result.info_hash)}&magnet=${encodeURIComponent(result.magnet_uri)}`);
     if (!res.ok) {
-      throw new Error("Metadata resolution timed out (no DHT peers responded in 8s). You can still start the download directly.");
+      throw new Error("Metadata resolution timed out. You can still start the download directly.");
     }
     const data = await res.json();
     if (data.name && data.name.trim() !== '') {
@@ -1793,23 +1908,44 @@ async function openInspectModal(idx) {
       length: f.length
     }));
 
+    inspectSelectedIndices = new Set(currentInspectFiles.map(f => f.index));
+
     // Cache files on the search result item so subsequent inspect clicks are instant!
     result.files = currentInspectFiles;
 
     renderInspectFiles(currentInspectFiles);
+    updateInspectSelectionSummary();
     // Refresh search results list to reflect resolved title and file count
     renderSearchResults();
   } catch (err) {
+    currentInspectFiles = [{
+      index: 0,
+      path: result.title,
+      length: result.size_bytes || 0
+    }];
+    inspectSelectedIndices = new Set([0]);
     filesContainer.innerHTML = `
       <div style="text-align: center; padding: 35px 20px; color: var(--adw-dim-label);">
         <div style="margin-bottom: 6px; color: var(--adw-warning);">${ICONS.alert}</div>
-        <div style="font-size: 13px; font-weight: 600; color: var(--adw-fg-color); margin-bottom: 4px;">Live Metadata Swarm Lookup</div>
+        <div style="font-size: 13px; font-weight: 600; color: var(--adw-fg-color); margin-bottom: 4px;">Direct Swarm / Metadata Lookup</div>
         <div style="font-size: 12px; margin-bottom: 12px;">${escapeHtml(err.message)}</div>
-        <div style="font-size: 11.5px; opacity: 0.8;">Single file torrent: <strong style="color: var(--adw-fg-color);">${escapeHtml(result.title)}</strong> (${formatBytes(result.size_bytes)})</div>
+        <div style="font-size: 11.5px; opacity: 0.8;">Single package payload: <strong style="color: var(--adw-fg-color);">${escapeHtml(result.title)}</strong> (${formatBytes(result.size_bytes)})</div>
       </div>
     `;
     countEl.textContent = 'Files: 1';
+    updateInspectSelectionSummary();
   }
+}
+
+function getIconForFile(path) {
+  const ext = (path || '').split('.').pop().toLowerCase();
+  if (['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v', 'ts'].includes(ext)) return ICONS.fileVideo;
+  if (['mp3', 'flac', 'wav', 'aac', 'ogg', 'm4a', 'opus', 'wma', 'alac', 'aiff'].includes(ext)) return ICONS.fileAudio;
+  if (['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'iso'].includes(ext)) return ICONS.fileArchive;
+  if (['pdf', 'epub', 'mobi', 'doc', 'docx', 'txt', 'rtf', 'cbr', 'cbz'].includes(ext)) return ICONS.file;
+  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp'].includes(ext)) return ICONS.fileImage;
+  if (['exe', 'msi', 'deb', 'rpm', 'apk', 'dmg', 'AppImage'].includes(ext)) return ICONS.fileCode;
+  return ICONS.file;
 }
 
 function renderInspectFiles(files) {
@@ -1821,46 +1957,198 @@ function renderInspectFiles(files) {
     return;
   }
 
-  const getIconForFile = (path) => {
-    const ext = path.split('.').pop().toLowerCase();
-    if (['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v', 'ts'].includes(ext)) return ICONS.fileVideo;
-    if (['mp3', 'flac', 'wav', 'aac', 'ogg', 'm4a', 'opus', 'wma'].includes(ext)) return ICONS.fileAudio;
-    if (['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'iso'].includes(ext)) return ICONS.fileArchive;
-    if (['pdf', 'epub', 'mobi', 'doc', 'docx', 'txt', 'rtf'].includes(ext)) return ICONS.file;
-    if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp'].includes(ext)) return ICONS.fileImage;
-    if (['exe', 'msi', 'deb', 'rpm', 'apk', 'dmg', 'AppImage'].includes(ext)) return ICONS.fileCode;
-    return ICONS.file;
-  };
+  // Group files by directory
+  const groups = new Map();
+  files.forEach(f => {
+    const rawPath = f.path || '';
+    const lastSlash = rawPath.lastIndexOf('/');
+    const lastBackslash = rawPath.lastIndexOf('\\');
+    const splitIdx = Math.max(lastSlash, lastBackslash);
+    let dir = '';
+    let name = rawPath;
+    if (splitIdx !== -1) {
+      dir = rawPath.substring(0, splitIdx);
+      name = rawPath.substring(splitIdx + 1);
+    }
+    if (!groups.has(dir)) {
+      groups.set(dir, []);
+    }
+    groups.get(dir).push({
+      ...f,
+      basename: name,
+      dir: dir
+    });
+  });
 
-  container.innerHTML = files.map(f => {
-    const sizeStr = f.length > 0 ? formatBytes(f.length) : '';
-    const icon = getIconForFile(f.path);
-    return `
-      <div style="display: flex; justify-content: space-between; align-items: center; padding: 7px 12px; border-bottom: 1px solid rgba(128,128,128,0.1); font-size: 12px;">
-        <div style="display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; padding-right: 12px;">
-          ${icon}
-          <span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(f.path)}">${escapeHtml(f.path)}</span>
+  const hasMultipleDirs = groups.size > 1 || (!groups.has('') && groups.size > 0);
+
+  let html = '';
+  groups.forEach((groupFiles, dirPath) => {
+    const dirTitle = dirPath || 'Root Directory';
+    const allGroupChecked = groupFiles.every(f => inspectSelectedIndices.has(f.index));
+    const groupTotalBytes = groupFiles.reduce((acc, f) => acc + (f.length || 0), 0);
+
+    html += `
+      <div class="inspect-dir-group" style="border-bottom: 1px solid rgba(128,128,128,0.12);">
+        ${hasMultipleDirs ? `
+          <div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: rgba(255,255,255,0.03); border-bottom: 1px solid rgba(128,128,128,0.08); font-size: 12px; font-weight: 600;">
+            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; min-width: 0; flex: 1;">
+              <input type="checkbox" class="inspect-dir-checkbox" data-dir="${escapeHtml(dirPath)}" ${allGroupChecked ? 'checked' : ''} onchange="toggleInspectDirGroup('${escapeHtml(dirPath)}', this.checked)">
+              ${ICONS.folder}
+              <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(dirTitle)}">${escapeHtml(dirTitle)}</span>
+            </label>
+            <span style="font-size: 11px; color: var(--adw-dim-label); font-weight: normal; margin-left: 10px; white-space: nowrap;">
+              ${groupFiles.length} file${groupFiles.length !== 1 ? 's' : ''} • ${formatBytes(groupTotalBytes)}
+            </span>
+          </div>
+        ` : ''}
+        <div class="inspect-dir-files">
+          ${groupFiles.map(f => {
+            const isChecked = inspectSelectedIndices.has(f.index);
+            const sizeStr = f.length > 0 ? formatBytes(f.length) : '';
+            const icon = getIconForFile(f.path);
+            return `
+              <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 12px ${hasMultipleDirs ? '6px 28px' : '6px 12px'}; border-bottom: 1px solid rgba(128,128,128,0.06); font-size: 12px;">
+                <label style="display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; cursor: pointer; padding-right: 12px;">
+                  <input type="checkbox" class="inspect-file-checkbox" data-index="${f.index}" ${isChecked ? 'checked' : ''} onchange="toggleInspectFile(${f.index}, this.checked)">
+                  ${icon}
+                  <span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(f.path)}">${escapeHtml(f.basename || f.path)}</span>
+                </label>
+                <div style="color: var(--adw-dim-label); font-weight: 500; font-size: 11px; white-space: nowrap;">${sizeStr}</div>
+              </div>
+            `;
+          }).join('')}
         </div>
-        <div style="color: var(--adw-dim-label); font-weight: 500; font-size: 11.5px; white-space: nowrap;">${sizeStr}</div>
       </div>
     `;
-  }).join('');
+  });
+
+  container.innerHTML = html;
 }
 
 function filterInspectFiles(query) {
-  query = (query || '').toLowerCase().trim();
-  if (!query) {
+  inspectCurrentFilter = (query || '').toLowerCase().trim();
+  if (!inspectCurrentFilter) {
     renderInspectFiles(currentInspectFiles);
     return;
   }
-  const filtered = currentInspectFiles.filter(f => f.path.toLowerCase().includes(query));
+  const filtered = currentInspectFiles.filter(f => f.path.toLowerCase().includes(inspectCurrentFilter));
   renderInspectFiles(filtered);
+}
+
+function toggleInspectFile(index, checked) {
+  if (checked) {
+    inspectSelectedIndices.add(index);
+  } else {
+    inspectSelectedIndices.delete(index);
+  }
+  updateInspectSelectionSummary();
+  // Refresh directory header checkboxes
+  document.querySelectorAll('.inspect-dir-group').forEach(groupEl => {
+    const dirCheckbox = groupEl.querySelector('.inspect-dir-checkbox');
+    if (!dirCheckbox) return;
+    const fileCheckboxes = Array.from(groupEl.querySelectorAll('.inspect-file-checkbox'));
+    if (fileCheckboxes.length > 0) {
+      dirCheckbox.checked = fileCheckboxes.every(cb => cb.checked);
+      dirCheckbox.indeterminate = !dirCheckbox.checked && fileCheckboxes.some(cb => cb.checked);
+    }
+  });
+}
+
+function toggleInspectDirGroup(dirPath, checked) {
+  currentInspectFiles.forEach(f => {
+    const rawPath = f.path || '';
+    const lastSlash = rawPath.lastIndexOf('/');
+    const lastBackslash = rawPath.lastIndexOf('\\');
+    const splitIdx = Math.max(lastSlash, lastBackslash);
+    const dir = splitIdx !== -1 ? rawPath.substring(0, splitIdx) : '';
+    if (dir === dirPath) {
+      if (checked) {
+        inspectSelectedIndices.add(f.index);
+      } else {
+        inspectSelectedIndices.delete(f.index);
+      }
+    }
+  });
+  if (inspectCurrentFilter) {
+    const filtered = currentInspectFiles.filter(f => f.path.toLowerCase().includes(inspectCurrentFilter));
+    renderInspectFiles(filtered);
+  } else {
+    renderInspectFiles(currentInspectFiles);
+  }
+  updateInspectSelectionSummary();
+}
+
+function inspectSelectAll(select) {
+  if (select) {
+    inspectSelectedIndices = new Set(currentInspectFiles.map(f => f.index));
+  } else {
+    inspectSelectedIndices.clear();
+  }
+  if (inspectCurrentFilter) {
+    const filtered = currentInspectFiles.filter(f => f.path.toLowerCase().includes(inspectCurrentFilter));
+    renderInspectFiles(filtered);
+  } else {
+    renderInspectFiles(currentInspectFiles);
+  }
+  updateInspectSelectionSummary();
+}
+
+function inspectSelectByType(type) {
+  inspectSelectedIndices.clear();
+  const audioExts = ['mp3', 'flac', 'wav', 'aac', 'ogg', 'm4a', 'opus', 'wma', 'alac', 'aiff'];
+  const videoExts = ['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v', 'ts'];
+  const docExts = ['pdf', 'epub', 'mobi', 'doc', 'docx', 'txt', 'rtf', 'cbr', 'cbz'];
+
+  currentInspectFiles.forEach(f => {
+    const ext = (f.path || '').split('.').pop().toLowerCase();
+    if (type === 'audio' && audioExts.includes(ext)) {
+      inspectSelectedIndices.add(f.index);
+    } else if (type === 'video' && videoExts.includes(ext)) {
+      inspectSelectedIndices.add(f.index);
+    } else if (type === 'docs' && docExts.includes(ext)) {
+      inspectSelectedIndices.add(f.index);
+    }
+  });
+
+  if (inspectCurrentFilter) {
+    const filtered = currentInspectFiles.filter(f => f.path.toLowerCase().includes(inspectCurrentFilter));
+    renderInspectFiles(filtered);
+  } else {
+    renderInspectFiles(currentInspectFiles);
+  }
+  updateInspectSelectionSummary();
+}
+
+function updateInspectSelectionSummary() {
+  const summaryEl = document.getElementById('inspect-selection-summary');
+  const downloadBtnText = document.getElementById('inspect-download-btn-text');
+  let totalSelectedBytes = 0;
+  let totalSelectedCount = 0;
+
+  currentInspectFiles.forEach(f => {
+    if (inspectSelectedIndices.has(f.index)) {
+      totalSelectedBytes += f.length || 0;
+      totalSelectedCount++;
+    }
+  });
+
+  if (summaryEl) {
+    summaryEl.textContent = `Selected: ${totalSelectedCount} / ${currentInspectFiles.length} (${formatBytes(totalSelectedBytes)})`;
+  }
+  if (downloadBtnText) {
+    downloadBtnText.textContent = (totalSelectedCount === currentInspectFiles.length || totalSelectedCount === 0)
+      ? 'Download All'
+      : `Download Selected (${totalSelectedCount})`;
+  }
 }
 
 function closeInspectModal() {
   restoreFocusAndClose('modal-inspect');
   currentInspectData = null;
   currentInspectFiles = [];
+  inspectSelectedIndices.clear();
+  inspectCurrentFilter = '';
 }
 
 function copyInspectMagnet(btn) {
@@ -1884,31 +2172,49 @@ function saveInspectTorrentFile(btn) {
   showToast("Downloading .torrent file...", "success", 2000);
 }
 
-async function startDownloadFromInspect(btn) {
+async function startDownloadFromInspect(btn, onlySelected) {
   if (!currentInspectData || !currentInspectData.magnet_uri) return;
   const uri = currentInspectData.magnet_uri;
+
+  let selectedFiles = null;
+  if (onlySelected && inspectSelectedIndices.size > 0 && inspectSelectedIndices.size < currentInspectFiles.length) {
+    selectedFiles = Array.from(inspectSelectedIndices);
+  }
+
   closeInspectModal();
-  await downloadFromSearch(encodeURIComponent(uri), btn);
+  await downloadFromSearchWithSelection(uri, selectedFiles, btn);
 }
 
-async function downloadFromSearch(encodedURI, btn) {
-  const uri = decodeURIComponent(encodedURI);
+async function downloadFromSearchWithSelection(uri, selectedFiles, btn) {
   if (btn) {
     btn.disabled = true;
     btn.innerHTML = `<span style="opacity: 0.7;">Adding...</span>`;
   }
-  showToast("Adding download...", "info", 1500);
+
+  const payload = { url: uri };
+  if (selectedFiles && selectedFiles.length > 0) {
+    payload.selected_files = selectedFiles;
+  }
+
+  const label = (selectedFiles && selectedFiles.length > 0)
+    ? `Adding ${selectedFiles.length} selected files...`
+    : "Adding download...";
+  showToast(label, "info", 2000);
 
   try {
     const res = await fetch('/api/torrents/add', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: uri })
+      body: JSON.stringify(payload)
     });
     const data = await res.json();
     if (data.status === 'ok') {
-      showToast("Transfer started!", "info", 2500);
-      switchMainView('torrents');
+      const successMsg = (selectedFiles && selectedFiles.length > 0)
+        ? `Added ${selectedFiles.length} tracks/files to transfers queue!`
+        : "Transfer started!";
+      showToast(successMsg, "info", 3000);
+      // Stacking: refresh transfers in background without forcing a tab switch
+      fetchTorrents();
     } else {
       showToast("Failed to add download: " + (data.error || 'Unknown error'), "error", 4000);
       if (btn) {
@@ -1923,6 +2229,11 @@ async function downloadFromSearch(encodedURI, btn) {
       btn.innerHTML = `${ICONS.download}<span>Download</span>`;
     }
   }
+}
+
+async function downloadFromSearch(encodedURI, btn) {
+  const uri = decodeURIComponent(encodedURI);
+  await downloadFromSearchWithSelection(uri, null, btn);
 }
 
 // Add Modal

@@ -116,8 +116,8 @@ func (p *ArchiveOrgProvider) Search(ctx context.Context, query string) ([]Result
 			Title:        title,
 			MagnetURI:    torrentURL,
 			SizeBytes:    size,
-			Seeders:      1, // Archive.org items are served via direct HTTP WebSeed
-			Leechers:     0,
+			Seeders:      -1, // Direct HTTP WebSeed & swarm probeable
+			Leechers:     -1,
 			Provider:     p.name,
 			ProviderType: "archiveorg",
 			DetailsURL:   detailsURL,

@@ -163,8 +163,8 @@ func (p *SoulseekProvider) Search(ctx context.Context, query string) ([]Result, 
 			Title:        fullTitle,
 			MagnetURI:    torrentURL,
 			SizeBytes:    size,
-			Seeders:      3, // WebSeed mirrored
-			Leechers:     0,
+			Seeders:      -1, // Direct P2P/WebSeed source (swarm probeable)
+			Leechers:     -1,
 			Provider:     p.name,
 			ProviderType: "soulseek",
 			DetailsURL:   detailsURL,

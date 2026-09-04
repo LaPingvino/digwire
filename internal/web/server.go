@@ -111,7 +111,9 @@ func (s *Server) handleGetTorrents(w http.ResponseWriter, r *http.Request) {
 }
 
 type addRequest struct {
-	URL string `json:"url"`
+	URL            string      `json:"url"`
+	SelectedFiles  []int       `json:"selected_files,omitempty"`
+	FilePriorities map[int]int `json:"file_priorities,omitempty"`
 }
 
 func (s *Server) handleAddTorrent(w http.ResponseWriter, r *http.Request) {
@@ -212,7 +214,7 @@ func (s *Server) handleAddTorrent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// JSON request (magnet URI or .torrent URL)
+	// JSON request (magnet URI or .torrent URL with optional selective file indices/priorities)
 	var req addRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid json body"}`, http.StatusBadRequest)
@@ -224,7 +226,7 @@ func (s *Server) handleAddTorrent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	t, err := s.engine.Add(req.URL)
+	t, err := s.engine.AddWithSelection(req.URL, req.SelectedFiles, req.FilePriorities)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})

@@ -281,18 +281,18 @@
     </div>
   </div>
 
-  <!-- Modal: Torrent Files Preview / Inspection -->
+  <!-- Modal: Torrent Files Preview / Inspection & Selective Download -->
   <div class="modal-backdrop" id="modal-inspect" role="dialog" aria-modal="true" aria-labelledby="modal-inspect-title" onclick="if(event.target===this) closeInspectModal()">
-    <div class="modal-box" style="max-width: 680px; max-height: 85vh; display: flex; flex-direction: column;">
+    <div class="modal-box" style="max-width: 760px; max-height: 88vh; display: flex; flex-direction: column;">
       <div class="modal-header">
         <div class="modal-title" id="modal-inspect-title" style="display: flex; align-items: center; gap: 8px;">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline></svg>
-          <span>Torrent Contents Preview</span>
+          <span>Contents & Selective Download</span>
         </div>
         <button class="btn btn-icon" onclick="closeInspectModal()" title="Close" aria-label="Close preview dialog"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
       </div>
 
-      <div id="inspect-header-info" style="margin-bottom: 12px; background: rgba(0,0,0,0.2); padding: 12px 14px; border-radius: var(--adw-radius-sm); border: 1px solid var(--adw-border);">
+      <div id="inspect-header-info" style="margin-bottom: 10px; background: rgba(0,0,0,0.2); padding: 12px 14px; border-radius: var(--adw-radius-sm); border: 1px solid var(--adw-border);">
         <div id="inspect-title" style="font-size: 14px; font-weight: 600; word-break: break-all; margin-bottom: 6px;">Loading torrent metadata...</div>
         <div style="display: flex; gap: 16px; font-size: 12px; color: var(--adw-dim-label); flex-wrap: wrap;">
           <span id="inspect-size">Total Size: —</span>
@@ -301,17 +301,26 @@
         </div>
       </div>
 
-      <!-- Quick Filter for files -->
-      <div id="inspect-filter-container" style="margin-bottom: 10px; display: flex; gap: 8px;">
-        <input type="text" id="inspect-file-filter" class="input-text" placeholder="Filter files in this torrent..." oninput="filterInspectFiles(this.value)" style="font-size: 12px; padding: 6px 10px; width: 100%;" aria-label="Filter file list">
+      <!-- Quick Filter and Selection Toolbar -->
+      <div id="inspect-toolbar" style="margin-bottom: 8px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: space-between;">
+        <div style="flex: 1; min-width: 180px;">
+          <input type="text" id="inspect-file-filter" class="input-text" placeholder="Filter files or folders..." oninput="filterInspectFiles(this.value)" style="font-size: 12px; padding: 5px 9px; width: 100%;" aria-label="Filter file list">
+        </div>
+        <div style="display: flex; gap: 5px; align-items: center; flex-wrap: wrap;">
+          <button class="btn" style="padding: 3px 8px; font-size: 11px;" onclick="inspectSelectAll(true)" title="Select all files">All</button>
+          <button class="btn" style="padding: 3px 8px; font-size: 11px;" onclick="inspectSelectAll(false)" title="Deselect all files">None</button>
+          <button class="btn" style="padding: 3px 8px; font-size: 11px;" onclick="inspectSelectByType('audio')" title="Select audio tracks only (FLAC, MP3, WAV, etc.)">Audio</button>
+          <button class="btn" style="padding: 3px 8px; font-size: 11px;" onclick="inspectSelectByType('video')" title="Select video files only">Video</button>
+          <span id="inspect-selection-summary" style="font-size: 11.5px; font-weight: 600; color: var(--adw-accent-color); margin-left: 6px; white-space: nowrap;">Selected: —</span>
+        </div>
       </div>
 
-      <!-- Scrollable Files List -->
-      <div id="inspect-files-container" style="flex: 1; overflow-y: auto; max-height: 380px; min-height: 180px; border: 1px solid var(--adw-border); border-radius: var(--adw-radius-sm); background: rgba(0,0,0,0.15);" role="region" aria-label="Files in torrent">
+      <!-- Scrollable Files & Directories List -->
+      <div id="inspect-files-container" style="flex: 1; overflow-y: auto; max-height: 420px; min-height: 200px; border: 1px solid var(--adw-border); border-radius: var(--adw-radius-sm); background: rgba(0,0,0,0.15);" role="region" aria-label="Files and directories in torrent">
         <!-- File rows dynamically populated -->
       </div>
 
-      <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--adw-border); padding-top: 12px; margin-top: 12px; flex-wrap: wrap; gap: 8px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--adw-border); padding-top: 12px; margin-top: 10px; flex-wrap: wrap; gap: 8px;">
         <div style="display: flex; gap: 6px;">
           <button class="btn" id="inspect-copy-magnet-btn" onclick="copyInspectMagnet(this)" aria-label="Copy Magnet URI">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 3px;" aria-hidden="true"><path d="M4 4h4v7a4 4 0 0 0 8 0V4h4v7a8 8 0 0 1-16 0Z"></path><line x1="4" y1="8" x2="8" y2="8"></line><line x1="16" y1="8" x2="20" y2="8"></line></svg>
@@ -324,9 +333,13 @@
         </div>
         <div style="display: flex; gap: 8px;">
           <button class="btn" onclick="closeInspectModal()">Close</button>
-          <button class="btn btn-primary" id="inspect-download-btn" onclick="startDownloadFromInspect(this)">
+          <button class="btn" id="inspect-download-full-btn" onclick="startDownloadFromInspect(this, false)" title="Download all files in this torrent">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -1px; margin-right: 3px;" aria-hidden="true"><path d="M12 2v14m0 0l-4-4m4 4l4-4M4 20h16"></path></svg>
+            <span>Download All</span>
+          </button>
+          <button class="btn btn-primary" id="inspect-download-btn" onclick="startDownloadFromInspect(this, true)" title="Download only selected files and directories">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="vertical-align: -1px; margin-right: 3px;" aria-hidden="true"><path d="M12 2v14m0 0l-4-4m4 4l4-4M4 20h16"></path></svg>
-            <span>Download Torrent</span>
+            <span id="inspect-download-btn-text">Download Selected</span>
           </button>
         </div>
       </div>
