@@ -246,10 +246,254 @@ function renderGlobalStats(stats) {
   document.getElementById('stat-dht-nodes').textContent = dhtText;
 }
 
-// Torrent Rendering
+// Torrent Keyboard Navigation
+function handleTorrentCardKeydown(e, hash, name) {
+  const card = e.currentTarget;
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    const next = card.nextElementSibling;
+    if (next && next.classList.contains('torrent-card')) {
+      next.focus();
+    }
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    const prev = card.previousElementSibling;
+    if (prev && prev.classList.contains('torrent-card')) {
+      prev.focus();
+    }
+  } else if (e.key === 'Home') {
+    e.preventDefault();
+    const first = card.parentElement ? card.parentElement.querySelector('.torrent-card') : null;
+    if (first) first.focus();
+  } else if (e.key === 'End') {
+    e.preventDefault();
+    const cards = card.parentElement ? card.parentElement.querySelectorAll('.torrent-card') : [];
+    if (cards.length > 0) cards[cards.length - 1].focus();
+  } else if (e.key === 'Enter' || e.key === ' ') {
+    if (e.target === card) {
+      e.preventDefault();
+      openDetailsModal(hash);
+    }
+  } else if (e.key === 'Delete') {
+    if (e.target === card) {
+      e.preventDefault();
+      promptDeleteTorrent(hash, name);
+    }
+  }
+}
+
+function getTorrentMetaString(t) {
+  const isPaused = t.state === 'paused';
+  const isSeeding = t.state === 'seeding' || t.state === 'completed';
+  const isMeta = t.state === 'metadata';
+  const isVerifying = t.state === 'verifying';
+  const isWebDownload = t.magnet_uri && (t.magnet_uri.startsWith('http://') || t.magnet_uri.startsWith('https://'));
+
+  let metaString = `${formatBytes(t.completed_bytes)} of ${formatBytes(t.total_bytes)} (${t.progress.toFixed(1)}%)`;
+  if (isMeta) {
+    metaString = 'Downloading metadata from peers...';
+  } else if (isVerifying) {
+    metaString = `Verifying & hashing local data... (${t.progress.toFixed(1)}%)`;
+  } else if (t.download_rate > 0) {
+    metaString += ` • ${ICONS.arrowDown}${formatSpeed(t.download_rate)}`;
+    const eta = formatETA(t.eta_seconds);
+    if (eta) metaString += ` • ETA: ${eta}`;
+  } else if (!isSeeding && !isPaused && t.progress < 100 && t.availability_eta) {
+    const qTooltip = t.qualifier ? 
+      (t.qualifier.description + (t.qualifier.easter_egg ? '\n\n' + t.qualifier.easter_egg : '')) : 
+      'Projected completion based on seeder duty cycle';
+    metaString += ` • <span style="color: #62a0ea; font-weight: 500;" title="${escapeHtml(qTooltip)}">${ICONS.clock}Proj. ETA: ${escapeHtml(t.availability_eta)}</span>`;
+  }
+  if (t.upload_rate > 0) {
+    metaString += ` • ${ICONS.arrowUp}${formatSpeed(t.upload_rate)}`;
+  }
+  if (isWebDownload) {
+    const mirrorCount = t.webseeds && t.webseeds.length > 0 ? t.webseeds.length : (t.peers || 1);
+    metaString += ` • ${mirrorCount} mirror${mirrorCount !== 1 ? 's' : ''}`;
+  } else {
+    const seeds = t.seeders || 0;
+    const leechers = t.leechers !== undefined ? t.leechers : Math.max(0, (t.peers || 0) - seeds);
+    if (isSeeding) {
+      metaString += ` • ${leechers} peer${leechers !== 1 ? 's' : ''}`;
+    } else {
+      metaString += ` • ${seeds} seed${seeds !== 1 ? 's' : ''}, ${leechers} peer${leechers !== 1 ? 's' : ''}`;
+    }
+    if (t.webseeds && t.webseeds.length > 0) {
+      metaString += ` • <span style="color: #57e389; font-weight: 600;">${ICONS.globe}${t.webseeds.length} WebSeed${t.webseeds.length > 1 ? 's' : ''}</span>`;
+    }
+  }
+  return metaString;
+}
+
+function getCardActionsHtml(t) {
+  const isPaused = t.state === 'paused';
+  const isWebDownload = t.magnet_uri && (t.magnet_uri.startsWith('http://') || t.magnet_uri.startsWith('https://'));
+  return `
+    ${(t.progress >= 100 || t.state === 'seeding' || t.state === 'completed') ? 
+      `<button class="btn btn-icon" title="Open Downloaded File or Folder" aria-label="Open downloaded file for ${escapeHtml(t.name)}" onclick="openTorrentTarget('${t.info_hash}')">${ICONS.play}</button>` : ''
+    }
+    <button class="btn btn-icon" title="Show in File Manager" aria-label="Show ${escapeHtml(t.name)} in file manager" onclick="showTorrentInFolder('${t.info_hash}')">${ICONS.folder}</button>
+    ${!isWebDownload ? 
+      `<button class="btn btn-icon" title="Verify Local Data (Recheck)" aria-label="Verify local data for ${escapeHtml(t.name)}" onclick="verifyTorrent('${t.info_hash}', this)">${ICONS.verify}</button>` : ''
+    }
+    <button class="btn btn-icon" title="Copy Magnet / URL" aria-label="Copy Magnet link for ${escapeHtml(t.name)}" onclick="copyToClipboard('${encodeURI(t.magnet_uri || '')}', this)">${ICONS.magnet}</button>
+    <button class="btn btn-icon" title="Inspect Details & Peers" aria-label="Inspect details and peers for ${escapeHtml(t.name)}" onclick="openDetailsModal('${t.info_hash}')">${ICONS.info}</button>
+    ${isPaused ? 
+      `<button class="btn btn-icon" title="Resume" aria-label="Resume download for ${escapeHtml(t.name)}" onclick="resumeTorrent('${t.info_hash}')">${ICONS.play}</button>` :
+      `<button class="btn btn-icon" title="Pause" aria-label="Pause download for ${escapeHtml(t.name)}" onclick="pauseTorrent('${t.info_hash}')">${ICONS.pause}</button>`
+    }
+    <button class="btn btn-icon" style="color: var(--adw-error);" title="Delete" aria-label="Delete ${escapeHtml(t.name)}" onclick="promptDeleteTorrent('${t.info_hash}', '${t.name.replace(/'/g, "\\'")}')">${ICONS.trash}</button>
+  `;
+}
+
+function createTorrentCardElement(t) {
+  const isSeeding = t.state === 'seeding' || t.state === 'completed';
+  const metaString = getTorrentMetaString(t);
+  const cardAriaLabel = `Torrent: ${escapeHtml(t.name)}, state: ${t.state}, ${t.progress.toFixed(1)} percent, size: ${formatBytes(t.total_bytes)}`;
+
+  let swarmBanner = '';
+  if (t.suggested_swarm) {
+    const matchText = t.suggested_swarm.is_partial ?
+      `${ICONS.zap}<strong>Partial Match in Pack!</strong> "${escapeHtml(t.suggested_swarm.name)}" (${t.suggested_swarm.seeders} seeds). Upgrade to swarm?` :
+      `${ICONS.zap}<strong>Equivalent Swarm Found!</strong> Verified with ${t.suggested_swarm.seeders} seeds. Upgrade to hybrid swarm?`;
+    swarmBanner = `
+      <div class="swarm-suggestion-banner">
+        <div>${matchText}</div>
+        <button class="btn btn-primary" style="padding: 3px 10px; font-size: 11px; white-space: nowrap;" onclick="upgradeToSwarm('${t.info_hash}')">
+          Upgrade to Swarm
+        </button>
+      </div>
+    `;
+  }
+
+  const div = document.createElement('div');
+  div.className = 'torrent-card';
+  div.dataset.hash = t.info_hash;
+  div.tabIndex = 0;
+  div.setAttribute('role', 'region');
+  div.setAttribute('aria-label', cardAriaLabel);
+  div.title = "Double-click or press Enter to inspect";
+  div.ondblclick = () => openTorrentTarget(t.info_hash);
+  div.onkeydown = (e) => handleTorrentCardKeydown(e, t.info_hash, t.name);
+
+  div.innerHTML = `
+    <div class="card-header">
+      <div class="torrent-title" title="${escapeHtml(t.name)}" style="cursor: pointer;" onclick="openDetailsModal('${t.info_hash}')">${escapeHtml(t.name)}</div>
+      <div style="display: flex; gap: 6px; align-items: center;">
+        ${getQualifierBadge(t.qualifier)}
+        <span class="torrent-badge badge-${t.state}" aria-label="Status: ${t.state}">${t.state}</span>
+      </div>
+    </div>
+
+    <div class="progress-bar-container" role="progressbar" aria-valuenow="${t.progress.toFixed(1)}" aria-valuemin="0" aria-valuemax="100" aria-valuetext="${t.progress.toFixed(1)} percent complete" style="cursor: pointer;" onclick="openDetailsModal('${t.info_hash}')" title="Progress: ${t.progress.toFixed(1)}%">
+      <div class="progress-bar-fill ${isSeeding ? 'seeding' : ''}" style="width: ${Math.min(100, Math.max(0, t.progress))}%;"></div>
+    </div>
+
+    ${swarmBanner}
+
+    <div class="card-footer">
+      <div class="torrent-meta">${metaString}</div>
+      <div class="card-actions">
+        ${getCardActionsHtml(t)}
+      </div>
+    </div>
+  `;
+  return div;
+}
+
+function updateTorrentCardElement(cardEl, t) {
+  const isSeeding = t.state === 'seeding' || t.state === 'completed';
+  const metaString = getTorrentMetaString(t);
+  const cardAriaLabel = `Torrent: ${escapeHtml(t.name)}, state: ${t.state}, ${t.progress.toFixed(1)} percent, size: ${formatBytes(t.total_bytes)}`;
+
+  if (cardEl.getAttribute('aria-label') !== cardAriaLabel) {
+    cardEl.setAttribute('aria-label', cardAriaLabel);
+  }
+
+  // Update title
+  const titleEl = cardEl.querySelector('.torrent-title');
+  if (titleEl && titleEl.textContent !== t.name) {
+    titleEl.textContent = t.name;
+    titleEl.title = t.name;
+  }
+
+  // Update badges
+  const badgeContainer = cardEl.querySelector('.card-header > div:last-child');
+  const qualifierHtml = getQualifierBadge(t.qualifier);
+  const stateBadgeHtml = `<span class="torrent-badge badge-${t.state}" aria-label="Status: ${t.state}">${t.state}</span>`;
+  const fullBadgeHtml = qualifierHtml + stateBadgeHtml;
+  if (badgeContainer && badgeContainer.innerHTML !== fullBadgeHtml) {
+    badgeContainer.innerHTML = fullBadgeHtml;
+  }
+
+  // Update progress bar
+  const progressContainer = cardEl.querySelector('.progress-bar-container');
+  if (progressContainer) {
+    progressContainer.setAttribute('aria-valuenow', t.progress.toFixed(1));
+    progressContainer.setAttribute('aria-valuetext', `${t.progress.toFixed(1)} percent complete`);
+    progressContainer.title = `Progress: ${t.progress.toFixed(1)}%`;
+  }
+  const progressFill = cardEl.querySelector('.progress-bar-fill');
+  if (progressFill) {
+    progressFill.style.width = `${Math.min(100, Math.max(0, t.progress))}%`;
+    progressFill.className = `progress-bar-fill ${isSeeding ? 'seeding' : ''}`;
+  }
+
+  // Update swarm banner
+  let bannerEl = cardEl.querySelector('.swarm-suggestion-banner');
+  if (t.suggested_swarm) {
+    const matchText = t.suggested_swarm.is_partial ?
+      `${ICONS.zap}<strong>Partial Match in Pack!</strong> "${escapeHtml(t.suggested_swarm.name)}" (${t.suggested_swarm.seeders} seeds). Upgrade to swarm?` :
+      `${ICONS.zap}<strong>Equivalent Swarm Found!</strong> Verified with ${t.suggested_swarm.seeders} seeds. Upgrade to hybrid swarm?`;
+    const newBannerHtml = `
+      <div>${matchText}</div>
+      <button class="btn btn-primary" style="padding: 3px 10px; font-size: 11px; white-space: nowrap;" onclick="upgradeToSwarm('${t.info_hash}')">
+        Upgrade to Swarm
+      </button>
+    `;
+    if (!bannerEl) {
+      const div = document.createElement('div');
+      div.className = 'swarm-suggestion-banner';
+      div.innerHTML = newBannerHtml;
+      const pBar = cardEl.querySelector('.progress-bar-container');
+      if (pBar) pBar.after(div);
+    } else if (bannerEl.innerHTML !== newBannerHtml) {
+      bannerEl.innerHTML = newBannerHtml;
+    }
+  } else if (bannerEl) {
+    bannerEl.remove();
+  }
+
+  // Update meta string
+  const metaEl = cardEl.querySelector('.torrent-meta');
+  if (metaEl && metaEl.innerHTML !== metaString) {
+    metaEl.innerHTML = metaString;
+  }
+
+  // Update card actions
+  const actionsEl = cardEl.querySelector('.card-actions');
+  const newActionsHtml = getCardActionsHtml(t);
+  if (actionsEl && actionsEl.innerHTML.replace(/\s+/g, ' ') !== newActionsHtml.replace(/\s+/g, ' ')) {
+    const activeEl = document.activeElement;
+    let focusedBtnIdx = -1;
+    if (activeEl && actionsEl.contains(activeEl)) {
+      const btns = Array.from(actionsEl.querySelectorAll('button'));
+      focusedBtnIdx = btns.indexOf(activeEl);
+    }
+    actionsEl.innerHTML = newActionsHtml;
+    if (focusedBtnIdx >= 0) {
+      const newBtns = Array.from(actionsEl.querySelectorAll('button'));
+      const targetBtn = newBtns[focusedBtnIdx] || newBtns[0];
+      if (targetBtn) targetBtn.focus();
+    }
+  }
+}
+
+// Torrent Rendering with Keyed In-Place DOM Diffing & Focus Persistence
 function renderTorrents() {
   const container = document.getElementById('torrent-list-container');
   const emptyState = document.getElementById('torrents-empty');
+  if (!container || !emptyState) return;
 
   let filtered = [...torrentsData];
   if (currentFilter === 'downloading') {
@@ -274,102 +518,65 @@ function renderTorrents() {
 
   emptyState.style.display = 'none';
 
-  container.innerHTML = filtered.map(t => {
-    const isPaused = t.state === 'paused';
-    const isSeeding = t.state === 'seeding' || t.state === 'completed';
-    const isMeta = t.state === 'metadata';
-    const isVerifying = t.state === 'verifying';
-
-    const isWebDownload = t.magnet_uri && (t.magnet_uri.startsWith('http://') || t.magnet_uri.startsWith('https://'));
-
-    let metaString = `${formatBytes(t.completed_bytes)} of ${formatBytes(t.total_bytes)} (${t.progress.toFixed(1)}%)`;
-    if (isMeta) {
-      metaString = 'Downloading metadata from peers...';
-    } else if (isVerifying) {
-      metaString = `Verifying & hashing local data... (${t.progress.toFixed(1)}%)`;
-    } else if (t.download_rate > 0) {
-      metaString += ` • ${ICONS.arrowDown}${formatSpeed(t.download_rate)}`;
-      const eta = formatETA(t.eta_seconds);
-      if (eta) metaString += ` • ETA: ${eta}`;
-    } else if (!isSeeding && !isPaused && t.progress < 100 && t.availability_eta) {
-      const qTooltip = t.qualifier ? 
-        (t.qualifier.description + (t.qualifier.easter_egg ? '\n\n' + t.qualifier.easter_egg : '')) : 
-        'Projected completion based on seeder duty cycle';
-      metaString += ` • <span style="color: #62a0ea; font-weight: 500;" title="${escapeHtml(qTooltip)}">${ICONS.clock}Proj. ETA: ${escapeHtml(t.availability_eta)}</span>`;
+  // Save current active element inside container if any
+  let focusedCardHash = null;
+  let focusedSubIndex = -1;
+  const activeEl = document.activeElement;
+  if (activeEl && container.contains(activeEl)) {
+    const card = activeEl.closest('.torrent-card');
+    if (card && card.dataset.hash) {
+      focusedCardHash = card.dataset.hash;
+      if (activeEl !== card) {
+        const btns = Array.from(card.querySelectorAll('button'));
+        focusedSubIndex = btns.indexOf(activeEl);
+      }
     }
-    if (t.upload_rate > 0) {
-      metaString += ` • ${ICONS.arrowUp}${formatSpeed(t.upload_rate)}`;
+  }
+
+  // Keyed DOM reconciliation
+  const existingMap = new Map();
+  Array.from(container.children).forEach(child => {
+    if (child.dataset && child.dataset.hash) {
+      existingMap.set(child.dataset.hash, child);
     }
-    if (isWebDownload) {
-      const mirrorCount = t.webseeds && t.webseeds.length > 0 ? t.webseeds.length : (t.peers || 1);
-      metaString += ` • ${mirrorCount} mirror${mirrorCount !== 1 ? 's' : ''}`;
+  });
+
+  filtered.forEach((t, index) => {
+    let cardEl = existingMap.get(t.info_hash);
+    if (cardEl) {
+      updateTorrentCardElement(cardEl, t);
+      existingMap.delete(t.info_hash);
     } else {
-      const seeds = t.seeders || 0;
-      const leechers = t.leechers !== undefined ? t.leechers : Math.max(0, (t.peers || 0) - seeds);
-      if (isSeeding) {
-        metaString += ` • ${leechers} peer${leechers !== 1 ? 's' : ''}`;
-      } else {
-        metaString += ` • ${seeds} seed${seeds !== 1 ? 's' : ''}, ${leechers} peer${leechers !== 1 ? 's' : ''}`;
-      }
-      if (t.webseeds && t.webseeds.length > 0) {
-        metaString += ` • <span style="color: #57e389; font-weight: 600;">${ICONS.globe}${t.webseeds.length} WebSeed${t.webseeds.length > 1 ? 's' : ''}</span>`;
-      }
+      cardEl = createTorrentCardElement(t);
     }
 
-    let swarmBanner = '';
-    if (t.suggested_swarm) {
-      const matchText = t.suggested_swarm.is_partial ?
-        `${ICONS.zap}<strong>Partial Match in Pack!</strong> "${escapeHtml(t.suggested_swarm.name)}" (${t.suggested_swarm.seeders} seeds). Upgrade to swarm?` :
-        `${ICONS.zap}<strong>Equivalent Swarm Found!</strong> Verified with ${t.suggested_swarm.seeders} seeds. Upgrade to hybrid swarm?`;
-      swarmBanner = `
-        <div class="swarm-suggestion-banner">
-          <div>${matchText}</div>
-          <button class="btn btn-primary" style="padding: 3px 10px; font-size: 11px; white-space: nowrap;" onclick="upgradeToSwarm('${t.info_hash}')">
-            Upgrade to Swarm
-          </button>
-        </div>
-      `;
+    const currentAtIndex = container.children[index];
+    if (currentAtIndex !== cardEl) {
+      container.insertBefore(cardEl, currentAtIndex || null);
     }
+  });
 
-    const cardAriaLabel = `Torrent: ${escapeHtml(t.name)}, state: ${t.state}, ${t.progress.toFixed(1)} percent, size: ${formatBytes(t.total_bytes)}`;
-    return `
-      <div class="torrent-card" tabindex="0" role="region" aria-label="${cardAriaLabel}" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openDetailsModal('${t.info_hash}');}" ondblclick="openTorrentTarget('${t.info_hash}')" title="Double-click or press Enter to inspect">
-        <div class="card-header">
-          <div class="torrent-title" title="${escapeHtml(t.name)}" style="cursor: pointer;" onclick="openDetailsModal('${t.info_hash}')">${escapeHtml(t.name)}</div>
-          <div style="display: flex; gap: 6px; align-items: center;">
-            ${getQualifierBadge(t.qualifier)}
-            <span class="torrent-badge badge-${t.state}" aria-label="Status: ${t.state}">${t.state}</span>
-          </div>
-        </div>
+  // Remove leftover cards
+  existingMap.forEach(cardEl => {
+    cardEl.remove();
+  });
 
-        <div class="progress-bar-container" role="progressbar" aria-valuenow="${t.progress.toFixed(1)}" aria-valuemin="0" aria-valuemax="100" aria-valuetext="${t.progress.toFixed(1)} percent complete" style="cursor: pointer;" onclick="openDetailsModal('${t.info_hash}')" title="Progress: ${t.progress.toFixed(1)}%">
-          <div class="progress-bar-fill ${isSeeding ? 'seeding' : ''}" style="width: ${Math.min(100, Math.max(0, t.progress))}%;"></div>
-        </div>
-
-        ${swarmBanner}
-
-        <div class="card-footer">
-          <div class="torrent-meta">${metaString}</div>
-          <div class="card-actions">
-            ${(t.progress >= 100 || t.state === 'seeding' || t.state === 'completed') ? 
-              `<button class="btn btn-icon" title="Open Downloaded File or Folder" aria-label="Open downloaded file for ${escapeHtml(t.name)}" onclick="openTorrentTarget('${t.info_hash}')">${ICONS.play}</button>` : ''
-            }
-            <button class="btn btn-icon" title="Show in File Manager" aria-label="Show ${escapeHtml(t.name)} in file manager" onclick="showTorrentInFolder('${t.info_hash}')">${ICONS.folder}</button>
-            ${!isWebDownload ? 
-              `<button class="btn btn-icon" title="Verify Local Data (Recheck)" aria-label="Verify local data for ${escapeHtml(t.name)}" onclick="verifyTorrent('${t.info_hash}', this)">${ICONS.verify}</button>` : ''
-            }
-            <button class="btn btn-icon" title="Copy Magnet / URL" aria-label="Copy Magnet link for ${escapeHtml(t.name)}" onclick="copyToClipboard('${encodeURI(t.magnet_uri || '')}', this)">${ICONS.magnet}</button>
-            <button class="btn btn-icon" title="Inspect Details & Peers" aria-label="Inspect details and peers for ${escapeHtml(t.name)}" onclick="openDetailsModal('${t.info_hash}')">${ICONS.info}</button>
-            ${isPaused ? 
-              `<button class="btn btn-icon" title="Resume" aria-label="Resume download for ${escapeHtml(t.name)}" onclick="resumeTorrent('${t.info_hash}')">${ICONS.play}</button>` :
-              `<button class="btn btn-icon" title="Pause" aria-label="Pause download for ${escapeHtml(t.name)}" onclick="pauseTorrent('${t.info_hash}')">${ICONS.pause}</button>`
-            }
-            <button class="btn btn-icon" style="color: var(--adw-error);" title="Delete" aria-label="Delete ${escapeHtml(t.name)}" onclick="promptDeleteTorrent('${t.info_hash}', '${t.name.replace(/'/g, "\\'")}')">${ICONS.trash}</button>
-          </div>
-        </div>
-      </div>
-    `;
-  }).join('');
+  // Restore focus if it was lost during reconciliation
+  if (focusedCardHash) {
+    const currentActive = document.activeElement;
+    if (!currentActive || !container.contains(currentActive) || currentActive === document.body) {
+      const targetCard = container.querySelector(`[data-hash="${focusedCardHash}"]`);
+      if (targetCard) {
+        if (focusedSubIndex === -1) {
+          targetCard.focus();
+        } else {
+          const btns = Array.from(targetCard.querySelectorAll('button'));
+          const btn = btns[focusedSubIndex] || targetCard;
+          btn.focus();
+        }
+      }
+    }
+  }
 }
 
 async function verifyTorrent(hash, btn) {
@@ -1144,6 +1351,36 @@ function renderSearchResults() {
     return 0;
   });
 
+function handleSearchCardKeydown(e, idx) {
+  const card = e.currentTarget;
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    const next = card.nextElementSibling;
+    if (next && next.classList.contains('search-card')) {
+      next.focus();
+    }
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    const prev = card.previousElementSibling;
+    if (prev && prev.classList.contains('search-card')) {
+      prev.focus();
+    }
+  } else if (e.key === 'Home') {
+    e.preventDefault();
+    const first = card.parentElement ? card.parentElement.querySelector('.search-card') : null;
+    if (first) first.focus();
+  } else if (e.key === 'End') {
+    e.preventDefault();
+    const cards = card.parentElement ? card.parentElement.querySelectorAll('.search-card') : [];
+    if (cards.length > 0) cards[cards.length - 1].focus();
+  } else if (e.key === 'Enter' || e.key === ' ') {
+    if (e.target === card) {
+      e.preventDefault();
+      openInspectModal(idx);
+    }
+  }
+}
+
   container.innerHTML = sorted.map((r, idx) => {
     const tagClass = `tag-${r.provider_type || 'torrentscsv'}`;
     const scoreText = r.score > 0 ? `<span class="score-badge">Relevance: ${r.score.toFixed(0)}</span>` : '';
@@ -1178,8 +1415,9 @@ function renderSearchResults() {
       }
     }
 
+    const cardAria = `Search result: ${escapeHtml(r.title)}, ${formatBytes(r.size_bytes)}, ${r.provider || ''}`;
     return `
-      <div class="search-card">
+      <div class="search-card" tabindex="0" role="region" aria-label="${cardAria}" onkeydown="handleSearchCardKeydown(event, ${idx})">
         <div class="search-info">
           <div class="search-title" title="${escapeHtml(r.title)}">${escapeHtml(r.title)}</div>
           <div class="search-sub">
@@ -1193,12 +1431,12 @@ function renderSearchResults() {
           </div>
         </div>
         <div style="display: flex; gap: 6px; align-items: center;">
-          <button class="btn" title="Inspect files inside this torrent" onclick="openInspectModal(${idx})">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -1px; margin-right: 3px;"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline></svg>
+          <button class="btn" title="Inspect files inside this torrent" aria-label="Inspect files for ${escapeHtml(r.title)}" onclick="openInspectModal(${idx})">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -1px; margin-right: 3px;" aria-hidden="true"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline></svg>
             <span>Files</span>
           </button>
-          <button class="btn btn-icon" title="Copy Magnet" onclick="copyToClipboard('${encodeURI(r.magnet_uri)}', this)">${ICONS.magnet}</button>
-          <button class="btn btn-primary" onclick="downloadFromSearch('${encodeURIComponent(r.magnet_uri)}', this)">
+          <button class="btn btn-icon" title="Copy Magnet" aria-label="Copy Magnet link for ${escapeHtml(r.title)}" onclick="copyToClipboard('${encodeURI(r.magnet_uri)}', this)">${ICONS.magnet}</button>
+          <button class="btn btn-primary" aria-label="Download ${escapeHtml(r.title)}" onclick="downloadFromSearch('${encodeURIComponent(r.magnet_uri)}', this)">
             ${ICONS.download}
             <span>Download</span>
           </button>
