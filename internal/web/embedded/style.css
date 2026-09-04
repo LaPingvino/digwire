@@ -1,4 +1,10 @@
-@import url('https://fonts.googleapis.com/css2?family=Noto+Color+Emoji&display=swap');
+@font-face {
+  font-family: 'Noto Color Emoji';
+  font-style: normal;
+  font-weight: 400;
+  src: local('Noto Color Emoji'), local('NotoColorEmoji'), url('NotoColorEmoji.woff2') format('woff2');
+  font-display: swap;
+}
 
 :root {
   --adw-bg-color: #242424;
