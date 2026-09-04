@@ -1807,7 +1807,7 @@ function handleSearchCardKeydown(e, idx) {
         </div>
         <div style="display: flex; gap: 6px; align-items: center;">
           <button class="btn" title="Inspect files inside this torrent" aria-label="Inspect files for ${escapeHtml(r.title)}" onclick="openInspectModal(${idx})">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -1px; margin-right: 3px;" aria-hidden="true"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline></svg>
+            <span class="emoji-face" style="margin-right: 4px;">📦</span>
             <span>Files</span>
           </button>
           <button class="btn btn-icon" title="Copy Magnet" aria-label="Copy Magnet link for ${escapeHtml(r.title)}" onclick="copyToClipboard('${encodeURI(r.magnet_uri)}', this)">${ICONS.magnet}</button>
@@ -2845,7 +2845,7 @@ async function loadBrowserDir(dirPath = '') {
     listEl.innerHTML = data.items.map(item => `
       <div class="browser-item" onclick="onBrowserItemClick('${encodeURIComponent(item.path)}', ${item.is_dir}, this)" ondblclick="onBrowserItemDblClick('${encodeURIComponent(item.path)}', ${item.is_dir})" style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; border-radius: 6px; cursor: pointer; user-select: none;">
         <div style="display: flex; align-items: center; gap: 8px;">
-          ${item.is_dir ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--adw-accent);"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>` : `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--adw-dim-label);"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline></svg>`}
+          <span class="emoji-face" style="font-size: 14px;">${item.is_dir ? '📁' : '📄'}</span>
           <span style="font-size: 12.5px; font-weight: ${item.is_dir ? '600' : 'normal'};">${item.name}</span>
         </div>
         ${!item.is_dir ? `<span style="font-size: 11px; color: var(--adw-dim-label);">${formatBytes(item.size)}</span>` : ''}

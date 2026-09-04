@@ -37,6 +37,13 @@
     --adw-accent: #3584e4;
     --adw-accent-hover: #1c71d8;
   }
+  select option, select optgroup, .sort-select option, .sort-select optgroup {
+    background-color: #ffffff;
+    color: #1a1a1a;
+  }
+  select, .sort-select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236e6e6e' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  }
 }
 
 * {
@@ -45,6 +52,13 @@
   padding: 0;
   font-family: system-ui, -apple-system, "Cantarell", "Ubuntu", "Noto Sans", "Segoe UI", Roboto, "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", sans-serif;
   user-select: none;
+}
+
+.emoji-face, .badge-icon, [data-emoji], .germany-badge span:first-child {
+  font-family: "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", sans-serif;
+  font-style: normal;
+  display: inline-block;
+  line-height: 1;
 }
 
 body {
@@ -432,15 +446,50 @@ body {
   color: #ffffff;
 }
 
-.sort-select {
+/* Select / Dropdown Lists */
+select, .sort-select {
   background-color: var(--adw-card-bg);
   border: 1px solid var(--adw-border);
   color: var(--adw-fg-color);
-  padding: 4px 8px;
+  padding: 6px 28px 6px 10px;
   border-radius: var(--adw-radius-sm);
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 500;
   outline: none;
   cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a0a0a0' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 11px 11px;
+  transition: all 0.15s ease;
+}
+
+select:hover, .sort-select:hover {
+  background-color: var(--adw-card-hover);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+select:focus, .sort-select:focus {
+  border-color: var(--adw-accent);
+  box-shadow: 0 0 0 2px rgba(53, 132, 228, 0.3);
+}
+
+select option, select optgroup, .sort-select option, .sort-select optgroup {
+  background-color: #2b2b2b;
+  color: #ffffff;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+.adw-table select, .adw-table .sort-select {
+  padding: 3px 20px 3px 6px;
+  font-size: 11px;
+  background-position: right 5px center;
+  background-size: 9px 9px;
+  border-radius: 4px;
 }
 
 /* Search Result Cards */

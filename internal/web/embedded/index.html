@@ -39,25 +39,25 @@
     <!-- Filter Switcher (When in Torrents View) -->
     <div class="view-switcher" id="torrent-filters" role="group" aria-label="Transfer status filter">
       <button class="view-btn active" id="filter-btn-all" onclick="setFilter('all')" aria-label="Show all transfers">All</button>
-      <button class="view-btn" id="filter-btn-downloading" onclick="setFilter('downloading')" aria-label="Show downloading transfers">Downloading</button>
-      <button class="view-btn" id="filter-btn-completed" onclick="setFilter('completed')" aria-label="Show completed and seeding transfers">Completed</button>
+      <button class="view-btn" id="filter-btn-downloading" onclick="setFilter('downloading')" aria-label="Show downloading transfers">⬇️ Downloading</button>
+      <button class="view-btn" id="filter-btn-completed" onclick="setFilter('completed')" aria-label="Show completed and seeding transfers">✔️ Completed</button>
     </div>
 
     <!-- Actions -->
     <div class="header-group">
       <button class="btn btn-primary" onclick="openAddModal()" aria-label="Add download by URL, magnet, or torrent file (Ctrl+N)">
-        <span style="margin-right: 4px;">➕</span>
+        <span class="emoji-face" style="margin-right: 4px;">➕</span>
         <span>Add</span>
       </button>
       <button class="btn" title="Create & Share Torrent (FrostWire Send) (Ctrl+S)" onclick="openSendModal()" aria-label="Create and seed new torrent">
-        <span style="margin-right: 4px;">📤</span>
+        <span class="emoji-face" style="margin-right: 4px;">📤</span>
         <span>Send</span>
       </button>
       <button class="btn btn-icon" title="Open Download Folder" onclick="openDownloadFolder()" aria-label="Open download folder in system file manager">
-        <span>📂</span>
+        <span class="emoji-face">📂</span>
       </button>
       <button class="btn btn-icon" title="Preferences (Ctrl+,)" onclick="openSettingsModal()" aria-label="Preferences and search provider settings">
-        <span>⚙️</span>
+        <span class="emoji-face">⚙️</span>
       </button>
     </div>
   </header>
@@ -72,11 +72,14 @@
       </div>
       <div id="torrents-empty" class="empty-state" style="display: none;" role="status">
         <div class="empty-icon" aria-hidden="true">
-          <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="opacity: 0.6;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+          <span class="emoji-face" style="font-size: 48px;">📥</span>
         </div>
         <h3>No Transfers</h3>
         <p style="margin-top: 6px; font-size: 13px;">Add a magnet link, HTTP direct URL, infohash, or .torrent file.</p>
-        <button class="btn btn-primary" style="margin-top: 16px;" onclick="openAddModal()">Add Download</button>
+        <button class="btn btn-primary" style="margin-top: 16px;" onclick="openAddModal()">
+          <span class="emoji-face" style="margin-right: 4px;">➕</span>
+          <span>Add Download</span>
+        </button>
       </div>
     </section>
 
@@ -86,7 +89,7 @@
         <form onsubmit="handleSearchSubmit(event)" class="search-input-group" role="search">
           <input type="text" id="search-input" class="input-text" placeholder="Search across BTDigg, BitSearch, Soulseek P2P, The Pirate Bay, EZTV, YTS, Scribd..." autocomplete="off" aria-label="Search torrents and magnets">
           <button type="submit" class="btn btn-primary" id="search-submit-btn" aria-label="Submit search query">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+            <span class="emoji-face" style="margin-right: 4px;">🔍</span>
             <span>Search</span>
           </button>
         </form>
@@ -117,7 +120,7 @@
 
       <div id="search-empty" class="empty-state" style="display: none;" role="status">
         <div class="empty-icon" aria-hidden="true">
-          <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="opacity: 0.6;"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+          <span class="emoji-face" style="font-size: 48px;">🔍</span>
         </div>
         <h3>No Results Found</h3>
         <p style="margin-top: 6px; font-size: 13px;">Try different keywords or adjust your search provider filters.</p>
@@ -129,12 +132,12 @@
   <!-- Libadwaita Bottom Status Bar -->
   <footer class="adw-status-bar" role="contentinfo" aria-label="Network and transfer status bar">
     <div class="status-rates" aria-label="Transfer Speeds">
-      <span id="stat-download-rate" style="display: inline-flex; align-items: center;" aria-label="Download rate"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="vertical-align: -1px; margin-right: 2px;" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"></line><polyline points="19 12 12 19 5 12"></polyline></svg> 0 KB/s</span>
-      <span id="stat-upload-rate" style="display: inline-flex; align-items: center;" aria-label="Upload rate"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="vertical-align: -1px; margin-right: 2px;" aria-hidden="true"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg> 0 KB/s</span>
+      <span id="stat-download-rate" style="display: inline-flex; align-items: center;" aria-label="Download rate"><span class="emoji-face" style="margin-right: 3px;">⬇️</span> 0 KB/s</span>
+      <span id="stat-upload-rate" style="display: inline-flex; align-items: center;" aria-label="Upload rate"><span class="emoji-face" style="margin-right: 3px;">⬆️</span> 0 KB/s</span>
     </div>
     <div style="display: flex; gap: 16px;">
       <span id="stat-active-count" aria-label="Active transfer count">0 active transfers</span>
-      <span id="stat-dht-nodes" aria-label="Connected DHT nodes">DHT: 0 nodes</span>
+      <span id="stat-dht-nodes" aria-label="Connected DHT nodes"><span class="emoji-face" style="margin-right: 3px;">🌐</span> DHT: 0 nodes</span>
     </div>
   </footer>
 
@@ -143,7 +146,7 @@
     <div class="modal-box">
       <div class="modal-header">
         <div class="modal-title" id="modal-add-title">Add Download</div>
-        <button class="btn btn-icon" onclick="closeAddModal()" title="Close" aria-label="Close add download modal"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
+        <button class="btn btn-icon" onclick="closeAddModal()" title="Close" aria-label="Close add download modal"><span class="emoji-face">✖️</span></button>
       </div>
       <div class="form-group">
         <label class="form-label" for="add-magnet-input">Magnet Link, Direct HTTP/HTTPS Web URL, or InfoHash</label>
@@ -156,7 +159,10 @@
       </div>
       <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px;">
         <button class="btn" onclick="closeAddModal()">Cancel</button>
-        <button class="btn btn-primary" onclick="submitAddTorrent()">Add Download</button>
+        <button class="btn btn-primary" onclick="submitAddTorrent()">
+          <span class="emoji-face" style="margin-right: 4px;">➕</span>
+          <span>Add Download</span>
+        </button>
       </div>
     </div>
   </div>
@@ -166,13 +172,13 @@
     <div class="modal-box" style="max-width: 580px;">
       <div class="modal-header">
         <div class="modal-title" id="modal-send-title">Create & Seed Torrent</div>
-        <button class="btn btn-icon" onclick="closeSendModal()" title="Close" aria-label="Close create torrent modal"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
+        <button class="btn btn-icon" onclick="closeSendModal()" title="Close" aria-label="Close create torrent modal"><span class="emoji-face">✖️</span></button>
       </div>
 
       <div class="view-switcher" role="tablist" aria-label="Source Mode" style="align-self: flex-start; margin-bottom: 12px;">
         <button class="view-btn active" id="send-tab-local" role="tab" aria-selected="true" onclick="switchSendTab('local')">Local File / Folder</button>
         <button class="view-btn" id="send-tab-bridge" role="tab" aria-selected="false" onclick="switchSendTab('bridge')">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -1px; margin-right: 3px;" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>Web URL Bridge (Zero-Disk)
+          <span class="emoji-face" style="margin-right: 3px;">🌐</span><span>Web URL Bridge (Zero-Disk)</span>
         </button>
       </div>
 
@@ -183,12 +189,12 @@
             <div style="display: flex; gap: 8px;">
               <input type="text" id="send-path-input" class="input-text" placeholder="/path/to/file/or/folder" style="flex: 1;">
               <button class="btn" type="button" onclick="openFilePicker('file')" title="Browse File" aria-label="Choose local file to seed">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -1px; margin-right: 3px;" aria-hidden="true"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline></svg>
-                Choose File
+                <span class="emoji-face" style="margin-right: 3px;">📄</span>
+                <span>Choose File</span>
               </button>
               <button class="btn" type="button" onclick="openFilePicker('folder')" title="Browse Folder" aria-label="Choose local folder to seed">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -1px; margin-right: 3px;" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
-                Choose Folder
+                <span class="emoji-face" style="margin-right: 3px;">📁</span>
+                <span>Choose Folder</span>
               </button>
             </div>
           </div>
@@ -211,28 +217,35 @@
 
         <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px;">
           <button class="btn" onclick="closeSendModal()">Cancel</button>
-          <button class="btn btn-primary" id="btn-create-torrent" onclick="submitCreateTorrent()">Create & Start Seeding</button>
+          <button class="btn btn-primary" id="btn-create-torrent" onclick="submitCreateTorrent()">
+            <span class="emoji-face" style="margin-right: 4px;">🚀</span>
+            <span>Create & Start Seeding</span>
+          </button>
         </div>
       </div>
 
       <!-- Result View after creation -->
       <div id="send-result-view" style="display: none; flex-direction: column; gap: 12px;" role="status">
         <div style="color: var(--adw-success); font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 6px;">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg>
+          <span class="emoji-face" style="font-size: 16px;">✔️</span>
           <span>Torrent Created & Now Seeding!</span>
         </div>
         <div class="form-group">
           <label class="form-label" for="created-magnet-val">Shareable Magnet Link</label>
           <div style="display: flex; gap: 6px;">
             <input type="text" id="created-magnet-val" class="input-text" readonly style="font-size: 11px; font-family: monospace;">
-            <button class="btn btn-primary" onclick="copyValue('created-magnet-val')">Copy Link</button>
+            <button class="btn btn-primary" onclick="copyValue('created-magnet-val')">
+              <span class="emoji-face" style="margin-right: 4px;">📋</span>Copy Link
+            </button>
           </div>
         </div>
         <div class="form-group">
           <label class="form-label" for="created-hash-val">InfoHash</label>
           <div style="display: flex; gap: 6px;">
             <input type="text" id="created-hash-val" class="input-text" readonly style="font-size: 11px; font-family: monospace;">
-            <button class="btn" onclick="copyValue('created-hash-val')">Copy Hash</button>
+            <button class="btn" onclick="copyValue('created-hash-val')">
+              <span class="emoji-face" style="margin-right: 4px;">📋</span>Copy Hash
+            </button>
           </div>
         </div>
         <div style="display: flex; justify-content: flex-end; margin-top: 8px;">
@@ -247,7 +260,7 @@
     <div class="modal-box" style="max-width: 650px; max-height: 85vh; display: flex; flex-direction: column;">
       <div class="modal-header">
         <div class="modal-title" id="detail-modal-title" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 500px;">Torrent Details</div>
-        <button class="btn btn-icon" onclick="closeDetailsModal()" title="Close" aria-label="Close details dialog"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
+        <button class="btn btn-icon" onclick="closeDetailsModal()" title="Close" aria-label="Close details dialog"><span class="emoji-face">✖️</span></button>
       </div>
 
       <!-- Details View Switcher -->
@@ -286,10 +299,10 @@
     <div class="modal-box" style="max-width: 760px; max-height: 88vh; display: flex; flex-direction: column;">
       <div class="modal-header">
         <div class="modal-title" id="modal-inspect-title" style="display: flex; align-items: center; gap: 8px;">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline></svg>
+          <span class="emoji-face">📦</span>
           <span>Contents & Selective Download</span>
         </div>
-        <button class="btn btn-icon" onclick="closeInspectModal()" title="Close" aria-label="Close preview dialog"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
+        <button class="btn btn-icon" onclick="closeInspectModal()" title="Close" aria-label="Close preview dialog"><span class="emoji-face">✖️</span></button>
       </div>
 
       <div id="inspect-header-info" style="margin-bottom: 10px; background: rgba(0,0,0,0.2); padding: 12px 14px; border-radius: var(--adw-radius-sm); border: 1px solid var(--adw-border);">
@@ -307,10 +320,10 @@
           <input type="text" id="inspect-file-filter" class="input-text" placeholder="Filter files or folders..." oninput="filterInspectFiles(this.value)" style="font-size: 12px; padding: 5px 9px; width: 100%;" aria-label="Filter file list">
         </div>
         <div style="display: flex; gap: 5px; align-items: center; flex-wrap: wrap;">
-          <button class="btn" style="padding: 3px 8px; font-size: 11px;" onclick="inspectSelectAll(true)" title="Select all files">All</button>
-          <button class="btn" style="padding: 3px 8px; font-size: 11px;" onclick="inspectSelectAll(false)" title="Deselect all files">None</button>
-          <button class="btn" style="padding: 3px 8px; font-size: 11px;" onclick="inspectSelectByType('audio')" title="Select audio tracks only (FLAC, MP3, WAV, etc.)">Audio</button>
-          <button class="btn" style="padding: 3px 8px; font-size: 11px;" onclick="inspectSelectByType('video')" title="Select video files only">Video</button>
+          <button class="btn" style="padding: 3px 8px; font-size: 11px;" onclick="inspectSelectAll(true)" title="Select all files">✔️ All</button>
+          <button class="btn" style="padding: 3px 8px; font-size: 11px;" onclick="inspectSelectAll(false)" title="Deselect all files">✖️ None</button>
+          <button class="btn" style="padding: 3px 8px; font-size: 11px;" onclick="inspectSelectByType('audio')" title="Select audio tracks only (FLAC, MP3, WAV, etc.)">🎵 Audio</button>
+          <button class="btn" style="padding: 3px 8px; font-size: 11px;" onclick="inspectSelectByType('video')" title="Select video files only">🎬 Video</button>
           <span id="inspect-selection-summary" style="font-size: 11.5px; font-weight: 600; color: var(--adw-accent-color); margin-left: 6px; white-space: nowrap;">Selected: —</span>
         </div>
       </div>
@@ -323,22 +336,22 @@
       <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--adw-border); padding-top: 12px; margin-top: 10px; flex-wrap: wrap; gap: 8px;">
         <div style="display: flex; gap: 6px;">
           <button class="btn" id="inspect-copy-magnet-btn" onclick="copyInspectMagnet(this)" aria-label="Copy Magnet URI">
-            <span style="margin-right: 4px;">🧲</span>
+            <span class="emoji-face" style="margin-right: 4px;">🧲</span>
             <span>Copy Magnet</span>
           </button>
           <button class="btn" id="inspect-save-torrent-btn" onclick="saveInspectTorrentFile(this)" aria-label="Save .torrent file">
-            <span style="margin-right: 4px;">💾</span>
+            <span class="emoji-face" style="margin-right: 4px;">💾</span>
             <span>Save .torrent</span>
           </button>
         </div>
         <div style="display: flex; gap: 8px;">
           <button class="btn" onclick="closeInspectModal()">Close</button>
           <button class="btn" id="inspect-download-full-btn" onclick="startDownloadFromInspect(this, false)" title="Download all files in this torrent">
-            <span style="margin-right: 4px;">📥</span>
+            <span class="emoji-face" style="margin-right: 4px;">📥</span>
             <span>Download All</span>
           </button>
           <button class="btn btn-primary" id="inspect-download-btn" onclick="startDownloadFromInspect(this, true)" title="Download only selected files and directories">
-            <span style="margin-right: 4px;">📥</span>
+            <span class="emoji-face" style="margin-right: 4px;">📥</span>
             <span id="inspect-download-btn-text">Download Selected</span>
           </button>
         </div>
@@ -351,22 +364,28 @@
     <div class="modal-box" style="max-width: 440px;">
       <div class="modal-header">
         <div class="modal-title" id="modal-delete-title">Remove Torrent</div>
-        <button class="btn btn-icon" onclick="closeDeleteModal()" title="Close" aria-label="Close remove dialog"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
+        <button class="btn btn-icon" onclick="closeDeleteModal()" title="Close" aria-label="Close remove dialog"><span class="emoji-face">✖️</span></button>
       </div>
       <p id="delete-modal-msg" style="font-size: 13px; color: var(--adw-dim-label); line-height: 1.4;">
         Are you sure you want to remove this torrent?
       </p>
       <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 14px;">
         <button class="btn" style="justify-content: flex-start; padding: 10px 14px;" onclick="confirmDelete(false)" aria-label="Remove torrent from client but keep files on disk">
-          <div>
-            <div style="font-weight: 600;">Remove from Digwire</div>
-            <div style="font-size: 11px; color: var(--adw-dim-label);">Keep downloaded files on your disk</div>
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <span class="emoji-face" style="font-size: 20px;">🗑️</span>
+            <div>
+              <div style="font-weight: 600;">Remove from Digwire</div>
+              <div style="font-size: 11px; color: var(--adw-dim-label);">Keep downloaded files on your disk</div>
+            </div>
           </div>
         </button>
         <button class="btn" style="justify-content: flex-start; padding: 10px 14px; border-color: rgba(224, 27, 36, 0.4); color: var(--adw-error);" onclick="confirmDelete(true)" aria-label="Permanently delete torrent and downloaded files from disk">
-          <div>
-            <div style="font-weight: 600;">Delete Torrent and Data Files</div>
-            <div style="font-size: 11px; color: var(--adw-dim-label);">Permanently destroy and purge downloaded files from disk</div>
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <span class="emoji-face" style="font-size: 20px;">💥</span>
+            <div>
+              <div style="font-weight: 600;">Delete Torrent and Data Files</div>
+              <div style="font-size: 11px; color: var(--adw-dim-label);">Permanently destroy and purge downloaded files from disk</div>
+            </div>
           </div>
         </button>
       </div>
@@ -381,7 +400,7 @@
     <div class="modal-box" style="max-width: 720px; max-height: 88vh; display: flex; flex-direction: column;">
       <div class="modal-header">
         <div class="modal-title" id="modal-settings-title">Preferences & Search Engines</div>
-        <button class="btn btn-icon" onclick="closeSettingsModal()" title="Close" aria-label="Close preferences dialog"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
+        <button class="btn btn-icon" onclick="closeSettingsModal()" title="Close" aria-label="Close preferences dialog"><span class="emoji-face">✖️</span></button>
       </div>
 
       <!-- Settings Tab Switcher -->
@@ -397,14 +416,17 @@
           <span style="font-size: 12px; color: var(--adw-dim-label);">Configure BitTorrent DHT, API, and Web search engines</span>
           <div style="display: flex; gap: 6px;">
             <button class="btn" style="font-size: 11px; padding: 4px 8px; display: inline-flex; align-items: center; gap: 3px;" onclick="triggerPreseedDHT()" title="Import thousands of popular/verified torrents into local DHT offline cache" aria-label="Preseed offline DHT cache with top verified torrents">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+              <span class="emoji-face" style="margin-right: 3px;">⚡</span>
               <span>Preseed DHT Cache</span>
             </button>
             <button class="btn" style="font-size: 11px; padding: 4px 8px; display: inline-flex; align-items: center; gap: 3px;" onclick="resetProvidersToDefault()" aria-label="Reset all search providers to defaults">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+              <span class="emoji-face" style="margin-right: 3px;">🔄</span>
               <span>Reset Defaults</span>
             </button>
-            <button class="btn btn-primary" style="font-size: 11px; padding: 4px 10px;" onclick="openAddProviderModal()" aria-label="Add custom search provider">+ Add Provider</button>
+            <button class="btn btn-primary" style="font-size: 11px; padding: 4px 10px;" onclick="openAddProviderModal()" aria-label="Add custom search provider">
+              <span class="emoji-face" style="margin-right: 3px;">➕</span>
+              <span>Add Provider</span>
+            </button>
           </div>
         </div>
 
@@ -419,7 +441,9 @@
           <label class="form-label" for="cfg-download-dir">Download Directory</label>
           <div style="display: flex; gap: 8px;">
             <input type="text" id="cfg-download-dir" class="input-text" style="flex: 1;">
-            <button class="btn" onclick="openFilePicker('folder')" aria-label="Browse for download directory">Browse...</button>
+            <button class="btn" onclick="openFilePicker('folder')" aria-label="Browse for download directory">
+              <span class="emoji-face" style="margin-right: 3px;">📁</span>Browse...
+            </button>
           </div>
         </div>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
@@ -470,7 +494,7 @@
         <div style="display: flex; justify-content: space-between; align-items: center;">
           <span style="font-size: 12px; color: var(--adw-dim-label);">Direct YAML editing of <code>config.yaml</code></span>
           <button class="btn" style="font-size: 11px; padding: 4px 8px; display: inline-flex; align-items: center; gap: 3px;" onclick="loadRawYAML()" aria-label="Reload YAML from disk">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+            <span class="emoji-face" style="margin-right: 3px;">🔄</span>
             <span>Reload YAML</span>
           </button>
         </div>
@@ -479,7 +503,10 @@
 
       <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; border-top: 1px solid var(--adw-border); padding-top: 12px;">
         <button class="btn" onclick="closeSettingsModal()">Close</button>
-        <button class="btn btn-primary" id="btn-save-settings" onclick="saveSettings()">Save Preferences</button>
+        <button class="btn btn-primary" id="btn-save-settings" onclick="saveSettings()">
+          <span class="emoji-face" style="margin-right: 4px;">💾</span>
+          <span>Save Preferences</span>
+        </button>
       </div>
     </div>
   </div>
@@ -489,7 +516,7 @@
     <div class="modal-box" style="max-width: 540px;">
       <div class="modal-header">
         <div class="modal-title" id="provider-edit-title">Edit Search Provider</div>
-        <button class="btn btn-icon" onclick="closeProviderEditModal()" title="Close" aria-label="Close provider editor dialog"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
+        <button class="btn btn-icon" onclick="closeProviderEditModal()" title="Close" aria-label="Close provider editor dialog"><span class="emoji-face">✖️</span></button>
       </div>
       <div style="display: flex; flex-direction: column; gap: 12px; font-size: 13px;">
         <div class="form-group">
@@ -561,7 +588,7 @@
             <input type="checkbox" id="ped-enabled" checked> Enable this provider
           </label>
           <button class="btn" style="display: inline-flex; align-items: center; gap: 4px;" onclick="testCurrentProviderEdit()" aria-label="Test provider connection and query">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+            <span class="emoji-face" style="margin-right: 3px;">⚡</span>
             <span>Test Connection</span>
           </button>
         </div>
@@ -569,7 +596,10 @@
       </div>
       <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px;">
         <button class="btn" onclick="closeProviderEditModal()">Cancel</button>
-        <button class="btn btn-primary" onclick="saveProviderEdit()">Apply Provider</button>
+        <button class="btn btn-primary" onclick="saveProviderEdit()">
+          <span class="emoji-face" style="margin-right: 4px;">✔️</span>
+          <span>Apply Provider</span>
+        </button>
       </div>
     </div>
   </div>
@@ -579,11 +609,11 @@
     <div class="modal-box" style="max-width: 620px; max-height: 80vh; display: flex; flex-direction: column;">
       <div class="modal-header">
         <div class="modal-title" id="browser-modal-title">Select File or Folder</div>
-        <button class="btn btn-icon" onclick="closeFileBrowser()" title="Close" aria-label="Close file browser"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
+        <button class="btn btn-icon" onclick="closeFileBrowser()" title="Close" aria-label="Close file browser"><span class="emoji-face">✖️</span></button>
       </div>
       <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 10px;">
         <button class="btn" style="display: inline-flex; align-items: center; gap: 3px;" onclick="browserNavigateParent()" title="Go up to parent directory" aria-label="Navigate up to parent directory">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>
+          <span class="emoji-face" style="margin-right: 3px;">⬆️</span>
           <span>Up</span>
         </button>
         <input type="text" id="browser-current-path" class="input-text" style="flex: 1; font-family: monospace; font-size: 11.5px;" readonly aria-label="Current directory path">
@@ -594,7 +624,10 @@
         <span id="browser-selected-hint" style="font-size: 11px; color: var(--adw-dim-label);" role="status">Select an item</span>
         <div style="display: flex; gap: 8px;">
           <button class="btn" onclick="closeFileBrowser()">Cancel</button>
-          <button class="btn btn-primary" id="btn-browser-select" onclick="confirmFileBrowserSelection()">Select Current</button>
+          <button class="btn btn-primary" id="btn-browser-select" onclick="confirmFileBrowserSelection()">
+            <span class="emoji-face" style="margin-right: 4px;">✔️</span>
+            <span>Select Current</span>
+          </button>
         </div>
       </div>
     </div>
@@ -603,7 +636,7 @@
   <!-- Drag and Drop Overlay -->
   <div id="drag-drop-overlay" class="drag-drop-overlay">
     <div class="drag-drop-box">
-      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--adw-accent)" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+      <span class="emoji-face" style="font-size: 48px; margin-bottom: 8px;">📥</span>
       <div style="font-size: 16px; font-weight: 600;">Drop file or link to add transfer</div>
       <div style="font-size: 13px; color: var(--adw-dim-label);">Supports .torrent files, magnet links, and web URLs</div>
     </div>
