@@ -185,6 +185,19 @@ func LoadConfig() (*Config, error) {
 
 	changed := false
 
+	if cfg.WebPort <= 0 {
+		cfg.WebPort = defCfg.WebPort
+		changed = true
+	}
+	if cfg.ListenPort <= 0 {
+		cfg.ListenPort = defCfg.ListenPort
+		changed = true
+	}
+	if cfg.DownloadDir == "" || filepath.IsAbs(cfg.DownloadDir) && (len(cfg.DownloadDir) > 4 && cfg.DownloadDir[:4] == "/tmp") {
+		cfg.DownloadDir = defCfg.DownloadDir
+		changed = true
+	}
+
 	// Ensure fallback DNS is populated
 	if len(cfg.FallbackDNS) == 0 {
 		cfg.FallbackDNS = defCfg.FallbackDNS
@@ -221,7 +234,25 @@ func LoadConfig() (*Config, error) {
 	return cfg, nil
 }
 
+func (c *Config) SetConfigPath(p string) {
+	c.configPath = p
+}
+
 func (c *Config) Save() error {
+	if c.WebPort <= 0 {
+		c.WebPort = 9091
+	}
+	if c.ListenPort <= 0 {
+		c.ListenPort = 50007
+	}
+	if c.DownloadDir == "" {
+		home, _ := os.UserHomeDir()
+		if home == "" {
+			home = "."
+		}
+		c.DownloadDir = filepath.Join(home, "Downloads", "Digwire")
+	}
+
 	if c.configPath == "" {
 		c.configPath = GetConfigPath()
 	}

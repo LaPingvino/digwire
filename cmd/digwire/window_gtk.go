@@ -72,16 +72,29 @@ static gboolean on_load_failed(WebKitWebView *web_view, WebKitLoadEvent load_eve
     return TRUE;
 }
 
+static void on_web_process_terminated(WebKitWebView *web_view, WebKitWebProcessTerminationReason reason, gpointer user_data) {
+    g_printerr("Digwire WebKit: Web process terminated (reason: %d), retrying...\n", (int)reason);
+    webkit_web_view_reload(web_view);
+}
+
 static int launch_gtk_window(const char* url, const char* icon_path) {
-    // Disable DMA-BUF hardware renderer and broken compositing modes that trigger black screen on Linux GPUs
+    // Disable DMA-BUF hardware renderer, broken compositing modes, and sandbox restrictions on Linux GPUs
     setenv("WEBKIT_DISABLE_DMABUF_RENDERER", "1", 1);
     setenv("WEBKIT_DISABLE_COMPOSITING_MODE", "1", 1);
+    setenv("WEBKIT_FORCE_SANDBOX", "0", 1);
+    setenv("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1", 1);
 
     g_set_prgname("digwire");
     g_set_application_name("Digwire");
     
     if (!gtk_init_check(NULL, NULL)) {
         return 0;
+    }
+
+    // Disable WebKit sandboxing if supported by web context
+    WebKitWebContext *ctx = webkit_web_context_get_default();
+    if (ctx != NULL) {
+        webkit_web_context_set_sandbox_enabled(ctx, FALSE);
     }
 
     GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
@@ -126,8 +139,9 @@ static int launch_gtk_window(const char* url, const char* icon_path) {
         webkit_settings_set_hardware_acceleration_policy(wkSettings, WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
     }
 
-    // Connect load failure handler
+    // Connect load failure and process termination handlers
     g_signal_connect(webView, "load-failed", G_CALLBACK(on_load_failed), NULL);
+    g_signal_connect(webView, "web-process-terminated", G_CALLBACK(on_web_process_terminated), NULL);
 
     webkit_web_view_load_uri(webView, url);
 

@@ -553,7 +553,9 @@ func (e *Engine) loadSession() {
 			}
 		} else {
 			t.AllowDataDownload()
-			t.DownloadAll()
+			if t.Info() != nil {
+				t.DownloadAll()
+			}
 			if e.cfg != nil && e.cfg.GermanyMode {
 				t.DisallowDataUpload()
 			}
@@ -577,10 +579,27 @@ func (e *Engine) loadSession() {
 
 		go func(tor *torrent.Torrent, seeds []string, h string) {
 			<-tor.GotInfo()
-			if len(seeds) > 0 && tor.Info() != nil {
-				clean := SanitizeWebSeeds(seeds, tor.Info().IsDir())
-				if len(clean) > 0 {
-					tor.AddWebSeeds(clean)
+			if tor.Info() != nil {
+				e.mu.Lock()
+				tr, exists := e.rateMap[h]
+				isPaused := exists && tr.isPaused
+				isSeeding := exists && tr.isSeeding
+				isGerman := e.cfg != nil && e.cfg.GermanyMode
+				e.mu.Unlock()
+
+				if !isPaused && !isSeeding {
+					tor.AllowDataDownload()
+					tor.DownloadAll()
+					if isGerman {
+						tor.DisallowDataUpload()
+					}
+				}
+
+				if len(seeds) > 0 {
+					clean := SanitizeWebSeeds(seeds, tor.Info().IsDir())
+					if len(clean) > 0 {
+						tor.AddWebSeeds(clean)
+					}
 				}
 			}
 		}(t, item.WebSeeds, hash)
@@ -1283,7 +1302,9 @@ func (e *Engine) ConsolidateAndVerify(tor *torrent.Torrent, onComplete ...func()
 			} else if !tr.isPaused {
 				// Has missing pieces and not paused: resume downloading
 				tor.AllowDataDownload()
-				tor.DownloadAll()
+				if tor.Info() != nil {
+					tor.DownloadAll()
+				}
 				if isGermanMode {
 					tor.DisallowDataUpload()
 				} else {
@@ -1305,7 +1326,9 @@ func (e *Engine) ConsolidateAndVerify(tor *torrent.Torrent, onComplete ...func()
 				}
 			} else {
 				tor.AllowDataDownload()
-				tor.DownloadAll()
+				if tor.Info() != nil {
+					tor.DownloadAll()
+				}
 				if isGermanMode {
 					tor.DisallowDataUpload()
 				} else {
@@ -1404,7 +1427,9 @@ func (e *Engine) Resume(infoHashHex string) error {
 					}
 				} else {
 					t.AllowDataDownload()
-					t.DownloadAll()
+					if t.Info() != nil {
+						t.DownloadAll()
+					}
 					if isGermanMode {
 						t.DisallowDataUpload()
 					} else {
@@ -1413,7 +1438,9 @@ func (e *Engine) Resume(infoHashHex string) error {
 				}
 			} else {
 				t.AllowDataDownload()
-				t.DownloadAll()
+				if t.Info() != nil {
+					t.DownloadAll()
+				}
 				if isGermanMode {
 					t.DisallowDataUpload()
 				} else {

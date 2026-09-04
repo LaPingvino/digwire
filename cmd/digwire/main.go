@@ -97,9 +97,11 @@ func registerMimeTypes() {
 var Version = "0.2.4"
 
 func main() {
-	// WebKit2GTK Linux rendering compatibility flags (prevents black screen with DMA-BUF compositing on Linux GPUs)
+	// WebKit2GTK Linux rendering and sandboxing compatibility flags (prevents black screen with DMA-BUF compositing on Linux GPUs/Crostini)
 	_ = os.Setenv("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
 	_ = os.Setenv("WEBKIT_DISABLE_COMPOSITING_MODE", "1")
+	_ = os.Setenv("WEBKIT_FORCE_SANDBOX", "0")
+	_ = os.Setenv("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1")
 
 	portFlag := flag.Int("port", 0, "Web interface port (overrides config)")
 	dirFlag := flag.String("dir", "", "Download directory (overrides config)")

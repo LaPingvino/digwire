@@ -24,8 +24,10 @@ func TestGermanyModeAPI(t *testing.T) {
 	cfg := &config.Config{
 		DownloadDir: filepath.Join(tempDir, "downloads"),
 		ListenPort:  0,
+		WebPort:     9091,
 		GermanyMode: false,
 	}
+	cfg.SetConfigPath(filepath.Join(tempDir, "config.yaml"))
 
 	eng, err := engine.NewEngine(cfg)
 	if err != nil {
