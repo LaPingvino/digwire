@@ -78,7 +78,7 @@ func (p *SoulseekProvider) Search(ctx context.Context, query string) ([]Result, 
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Digwire/0.3.1 (Soulseek Audio Engine)")
+	req.Header.Set("User-Agent", "Digwire/0.3.2 (Soulseek Audio Engine)")
 
 	resp, err := p.client.Do(req)
 	if err != nil {
