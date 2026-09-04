@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/anacrolix/torrent"
+	"github.com/anacrolix/torrent/metainfo"
 	_ "modernc.org/sqlite"
 )
 
@@ -29,17 +30,22 @@ type DHTRecord struct {
 	Activity     *SwarmActivity `json:"activity,omitempty"`
 }
 
+const (
+	maxMemoryCache = 1000
+	maxSeenCrawl   = 5000
+)
+
 type Indexer struct {
-	mu           sync.RWMutex
-	records      map[string]*DHTRecord
-	tokenIndex   map[string]map[string]bool // token -> set of infohashes
-	db           *sql.DB
-	crawlQueue   chan string
-	seenCrawl    map[string]bool
-	client       *torrent.Client
-	stopChan     chan struct{}
-	closeOnce    sync.Once
-	isPreseeding bool
+	mu            sync.RWMutex
+	cache         map[string]*DHTRecord // Bounded memory cache of recent records
+	db            *sql.DB
+	crawlQueue    chan string
+	seenCrawl     map[string]bool
+	client        *torrent.Client
+	stopChan      chan struct{}
+	closeOnce     sync.Once
+	isPreseeding  bool
+	isUserTorrent func(infoHashHex string) bool
 }
 
 var tokenRegex = regexp.MustCompile(`[a-zA-Z0-9\.\-]+`)
@@ -72,7 +78,7 @@ func NewIndexer(client *torrent.Client) (*Indexer, error) {
 		return nil, fmt.Errorf("failed to open sqlite index: %w", err)
 	}
 
-	// Optimize SQLite for concurrent DHT indexing
+	// Optimize SQLite for high-concurrency background indexing
 	_, _ = db.Exec("PRAGMA journal_mode = WAL;")
 	_, _ = db.Exec("PRAGMA busy_timeout = 5000;")
 	_, _ = db.Exec("PRAGMA synchronous = NORMAL;")
@@ -99,10 +105,9 @@ func NewIndexer(client *torrent.Client) (*Indexer, error) {
 	}
 
 	idx := &Indexer{
-		records:    make(map[string]*DHTRecord),
-		tokenIndex: make(map[string]map[string]bool),
+		cache:      make(map[string]*DHTRecord),
 		db:         db,
-		crawlQueue: make(chan string, 10000),
+		crawlQueue: make(chan string, 1000),
 		seenCrawl:  make(map[string]bool),
 		client:     client,
 		stopChan:   make(chan struct{}),
@@ -115,15 +120,16 @@ func NewIndexer(client *torrent.Client) (*Indexer, error) {
 		_ = os.Rename(legacyJSONL, legacyJSONL+".migrated")
 	}
 
-	idx.loadFromSQLite()
+	// Prime in-memory cache with the 200 most recent records
+	idx.loadRecentFromSQLite()
 
-	// Launch concurrent crawler worker pool (8 workers)
-	for i := 0; i < 8; i++ {
+	// Launch controlled crawler worker pool (4 background workers)
+	for i := 0; i < 4; i++ {
 		go idx.crawlerWorker()
 	}
 
 	// If the database has fewer than 100 records, launch background preseed from open database
-	if len(idx.records) < 100 {
+	if idx.Size() < 100 {
 		go func() {
 			time.Sleep(2 * time.Second)
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -133,6 +139,13 @@ func NewIndexer(client *torrent.Client) (*Indexer, error) {
 	}
 
 	return idx, nil
+}
+
+// SetUserTorrentChecker sets a predicate function to verify if an infohash belongs to an active user download
+func (idx *Indexer) SetUserTorrentChecker(fn func(string) bool) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	idx.isUserTorrent = fn
 }
 
 func (idx *Indexer) migrateJSONL(jsonlPath string) {
@@ -197,18 +210,23 @@ func (idx *Indexer) migrateJSONL(jsonlPath string) {
 	_ = tx.Commit()
 }
 
-func (idx *Indexer) loadFromSQLite() {
+func (idx *Indexer) loadRecentFromSQLite() {
 	if idx.db == nil {
 		return
 	}
 	rows, err := idx.db.Query(`
 		SELECT info_hash, name, size_bytes, num_files, discovered_at, files_json, activity_json
 		FROM dht_records
+		ORDER BY discovered_at DESC
+		LIMIT 200
 	`)
 	if err != nil {
 		return
 	}
 	defer rows.Close()
+
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
 
 	for rows.Next() {
 		var rec DHTRecord
@@ -222,35 +240,74 @@ func (idx *Indexer) loadFromSQLite() {
 		if actStr != "" && actStr != "null" && actStr != "{}" {
 			_ = json.Unmarshal([]byte(actStr), &rec.Activity)
 		}
-		idx.addRecordInMemory(&rec)
+		rec.InfoHash = strings.ToLower(rec.InfoHash)
+		idx.cache[rec.InfoHash] = &rec
 	}
 }
 
-func (idx *Indexer) addRecordInMemory(rec *DHTRecord) {
-	rec.InfoHash = strings.ToLower(rec.InfoHash)
-	idx.records[rec.InfoHash] = rec
-
-	tokens := tokenize(rec.Name)
-	for _, f := range rec.Files {
-		tokens = append(tokens, tokenize(f)...)
+// putCacheLocked inserts a record into the bounded cache, evicting excess entries if needed
+func (idx *Indexer) putCacheLocked(rec *DHTRecord) {
+	if rec == nil || rec.InfoHash == "" {
+		return
 	}
-
-	for _, tok := range tokens {
-		if idx.tokenIndex[tok] == nil {
-			idx.tokenIndex[tok] = make(map[string]bool)
+	if len(idx.cache) >= maxMemoryCache {
+		// Evict roughly 20% of entries to keep memory footprint bounded
+		evictCount := 0
+		for k := range idx.cache {
+			delete(idx.cache, k)
+			evictCount++
+			if evictCount >= 200 {
+				break
+			}
 		}
-		idx.tokenIndex[tok][rec.InfoHash] = true
 	}
+	idx.cache[rec.InfoHash] = rec
 }
 
-// GetRecord returns a cached DHT record by infohash if present
+// GetRecord returns a cached DHT record by infohash if present, or queries SQLite
 func (idx *Indexer) GetRecord(infoHashHex string) *DHTRecord {
 	if idx == nil {
 		return nil
 	}
+	hash := strings.ToLower(strings.TrimSpace(infoHashHex))
+	if len(hash) != 40 {
+		return nil
+	}
+
 	idx.mu.RLock()
-	defer idx.mu.RUnlock()
-	return idx.records[strings.ToLower(strings.TrimSpace(infoHashHex))]
+	if rec, ok := idx.cache[hash]; ok {
+		idx.mu.RUnlock()
+		return rec
+	}
+	idx.mu.RUnlock()
+
+	if idx.db == nil {
+		return nil
+	}
+
+	var rec DHTRecord
+	var filesStr, actStr string
+	err := idx.db.QueryRow(`
+		SELECT info_hash, name, size_bytes, num_files, discovered_at, files_json, activity_json
+		FROM dht_records WHERE info_hash = ?
+	`, hash).Scan(&rec.InfoHash, &rec.Name, &rec.SizeBytes, &rec.NumFiles, &rec.DiscoveredAt, &filesStr, &actStr)
+	if err != nil {
+		return nil
+	}
+
+	if filesStr != "" && filesStr != "null" {
+		_ = json.Unmarshal([]byte(filesStr), &rec.Files)
+	}
+	if actStr != "" && actStr != "null" && actStr != "{}" {
+		_ = json.Unmarshal([]byte(actStr), &rec.Activity)
+	}
+	rec.InfoHash = strings.ToLower(rec.InfoHash)
+
+	idx.mu.Lock()
+	idx.putCacheLocked(&rec)
+	idx.mu.Unlock()
+
+	return &rec
 }
 
 // GetHealthPrediction evaluates historical swarm health for an infohash
@@ -258,9 +315,7 @@ func (idx *Indexer) GetHealthPrediction(infoHashHex string) *HealthPrediction {
 	if idx == nil {
 		return nil
 	}
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
-	rec := idx.records[strings.ToLower(strings.TrimSpace(infoHashHex))]
+	rec := idx.GetRecord(infoHashHex)
 	if rec == nil || rec.Activity == nil {
 		return nil
 	}
@@ -277,8 +332,8 @@ func (idx *Indexer) RecordSwarmActivity(infoHashHex string, name string, seeders
 		return
 	}
 
+	rec := idx.GetRecord(infoHashHex)
 	idx.mu.Lock()
-	rec := idx.records[infoHashHex]
 	if rec == nil {
 		rec = &DHTRecord{
 			InfoHash:     infoHashHex,
@@ -286,7 +341,6 @@ func (idx *Indexer) RecordSwarmActivity(infoHashHex string, name string, seeders
 			DiscoveredAt: time.Now().Unix(),
 			Activity:     &SwarmActivity{},
 		}
-		idx.addRecordInMemory(rec)
 	}
 	if rec.Activity == nil {
 		rec.Activity = &SwarmActivity{}
@@ -295,12 +349,13 @@ func (idx *Indexer) RecordSwarmActivity(infoHashHex string, name string, seeders
 		rec.Name = name
 	}
 	rec.Activity.RecordSample(seeders, peers)
+	idx.putCacheLocked(rec)
 	idx.mu.Unlock()
 
 	idx.saveRecordToSQLite(rec)
 }
 
-// AddRecord adds or updates a record and persists to disk
+// AddRecord adds or updates a record and persists to SQLite and bounded cache
 func (idx *Indexer) AddRecord(rec *DHTRecord) {
 	if rec == nil || rec.InfoHash == "" || rec.Name == "" {
 		return
@@ -311,15 +366,20 @@ func (idx *Indexer) AddRecord(rec *DHTRecord) {
 	}
 
 	idx.mu.Lock()
-	existing := idx.records[rec.InfoHash]
+	existing := idx.cache[rec.InfoHash]
 	if existing != nil {
 		if rec.Activity != nil && existing.Activity == nil {
 			existing.Activity = rec.Activity
 		}
+		if len(rec.Files) > 0 && len(existing.Files) == 0 {
+			existing.Files = rec.Files
+			existing.NumFiles = rec.NumFiles
+		}
 		idx.mu.Unlock()
+		idx.saveRecordToSQLite(existing)
 		return
 	}
-	idx.addRecordInMemory(rec)
+	idx.putCacheLocked(rec)
 	idx.mu.Unlock()
 
 	idx.saveRecordToSQLite(rec)
@@ -369,17 +429,42 @@ func (idx *Indexer) QueueCrawl(infoHashHex string) {
 	}
 
 	idx.mu.Lock()
-	if idx.seenCrawl[infoHashHex] || idx.records[infoHashHex] != nil {
+	if len(idx.seenCrawl) >= maxSeenCrawl {
+		// Prune seen crawl set
+		idx.seenCrawl = make(map[string]bool)
+	}
+	if idx.seenCrawl[infoHashHex] {
 		idx.mu.Unlock()
 		return
 	}
 	idx.seenCrawl[infoHashHex] = true
+
+	if idx.isUserTorrent != nil && idx.isUserTorrent(infoHashHex) {
+		idx.mu.Unlock()
+		return
+	}
 	idx.mu.Unlock()
 
 	select {
 	case idx.crawlQueue <- infoHashHex:
 	default:
 	}
+}
+
+// safeDrop safely drops a probed torrent without dropping any user downloads
+func (idx *Indexer) safeDrop(t *torrent.Torrent, hashHex string) {
+	if t == nil {
+		return
+	}
+	idx.mu.RLock()
+	checker := idx.isUserTorrent
+	idx.mu.RUnlock()
+
+	if checker != nil && checker(hashHex) {
+		// Do not drop an active user download
+		return
+	}
+	t.Drop()
 }
 
 // crawlerWorker processes infohashes and resolves BEP 9 metadata concurrently
@@ -394,11 +479,56 @@ func (idx *Indexer) crawlerWorker() {
 				continue
 			}
 
+			// 1. Skip if already indexed with full metadata
+			if rec := idx.GetRecord(hashHex); rec != nil && rec.Name != "" && len(rec.Files) > 0 {
+				continue
+			}
+
+			var ih metainfo.Hash
+			if err := ih.FromHexString(hashHex); err != nil {
+				continue
+			}
+
+			// 2. CRITICAL CONCURRENCY SAFETY CHECK:
+			// If this torrent is currently open in the client (e.g. user download or seeding),
+			// NEVER touch it, disallow data download, or drop it!
+			if existingT, ok := idx.client.Torrent(ih); ok {
+				if info := existingT.Info(); info != nil {
+					var fileNames []string
+					for _, f := range info.UpvertedFiles() {
+						fileNames = append(fileNames, f.DisplayPath(info))
+					}
+					idx.AddRecord(&DHTRecord{
+						InfoHash:     hashHex,
+						Name:         info.BestName(),
+						SizeBytes:    existingT.Length(),
+						NumFiles:     len(fileNames),
+						DiscoveredAt: time.Now().Unix(),
+						Files:        fileNames,
+					})
+				}
+				continue
+			}
+
+			// Check user torrent checker callback
+			idx.mu.RLock()
+			checker := idx.isUserTorrent
+			idx.mu.RUnlock()
+			if checker != nil && checker(hashHex) {
+				continue
+			}
+
 			mag := fmt.Sprintf("magnet:?xt=urn:btih:%s&tr=udp%%3A%%2F%%2Ftracker.opentrackr.org%%3A1337%%2Fannounce&tr=udp%%3A%%2F%%2Fopen.stealth.si%%3A80%%2Fannounce&tr=http%%3A%%2F%%2Ftorrent.ubuntu.com%%3A6969%%2Fannounce", hashHex)
 			t, err := idx.client.AddMagnet(mag)
 			if err != nil {
 				continue
 			}
+
+			// Double check it wasn't added as user torrent in the race window
+			if checker != nil && checker(hashHex) {
+				continue
+			}
+
 			t.DisallowDataDownload()
 
 			select {
@@ -431,11 +561,11 @@ func (idx *Indexer) crawlerWorker() {
 						Files:        fileNames,
 					})
 				}
-				t.Drop()
+				idx.safeDrop(t, hashHex)
 			case <-time.After(5 * time.Second):
-				t.Drop()
+				idx.safeDrop(t, hashHex)
 			case <-idx.stopChan:
-				t.Drop()
+				idx.safeDrop(t, hashHex)
 				return
 			}
 		}
@@ -519,45 +649,68 @@ func (idx *Indexer) PreseedFromTorrentsCSV(ctx context.Context) (int, error) {
 	return imported, nil
 }
 
-// Search performs instant multi-token substring search on the local index
+// Search performs instant multi-token substring search on the SQLite database
 func (idx *Indexer) Search(query string) []*DHTRecord {
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
+	if idx == nil || idx.db == nil {
+		return nil
+	}
 
 	qTokens := tokenize(query)
 	if len(qTokens) == 0 {
 		return nil
 	}
 
-	matchCounts := make(map[string]int)
+	var whereClauses []string
+	var args []interface{}
 
 	for _, tok := range qTokens {
-		for indexedTok, hashSet := range idx.tokenIndex {
-			if strings.Contains(indexedTok, tok) || strings.Contains(tok, indexedTok) {
-				for h := range hashSet {
-					matchCounts[h]++
-				}
-			}
-		}
+		whereClauses = append(whereClauses, "(name LIKE ? OR files_json LIKE ?)")
+		pattern := "%" + tok + "%"
+		args = append(args, pattern, pattern)
 	}
 
+	sqlQuery := fmt.Sprintf(`
+		SELECT info_hash, name, size_bytes, num_files, discovered_at, files_json, activity_json
+		FROM dht_records
+		WHERE %s
+		ORDER BY discovered_at DESC
+		LIMIT 50
+	`, strings.Join(whereClauses, " AND "))
+
+	rows, err := idx.db.Query(sqlQuery, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
 	var results []*DHTRecord
-	for h, count := range matchCounts {
-		if count > 0 {
-			if rec, ok := idx.records[h]; ok {
-				results = append(results, rec)
-			}
+	for rows.Next() {
+		var rec DHTRecord
+		var filesStr, actStr string
+		if err := rows.Scan(&rec.InfoHash, &rec.Name, &rec.SizeBytes, &rec.NumFiles, &rec.DiscoveredAt, &filesStr, &actStr); err != nil {
+			continue
 		}
+		if filesStr != "" && filesStr != "null" {
+			_ = json.Unmarshal([]byte(filesStr), &rec.Files)
+		}
+		if actStr != "" && actStr != "null" && actStr != "{}" {
+			_ = json.Unmarshal([]byte(actStr), &rec.Activity)
+		}
+		rec.InfoHash = strings.ToLower(rec.InfoHash)
+		results = append(results, &rec)
 	}
 
 	return results
 }
 
-// Size returns total indexed torrents count
+// Size returns total indexed torrents count from SQLite
 func (idx *Indexer) Size() int {
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
-	return len(idx.records)
+	if idx == nil || idx.db == nil {
+		return 0
+	}
+	var count int
+	_ = idx.db.QueryRow("SELECT COUNT(*) FROM dht_records").Scan(&count)
+	return count
 }
 
 func (idx *Indexer) Close() {

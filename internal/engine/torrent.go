@@ -282,10 +282,9 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 		}
 	}
 
-	// Active DHT Node (participates in routing, replies to queries from other nodes)
+	// Low-overhead DHT configuration (queries peers and responds within swarm, but does not route global foreign traffic)
 	tConfig.ConfigureAnacrolixDhtServer = func(dhtCfg *dht.ServerConfig) {
-		dhtCfg.Passive = false
-		dhtCfg.WaitToReply = false
+		dhtCfg.Passive = true
 	}
 
 	// 1/1 Gbps High-Throughput & Low-Latency Tuning
@@ -367,6 +366,15 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 		rateMap:     make(map[string]*rateTracker),
 		webSeedsMap: make(map[string][]string),
 		stopMonitor: make(chan struct{}),
+	}
+
+	if dhtIdx != nil {
+		dhtIdx.SetUserTorrentChecker(func(h string) bool {
+			e.mu.RLock()
+			_, ok := e.rateMap[strings.ToLower(h)]
+			e.mu.RUnlock()
+			return ok
+		})
 	}
 
 	// Restore active session across restarts
@@ -2301,11 +2309,17 @@ func (e *Engine) InspectMagnetMetadata(ctx context.Context, uriOrHash string) (*
 	extractedPeers := ExtractPeersFromMagnet(mag)
 	mag = SuperchargeMagnet(mag)
 
+	e.mu.RLock()
+	_, isUserDl := e.rateMap[hash]
+	e.mu.RUnlock()
+
 	t, err := e.client.AddMagnet(mag)
 	if err != nil {
 		return nil, err
 	}
-	t.DisallowDataDownload()
+	if !isUserDl {
+		t.DisallowDataDownload()
+	}
 
 	t.AddTrackers(GetTier1TrackerList())
 	peerInfos := ConvertToPeerInfos(extractedPeers)
@@ -2315,9 +2329,9 @@ func (e *Engine) InspectMagnetMetadata(ctx context.Context, uriOrHash string) (*
 
 	defer func() {
 		e.mu.RLock()
-		_, isUserDl := e.rateMap[hash]
+		_, isUser := e.rateMap[hash]
 		e.mu.RUnlock()
-		if !isUserDl {
+		if !isUser {
 			t.Drop()
 		}
 	}()
@@ -2430,11 +2444,17 @@ func (e *Engine) ScrapeSwarm(ctx context.Context, uriOrHash string) (seeders int
 	extractedPeers := ExtractPeersFromMagnet(mag)
 	mag = SuperchargeMagnet(mag)
 
+	e.mu.RLock()
+	_, isUserDl := e.rateMap[hash]
+	e.mu.RUnlock()
+
 	t, err := e.client.AddMagnet(mag)
 	if err != nil {
 		return -1, -1, err
 	}
-	t.DisallowDataDownload()
+	if !isUserDl {
+		t.DisallowDataDownload()
+	}
 	t.AddTrackers(GetTier1TrackerList())
 	peerInfos := ConvertToPeerInfos(extractedPeers)
 	if len(peerInfos) > 0 {
@@ -2443,9 +2463,9 @@ func (e *Engine) ScrapeSwarm(ctx context.Context, uriOrHash string) (seeders int
 
 	defer func() {
 		e.mu.RLock()
-		_, isUserDl := e.rateMap[hash]
+		_, isUser := e.rateMap[hash]
 		e.mu.RUnlock()
-		if !isUserDl {
+		if !isUser {
 			t.Drop()
 		}
 	}()

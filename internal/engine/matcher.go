@@ -446,11 +446,40 @@ func (e *Engine) FindSuggestedSwarm(ctx context.Context, task *HTTPTask, searchM
 			magURI += "&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce"
 		}
 
+		candHash := extractInfoHash(magURI)
+		if candHash != "" {
+			candHash = strings.ToLower(candHash)
+			e.mu.RLock()
+			_, isUserDl := e.rateMap[candHash]
+			e.mu.RUnlock()
+			if isUserDl {
+				continue
+			}
+		}
+
 		t, err := e.client.AddMagnet(magURI)
 		if err != nil {
 			continue
 		}
+
+		hashHex := strings.ToLower(t.InfoHash().HexString())
+		e.mu.RLock()
+		_, isUserDl := e.rateMap[hashHex]
+		e.mu.RUnlock()
+		if isUserDl {
+			continue
+		}
+
 		t.DisallowDataDownload()
+
+		safeDrop := func() {
+			e.mu.RLock()
+			_, isUser := e.rateMap[hashHex]
+			e.mu.RUnlock()
+			if !isUser {
+				t.Drop()
+			}
+		}
 
 		select {
 		case <-t.GotInfo():
@@ -460,7 +489,7 @@ func (e *Engine) FindSuggestedSwarm(ctx context.Context, task *HTTPTask, searchM
 				if t.Length() == task.TotalBytes {
 					ok, _ := VerifyRandomPieces(ctx, task.URL, info)
 					if ok {
-						t.Drop()
+						safeDrop()
 						return &SwarmSuggestion{
 							InfoHash:   t.InfoHash().HexString(),
 							MagnetURI:  magURI,
@@ -481,7 +510,7 @@ func (e *Engine) FindSuggestedSwarm(ctx context.Context, task *HTTPTask, searchM
 						fLen := f.Length
 						if fLen == task.TotalBytes {
 							if VerifyFileInMultiTorrent(ctx, task.URL, fileOffset, fLen, info) {
-								t.Drop()
+								safeDrop()
 								return &SwarmSuggestion{
 									InfoHash:         t.InfoHash().HexString(),
 									MagnetURI:        magURI,
@@ -500,9 +529,9 @@ func (e *Engine) FindSuggestedSwarm(ctx context.Context, task *HTTPTask, searchM
 					}
 				}
 			}
-			t.Drop()
+			safeDrop()
 		case <-time.After(4 * time.Second):
-			t.Drop()
+			safeDrop()
 		}
 	}
 
