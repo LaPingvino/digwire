@@ -904,6 +904,9 @@ func (t *MediaTask) pause() {
 	if t.cancel != nil {
 		t.cancel()
 	}
+	if t.cmd != nil && t.cmd.Process != nil {
+		_ = t.cmd.Process.Kill()
+	}
 	t.State = "paused"
 	t.DownloadRate = 0
 }
@@ -934,20 +937,22 @@ func (mm *MediaManager) GetTasks() []*MediaTask {
 	return list
 }
 
-// GetTask finds a task by ID or URL
+// GetTask finds a task by ID, InfoHash, or URL (case-insensitive)
 func (mm *MediaManager) GetTask(idOrURL string) *MediaTask {
 	mm.mu.RLock()
 	defer mm.mu.RUnlock()
 
-	if t, ok := mm.tasks[idOrURL]; ok {
-		return t
+	clean := strings.TrimSpace(idOrURL)
+	if clean == "" {
+		return nil
 	}
-	hash := HashURL(idOrURL)
-	if t, ok := mm.tasks[hash]; ok {
-		return t
-	}
-	for _, t := range mm.tasks {
-		if t.URL == idOrURL || t.ID == idOrURL || t.InfoHash == idOrURL {
+
+	for k, t := range mm.tasks {
+		if strings.EqualFold(k, clean) ||
+			strings.EqualFold(t.ID, clean) ||
+			strings.EqualFold(t.InfoHash, clean) ||
+			strings.EqualFold(t.URL, clean) ||
+			strings.EqualFold(HashURL(t.URL), clean) {
 			return t
 		}
 	}
@@ -957,25 +962,30 @@ func (mm *MediaManager) GetTask(idOrURL string) *MediaTask {
 // CancelTask cancels and cleans up a media task
 func (mm *MediaManager) CancelTask(id string, deleteFiles bool) error {
 	mm.mu.Lock()
-	task, exists := mm.tasks[id]
-	if !exists {
-		for k, t := range mm.tasks {
-			if t.URL == id || t.ID == id || t.InfoHash == id {
-				task = t
-				id = k
-				exists = true
-				break
-			}
+	clean := strings.TrimSpace(id)
+	var task *MediaTask
+	var taskId string
+
+	for k, t := range mm.tasks {
+		if strings.EqualFold(k, clean) ||
+			strings.EqualFold(t.ID, clean) ||
+			strings.EqualFold(t.InfoHash, clean) ||
+			strings.EqualFold(t.URL, clean) ||
+			strings.EqualFold(HashURL(t.URL), clean) {
+			task = t
+			taskId = k
+			break
 		}
 	}
-	if exists {
+
+	if task != nil {
 		task.pause()
-		delete(mm.tasks, id)
+		delete(mm.tasks, taskId)
 	}
 	mm.mu.Unlock()
 
-	if !exists {
-		return fmt.Errorf("task not found: %s", id)
+	if task == nil {
+		return fmt.Errorf("media task not found: %s", id)
 	}
 
 	if deleteFiles && task.DestPath != "" {

@@ -825,13 +825,18 @@ async function confirmDelete(deleteFiles) {
   closeDeleteModal();
   try {
     const res = await fetch(`/api/torrents/${encodeURIComponent(hash)}?delete_files=${deleteFiles}`, { method: 'DELETE' });
-    const data = await res.json();
-    if (data.status === 'ok') {
+    let data;
+    try {
+      data = await res.json();
+    } catch {
+      data = {};
+    }
+    if (res.ok && data.status === 'ok') {
       showToast("Transfer removed.", "info", 2500);
-      torrentsData = torrentsData.filter(t => t.info_hash !== hash);
+      torrentsData = torrentsData.filter(t => t.info_hash !== hash && t.magnet_uri !== hash);
       renderTorrents();
     } else {
-      showToast("Delete failed: " + (data.error || 'Unknown error'), "error", 4000);
+      showToast("Delete failed: " + (data.error || `HTTP ${res.status}`), "error", 4000);
     }
   } catch (err) {
     showToast("Error deleting: " + err.message, "error", 4000);

@@ -154,3 +154,36 @@ func TestParseETASec(t *testing.T) {
 	}
 }
 
+func TestMediaManagerCancelTask(t *testing.T) {
+	mm := NewMediaManager("/tmp", nil)
+	taskURL := "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+	taskID := HashURL(taskURL)
+
+	task := &MediaTask{
+		ID:       taskID,
+		URL:      taskURL,
+		Platform: "youtube",
+		State:    "failed",
+	}
+
+	mm.tasks[taskID] = task
+
+	// Test case-insensitive lookup
+	if got := mm.GetTask(taskID); got == nil {
+		t.Fatalf("expected to find task by ID")
+	}
+	if got := mm.GetTask(taskURL); got == nil {
+		t.Fatalf("expected to find task by URL")
+	}
+
+	// Test cancellation / deletion
+	if err := mm.CancelTask(taskID, false); err != nil {
+		t.Fatalf("CancelTask failed: %v", err)
+	}
+
+	if got := mm.GetTask(taskID); got != nil {
+		t.Fatalf("expected task to be deleted")
+	}
+}
+
+

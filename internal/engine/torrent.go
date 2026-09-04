@@ -2051,6 +2051,17 @@ func (e *Engine) Pause(infoHashHex string) error {
 	if e.mediaManager != nil {
 		if t := e.mediaManager.GetTask(infoHashHex); t != nil {
 			t.pause()
+			if t.InfoHash != "" {
+				for _, tor := range e.client.Torrents() {
+					if strings.EqualFold(tor.InfoHash().HexString(), t.InfoHash) {
+						tor.DisallowDataDownload()
+						if tr, ok := e.rateMap[t.InfoHash]; ok {
+							tr.isPaused = true
+							tr.downloadRate = 0
+						}
+					}
+				}
+			}
 			e.saveSessionLocked()
 			return nil
 		}
@@ -2085,6 +2096,20 @@ func (e *Engine) Resume(infoHashHex string) error {
 	if e.mediaManager != nil {
 		if t := e.mediaManager.GetTask(infoHashHex); t != nil {
 			t.resume(e)
+			if t.InfoHash != "" {
+				for _, tor := range e.client.Torrents() {
+					if strings.EqualFold(tor.InfoHash().HexString(), t.InfoHash) {
+						if tr, ok := e.rateMap[t.InfoHash]; ok {
+							tr.isPaused = false
+							if tr.isSeeding {
+								tor.AllowDataUpload()
+							} else {
+								tor.AllowDataDownload()
+							}
+						}
+					}
+				}
+			}
 			e.saveSessionLocked()
 			return nil
 		}
@@ -2137,17 +2162,24 @@ func (e *Engine) Remove(infoHashHex string, deleteFiles bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	removed := false
+
 	// Check if HTTP download task
 	if err := e.httpManager.Remove(infoHashHex, deleteFiles); err == nil {
-		e.saveSessionLocked()
-		return nil
+		removed = true
 	}
 
 	// Check if Media download task
 	if e.mediaManager != nil {
+		var createdSwarmHash string
+		if t := e.mediaManager.GetTask(infoHashHex); t != nil {
+			createdSwarmHash = t.InfoHash
+		}
 		if err := e.mediaManager.CancelTask(infoHashHex, deleteFiles); err == nil {
-			e.saveSessionLocked()
-			return nil
+			removed = true
+			if createdSwarmHash != "" {
+				infoHashHex = createdSwarmHash
+			}
 		}
 	}
 
@@ -2159,15 +2191,21 @@ func (e *Engine) Remove(infoHashHex string, deleteFiles bool) error {
 			delete(e.rateMap, infoHashHex)
 			delete(e.webSeedsMap, infoHashHex)
 			_ = os.Remove(e.getTorrentCacheFilePath(infoHashHex))
-			e.saveSessionLocked()
 
 			if deleteFiles && name != "" {
 				targetPath := filepath.Join(e.cfg.DownloadDir, name)
 				_ = os.RemoveAll(targetPath)
 			}
-			return nil
+			removed = true
+			break
 		}
 	}
+
+	if removed {
+		e.saveSessionLocked()
+		return nil
+	}
+
 	return fmt.Errorf("torrent or download not found: %s", infoHashHex)
 }
 

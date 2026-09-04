@@ -569,14 +569,15 @@ func (s *Server) handleResumeTorrent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteTorrent(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 	hash := r.PathValue("hash")
 	deleteFiles := r.URL.Query().Get("delete_files") == "true"
 
 	if err := s.engine.Remove(hash, deleteFiles); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusNotFound)
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
