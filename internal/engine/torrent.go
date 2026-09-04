@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -1144,6 +1145,41 @@ func (e *Engine) initTracker(hash string, displayName ...string) {
 	}
 }
 
+// hasAnyExistingLocalFiles checks if any matching payload files or remnants exist on disk
+func (e *Engine) hasAnyExistingLocalFiles(tor *torrent.Torrent) bool {
+	if tor == nil || tor.Info() == nil {
+		return false
+	}
+	info := tor.Info()
+	baseDownloadDir := e.cfg.DownloadDir
+
+	for _, f := range info.UpvertedFiles() {
+		displayPath := f.DisplayPath(info)
+		targetPath := filepath.Join(baseDownloadDir, displayPath)
+		if fi, err := os.Stat(targetPath); err == nil && fi.Size() > 0 {
+			return true
+		}
+		for _, ext := range []string{".part", ".crdownload", ".download", ".tmp"} {
+			if fi, err := os.Stat(targetPath + ext); err == nil && fi.Size() > 0 {
+				return true
+			}
+		}
+		filenameOnly := filepath.Base(displayPath)
+		if filenameOnly != "" && filenameOnly != displayPath {
+			rootCandidate := filepath.Join(baseDownloadDir, filenameOnly)
+			if fi, err := os.Stat(rootCandidate); err == nil && fi.Size() > 0 {
+				return true
+			}
+			for _, ext := range []string{".part", ".crdownload", ".download", ".tmp"} {
+				if fi, err := os.Stat(rootCandidate + ext); err == nil && fi.Size() > 0 {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // ConsolidateAndVerify executes a full data consolidation and cryptographic piece verification pipeline:
 // 1. Ensures no duplicate verification races on the same torrent.
 // 2. Temporarily disallows incoming peer data writes to prevent write collisions during disk hashing.
@@ -1186,11 +1222,11 @@ func (e *Engine) ConsolidateAndVerify(tor *torrent.Torrent, onComplete ...func()
 		// 1. Persist metainfo
 		e.saveTorrentMetainfo(tor)
 
-		// 2. Consolidate & adopt any external remnants
-		e.AdoptExistingLocalProgress(tor)
-
-		// 3. Run cryptographic verification
-		_ = tor.VerifyData()
+		// 2. Fast-path: only run consolidation and disk hashing if local data actually exists on disk
+		if e.hasAnyExistingLocalFiles(tor) {
+			e.AdoptExistingLocalProgress(tor)
+			_ = tor.VerifyData()
+		}
 
 		// 5. Post-verification state alignment
 		e.mu.Lock()
@@ -1304,8 +1340,17 @@ func (e *Engine) Resume(infoHashHex string) error {
 		if strings.EqualFold(t.InfoHash().HexString(), infoHashHex) {
 			if tr, ok := e.rateMap[infoHashHex]; ok {
 				tr.isPaused = false
+				if tr.isSeeding {
+					t.DisallowDataDownload()
+					t.AllowDataUpload()
+				} else {
+					t.AllowDataDownload()
+					t.DownloadAll()
+				}
+			} else {
+				t.AllowDataDownload()
+				t.DownloadAll()
 			}
-			e.ConsolidateAndVerify(t)
 			e.saveSessionLocked()
 			return nil
 		}
@@ -2138,20 +2183,25 @@ type InspectResult struct {
 	Files     []TorrentFileDetail `json:"files"`
 }
 
+var hex40Regex = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
+
 func extractInfoHash(input string) string {
 	input = strings.TrimSpace(input)
-	if len(input) == 40 {
-		return input
+	if hex40Regex.MatchString(input) {
+		return strings.ToLower(input)
 	}
 	lower := strings.ToLower(input)
 	idx := strings.Index(lower, "urn:btih:")
 	if idx != -1 {
 		part := input[idx+9:]
-		end := strings.IndexAny(part, ";&/")
+		end := strings.IndexAny(part, ";&/?#")
 		if end != -1 {
 			part = part[:end]
 		}
-		return strings.TrimSpace(part)
+		part = strings.TrimSpace(part)
+		if hex40Regex.MatchString(part) {
+			return strings.ToLower(part)
+		}
 	}
 	return ""
 }
