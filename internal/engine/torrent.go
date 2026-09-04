@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"digwire/internal/config"
@@ -151,6 +152,7 @@ type rateTracker struct {
 	isPaused            bool
 	isSeeding           bool
 	isVerifying         bool
+	verifyProgress      float64
 	displayName         string
 	savedTotalBytes     int64
 	savedCompletedBytes int64
@@ -1238,12 +1240,68 @@ func (e *Engine) hasAnyExistingLocalFiles(tor *torrent.Torrent) bool {
 	return false
 }
 
+func (e *Engine) verifyTorrentPiecesConcurrent(ctx context.Context, tor *torrent.Torrent, onProgress func(checked, total int)) error {
+	if tor == nil || tor.Info() == nil {
+		return nil
+	}
+	numPieces := tor.NumPieces()
+	if numPieces == 0 {
+		return nil
+	}
+
+	numWorkers := runtime.GOMAXPROCS(0) * 2
+	if numWorkers < 4 {
+		numWorkers = 4
+	}
+	if numWorkers > 32 {
+		numWorkers = 32
+	}
+
+	var checkedCount int64
+	pieceChan := make(chan int, numPieces)
+	for i := 0; i < numPieces; i++ {
+		pieceChan <- i
+	}
+	close(pieceChan)
+
+	var wg sync.WaitGroup
+	var firstErr error
+	var errMu sync.Mutex
+
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for pIdx := range pieceChan {
+				if ctx.Err() != nil {
+					return
+				}
+				p := tor.Piece(pIdx)
+				if err := p.VerifyDataContext(ctx); err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					errMu.Unlock()
+				}
+				cur := atomic.AddInt64(&checkedCount, 1)
+				if onProgress != nil {
+					onProgress(int(cur), numPieces)
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+	return firstErr
+}
+
 // ConsolidateAndVerify executes a full data consolidation and cryptographic piece verification pipeline:
 // 1. Ensures no duplicate verification races on the same torrent.
 // 2. Temporarily disallows incoming peer data writes to prevent write collisions during disk hashing.
 // 3. Flags the state as "verifying" so the UI and engine accurately reflect rechecking status.
 // 4. Consolidates & adopts any external download remnants (.crdownload, .download, .tmp, wget root files).
-// 5. Executes cryptographic SHA-1 verification across all pieces on disk.
+// 5. Executes high-speed concurrent cryptographic SHA-1 verification across all pieces on disk.
 // 6. Aligns verified byte totals, clears verifying status, and safely resumes downloading if unpaused.
 func (e *Engine) ConsolidateAndVerify(tor *torrent.Torrent, onComplete ...func()) {
 	if tor == nil {
@@ -1259,6 +1317,7 @@ func (e *Engine) ConsolidateAndVerify(tor *torrent.Torrent, onComplete ...func()
 				e.mu.Lock()
 				if tr := e.rateMap[hash]; tr != nil {
 					tr.isVerifying = false
+					tr.verifyProgress = 0
 				}
 				e.mu.Unlock()
 			}
@@ -1274,17 +1333,29 @@ func (e *Engine) ConsolidateAndVerify(tor *torrent.Torrent, onComplete ...func()
 				return // Already verifying
 			}
 			tr.isVerifying = true
+			tr.verifyProgress = 0
 		}
 		e.mu.Unlock()
 
 		// 1. Persist metainfo
 		e.saveTorrentMetainfo(tor)
 
-		// 2. Fast-path: only run consolidation and disk hashing if local data actually exists on disk
-		if e.hasAnyExistingLocalFiles(tor) {
-			e.AdoptExistingLocalProgress(tor)
-			_ = tor.VerifyData()
-		}
+		// 2. Consolidate & adopt any partial remnants
+		e.AdoptExistingLocalProgress(tor)
+
+		// 3. Fast concurrent piece verification
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+
+		_ = e.verifyTorrentPiecesConcurrent(ctx, tor, func(checked, total int) {
+			if total > 0 {
+				e.mu.Lock()
+				if tr := e.rateMap[hash]; tr != nil {
+					tr.verifyProgress = (float64(checked) / float64(total)) * 100.0
+				}
+				e.mu.Unlock()
+			}
+		})
 
 		// 5. Post-verification state alignment
 		e.mu.Lock()
@@ -1296,6 +1367,7 @@ func (e *Engine) ConsolidateAndVerify(tor *torrent.Torrent, onComplete ...func()
 
 		if tr := e.rateMap[hash]; tr != nil {
 			tr.isVerifying = false
+			tr.verifyProgress = 0
 			tr.savedTotalBytes = tLen
 			tr.savedCompletedBytes = bComp
 			tr.isSeeding = isComplete && !isGermanMode
@@ -1529,25 +1601,28 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 			name = info.Name
 			totalBytes = t.Length()
 			completedBytes = t.BytesCompleted()
-			if tracker.isVerifying && tracker.savedCompletedBytes > completedBytes {
-				completedBytes = tracker.savedCompletedBytes
-			}
-			if totalBytes > 0 {
-				progress = (float64(completedBytes) / float64(totalBytes)) * 100.0
-			}
 
 			if tracker.isVerifying {
 				state = "verifying"
-			} else if isPaused {
-				state = "paused"
-			} else if totalBytes > 0 && completedBytes >= totalBytes {
-				if isGermanMode {
-					state = "completed"
-				} else {
-					state = "seeding"
+				progress = tracker.verifyProgress
+				if tracker.savedCompletedBytes > completedBytes {
+					completedBytes = tracker.savedCompletedBytes
 				}
 			} else {
-				state = "downloading"
+				if totalBytes > 0 {
+					progress = (float64(completedBytes) / float64(totalBytes)) * 100.0
+				}
+				if isPaused {
+					state = "paused"
+				} else if totalBytes > 0 && completedBytes >= totalBytes {
+					if isGermanMode {
+						state = "completed"
+					} else {
+						state = "seeding"
+					}
+				} else {
+					state = "downloading"
+				}
 			}
 
 			for _, f := range info.Files {
