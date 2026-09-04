@@ -1,6 +1,6 @@
 ; Digwire NSIS Installer Script
 !define PRODUCT_NAME "Digwire"
-!define PRODUCT_VERSION "0.2.5"
+!define PRODUCT_VERSION "0.3.0"
 !define PRODUCT_PUBLISHER "Digwire Team"
 !define PRODUCT_WEB_SITE "https://github.com/LaPingvino/digwire"
 !define PRODUCT_DIR_REGKEY "Software\Microsoft\Windows\CurrentVersion\App Paths\digwire.exe"

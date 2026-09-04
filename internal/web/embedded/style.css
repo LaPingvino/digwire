@@ -493,6 +493,18 @@ body {
   border: 1px solid rgba(229, 165, 10, 0.3);
 }
 
+.tag-soulseek {
+  background: rgba(255, 71, 87, 0.18);
+  color: #ff6b81;
+  border: 1px solid rgba(255, 71, 87, 0.4);
+}
+
+.tag-documents {
+  background: rgba(46, 213, 115, 0.18);
+  color: #2ed573;
+  border: 1px solid rgba(46, 213, 115, 0.4);
+}
+
 .tag-torznab {
   background: rgba(154, 99, 212, 0.18);
   color: #c061cb;
@@ -509,6 +521,44 @@ body {
   background: rgba(0, 168, 204, 0.18);
   color: #00d2d3;
   border: 1px solid rgba(0, 168, 204, 0.35);
+}
+
+/* Platform Badges */
+.badge-platform {
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+.badge-youtube { background: rgba(255, 0, 0, 0.2); color: #ff4d4d; border: 1px solid rgba(255, 0, 0, 0.4); }
+.badge-tiktok { background: rgba(0, 242, 234, 0.2); color: #00f2ea; border: 1px solid rgba(0, 242, 234, 0.4); }
+.badge-instagram { background: rgba(225, 48, 108, 0.2); color: #ff5e97; border: 1px solid rgba(225, 48, 108, 0.4); }
+.badge-twitter { background: rgba(29, 161, 242, 0.2); color: #1da1f2; border: 1px solid rgba(29, 161, 242, 0.4); }
+.badge-reddit { background: rgba(255, 69, 0, 0.2); color: #ff6e40; border: 1px solid rgba(255, 69, 0, 0.4); }
+.badge-scribd { background: rgba(26, 140, 140, 0.2); color: #2ecc71; border: 1px solid rgba(26, 140, 140, 0.4); }
+.badge-vimeo { background: rgba(26, 183, 234, 0.2); color: #1ab7ea; border: 1px solid rgba(26, 183, 234, 0.4); }
+.badge-twitch { background: rgba(145, 70, 255, 0.2); color: #bf94ff; border: 1px solid rgba(145, 70, 255, 0.4); }
+.badge-soulseek { background: rgba(255, 107, 129, 0.2); color: #ff6b81; border: 1px solid rgba(255, 107, 129, 0.4); }
+
+.card-thumbnail {
+  width: 44px;
+  height: 44px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--adw-border);
+  flex-shrink: 0;
+}
+
+/* Subtitle Track Items */
+.sub-track-card {
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--adw-border);
+  border-radius: var(--adw-radius-sm);
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
 
 .score-badge {

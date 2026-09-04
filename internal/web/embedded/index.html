@@ -84,7 +84,7 @@
     <section id="view-search" style="display: none;" role="tabpanel" aria-labelledby="tab-search">
       <div class="search-box-wrapper">
         <form onsubmit="handleSearchSubmit(event)" class="search-input-group" role="search">
-          <input type="text" id="search-input" class="input-text" placeholder="Search across BTDigg, BitSearch, The Pirate Bay, EZTV, YTS, TorrentsCSV..." autocomplete="off" aria-label="Search torrents and magnets">
+          <input type="text" id="search-input" class="input-text" placeholder="Search across BTDigg, BitSearch, Soulseek P2P, The Pirate Bay, EZTV, YTS, Scribd..." autocomplete="off" aria-label="Search torrents and magnets">
           <button type="submit" class="btn btn-primary" id="search-submit-btn" aria-label="Submit search query">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
             <span>Search</span>
@@ -254,6 +254,7 @@
       <div class="view-switcher" role="tablist" aria-label="Details View Categories" style="align-self: flex-start; flex-wrap: wrap;">
         <button class="view-btn active" id="dtab-overview" role="tab" aria-selected="true" onclick="switchDetailTab('overview')">Overview</button>
         <button class="view-btn" id="dtab-files" role="tab" aria-selected="false" onclick="switchDetailTab('files')">Files</button>
+        <button class="view-btn" id="dtab-subtitles" role="tab" aria-selected="false" onclick="switchDetailTab('subtitles')">Subtitles & Dubs</button>
         <button class="view-btn" id="dtab-peers" role="tab" aria-selected="false" onclick="switchDetailTab('peers')">Peers</button>
         <button class="view-btn" id="dtab-webseeds" role="tab" aria-selected="false" onclick="switchDetailTab('webseeds')">WebSeeds / HTTP Mirrors</button>
         <button class="view-btn" id="dtab-trackers" role="tab" aria-selected="false" onclick="switchDetailTab('trackers')">Trackers</button>

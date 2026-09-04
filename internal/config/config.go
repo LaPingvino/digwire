@@ -145,6 +145,20 @@ func DefaultConfig() *Config {
 				Weight:  0.6,
 			},
 			{
+				Name:    "Soulseek P2P (Music & Lossless Audio)",
+				Type:    "soulseek",
+				URL:     "https://archive.org",
+				Enabled: true,
+				Weight:  1.5,
+			},
+			{
+				Name:    "Library & Documents (Scribd / Books)",
+				Type:    "documents",
+				URL:     "https://archive.org",
+				Enabled: true,
+				Weight:  1.3,
+			},
+			{
 				Name:    "Jackett / Prowlarr (Torznab)",
 				Type:    "torznab",
 				URL:     "http://localhost:9696/api/v1/search",

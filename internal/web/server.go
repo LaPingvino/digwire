@@ -81,7 +81,16 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/events", s.handleEventsSSE)
 	s.mux.HandleFunc("POST /api/open-folder", s.handleOpenFolder)
 	s.mux.HandleFunc("GET /api/system/pick-path", s.handlePickPath)
-	s.mux.HandleFunc("GET /api/system/browse-dir", s.handleBrowseDir)
+	// Media & Social Swarm Endpoints (yt-dlp)
+	s.mux.HandleFunc("POST /api/media/inspect", s.handleMediaInspect)
+	s.mux.HandleFunc("POST /api/media/download", s.handleMediaDownload)
+	s.mux.HandleFunc("GET /api/media/tasks", s.handleGetMediaTasks)
+	s.mux.HandleFunc("DELETE /api/media/tasks/{id}", s.handleCancelMediaTask)
+
+	// Subtitles & Audio Track Endpoints
+	s.mux.HandleFunc("POST /api/subtitles/search", s.handleSearchSubtitles)
+	s.mux.HandleFunc("POST /api/subtitles/download", s.handleDownloadSubtitle)
+	s.mux.HandleFunc("POST /api/subtitles/extract", s.handleExtractSubtitle)
 
 	// Embedded Static UI files
 	subFS, err := fs.Sub(embeddedFiles, "embedded")
@@ -990,4 +999,206 @@ func (s *Server) Close() error {
 		return s.server.Close()
 	}
 	return nil
+}
+
+func (s *Server) handleMediaInspect(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	var req struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.URL) == "" {
+		http.Error(w, `{"error":"missing or invalid media url"}`, http.StatusBadRequest)
+		return
+	}
+
+	meta, err := engine.InspectMedia(r.Context(), req.URL)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(meta)
+}
+
+func (s *Server) handleMediaDownload(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	var req struct {
+		URL         string   `json:"url"`
+		Format      string   `json:"format"`
+		AudioOnly   bool     `json:"audio_only"`
+		AudioFormat string   `json:"audio_format"`
+		Subtitles   []string `json:"subtitles"`
+		EmbedSubs   bool     `json:"embed_subs"`
+		AutoSwarm   bool     `json:"auto_swarm"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.URL) == "" {
+		http.Error(w, `{"error":"missing or invalid media url"}`, http.StatusBadRequest)
+		return
+	}
+
+	opts := engine.MediaDownloadOptions{
+		Format:      req.Format,
+		AudioOnly:   req.AudioOnly,
+		AudioFormat: req.AudioFormat,
+		Subtitles:   req.Subtitles,
+		EmbedSubs:   req.EmbedSubs,
+		AutoSwarm:   true,
+	}
+
+	if s.engine.MediaManager() == nil {
+		http.Error(w, `{"error":"media manager not initialized"}`, http.StatusInternalServerError)
+		return
+	}
+
+	task, err := s.engine.MediaManager().StartDownload(req.URL, opts)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status": "ok",
+		"id":     task.ID,
+		"title":  task.Title,
+	})
+}
+
+func (s *Server) handleGetMediaTasks(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.engine.MediaManager() == nil {
+		_ = json.NewEncoder(w).Encode([]any{})
+		return
+	}
+	tasks := s.engine.MediaManager().GetTasks()
+	_ = json.NewEncoder(w).Encode(tasks)
+}
+
+func (s *Server) handleCancelMediaTask(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	id := r.PathValue("id")
+	deleteFiles := r.URL.Query().Get("delete_files") == "true"
+
+	if s.engine.MediaManager() == nil {
+		http.Error(w, `{"error":"media manager not initialized"}`, http.StatusInternalServerError)
+		return
+	}
+
+	if err := s.engine.MediaManager().CancelTask(id, deleteFiles); err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleSearchSubtitles(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	var req struct {
+		Query string `json:"query"`
+		Lang  string `json:"lang"`
+		Hash  string `json:"hash"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+		return
+	}
+
+	query := strings.TrimSpace(req.Query)
+	if query == "" && req.Hash != "" {
+		if details, err := s.engine.GetTorrentDetails(req.Hash); err == nil && details != nil {
+			query = engine.CleanMediaTitleForSubtitles(details.Name)
+		}
+	}
+
+	tracks, err := engine.SearchOpenSubtitles(r.Context(), query, req.Lang)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(tracks)
+}
+
+func (s *Server) handleDownloadSubtitle(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	var req struct {
+		Hash        string `json:"hash"`
+		DownloadURL string `json:"download_url"`
+		Lang        string `json:"lang"`
+		FileName    string `json:"file_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.DownloadURL == "" {
+		http.Error(w, `{"error":"missing download_url"}`, http.StatusBadRequest)
+		return
+	}
+
+	savePath, err := s.engine.GetTorrentSavePath(req.Hash)
+	if err != nil || savePath == "" {
+		savePath = s.cfg.DownloadDir
+	}
+
+	targetDir := savePath
+	if fi, err := os.Stat(savePath); err == nil && !fi.IsDir() {
+		targetDir = filepath.Dir(savePath)
+	}
+
+	videoFilename := req.FileName
+	if videoFilename == "" {
+		videoFilename = filepath.Base(savePath)
+	}
+
+	outPath, err := engine.DownloadAndAttachSubtitle(r.Context(), targetDir, videoFilename, req.DownloadURL, req.Lang)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status": "ok",
+		"path":   outPath,
+	})
+}
+
+func (s *Server) handleExtractSubtitle(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	var req struct {
+		Hash        string `json:"hash"`
+		StreamIndex int    `json:"stream_index"`
+		Lang        string `json:"lang"`
+		FilePath    string `json:"file_path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+		return
+	}
+
+	videoPath := req.FilePath
+	if videoPath == "" && req.Hash != "" {
+		savePath, err := s.engine.GetTorrentSavePath(req.Hash)
+		if err == nil {
+			videoPath = savePath
+		}
+	}
+
+	if fi, err := os.Stat(videoPath); err != nil || fi.IsDir() {
+		http.Error(w, `{"error":"video file not found"}`, http.StatusBadRequest)
+		return
+	}
+
+	outPath, err := engine.ExtractEmbeddedSubtitle(videoPath, req.StreamIndex, req.Lang)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status": "ok",
+		"path":   outPath,
+	})
 }

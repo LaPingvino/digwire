@@ -114,6 +114,12 @@ function getQualifierBadge(q) {
   </span>`;
 }
 
+function getPlatformBadge(p) {
+  if (!p) return '';
+  p = p.toLowerCase();
+  return `<span class="torrent-badge badge-platform badge-${p}">${escapeHtml(p)}</span>`;
+}
+
 // Helpers
 function formatBytes(bytes, decimals = 1) {
   if (!bytes || bytes === 0) return '0 B';
@@ -385,10 +391,17 @@ function createTorrentCardElement(t) {
   div.ondblclick = () => openTorrentTarget(t.info_hash);
   div.onkeydown = (e) => handleTorrentCardKeydown(e, t.info_hash, t.name);
 
+  const platformBadge = getPlatformBadge(t.platform);
+  const thumbHtml = t.thumbnail ? `<img src="${escapeHtml(t.thumbnail)}" class="card-thumbnail" alt="" onerror="this.style.display='none'">` : '';
+
   div.innerHTML = `
-    <div class="card-header">
-      <div class="torrent-title" title="${escapeHtml(t.name)}" style="cursor: pointer;" onclick="openDetailsModal('${t.info_hash}')">${escapeHtml(t.name)}</div>
-      <div style="display: flex; gap: 6px; align-items: center;">
+    <div class="card-header" style="display: flex; gap: 10px; align-items: center;">
+      ${thumbHtml}
+      <div style="flex: 1; min-width: 0;">
+        <div class="torrent-title" title="${escapeHtml(t.name)}" style="cursor: pointer;" onclick="openDetailsModal('${t.info_hash}')">${escapeHtml(t.name)}</div>
+      </div>
+      <div style="display: flex; gap: 6px; align-items: center; flex-shrink: 0;">
+        ${platformBadge}
         ${getQualifierBadge(t.qualifier)}
         <span class="torrent-badge badge-${t.state}" aria-label="Status: ${t.state}">${t.state}</span>
       </div>
@@ -428,9 +441,10 @@ function updateTorrentCardElement(cardEl, t) {
 
   // Update badges
   const badgeContainer = cardEl.querySelector('.card-header > div:last-child');
+  const platformBadge = getPlatformBadge(t.platform);
   const qualifierHtml = getQualifierBadge(t.qualifier);
   const stateBadgeHtml = `<span class="torrent-badge badge-${t.state}" aria-label="Status: ${t.state}">${t.state}</span>`;
-  const fullBadgeHtml = qualifierHtml + stateBadgeHtml;
+  const fullBadgeHtml = platformBadge + qualifierHtml + stateBadgeHtml;
   if (badgeContainer && badgeContainer.innerHTML !== fullBadgeHtml) {
     badgeContainer.innerHTML = fullBadgeHtml;
   }
@@ -844,7 +858,7 @@ function closeDetailsModal() {
 
 function switchDetailTab(tab) {
   currentDetailTab = tab;
-  ['overview', 'files', 'peers', 'webseeds', 'trackers'].forEach(t => {
+  ['overview', 'files', 'subtitles', 'peers', 'webseeds', 'trackers'].forEach(t => {
     const btn = document.getElementById(`dtab-${t}`);
     if (btn) btn.classList.toggle('active', t === tab);
   });
@@ -1047,6 +1061,77 @@ function switchDetailTab(tab) {
         </tbody>
       </table>
     `;
+  } else if (tab === 'subtitles') {
+    const subs = currentDetailData.subtitles || [];
+    const hash = currentDetailData.info_hash;
+    const defaultQuery = currentDetailData.name ? currentDetailData.name.replace(/\.[^/.]+$/, "").replace(/[._-]/g, " ") : "";
+
+    content.innerHTML = `
+      <div style="display: flex; flex-direction: column; gap: 14px;">
+        <div>
+          <div style="font-weight: 600; font-size: 13px; margin-bottom: 6px;">Attached Subtitles & Audio Tracks (${subs.length}):</div>
+          ${subs.length === 0 ? 
+            '<div style="color: var(--adw-dim-label); font-size: 12px;">No subtitle tracks attached or detected yet. Search OpenSubtitles below to download and auto-pair.</div>' :
+            `<div style="display: flex; flex-direction: column; gap: 6px;">
+              ${subs.map(s => `
+                <div class="sub-track-card">
+                  <div>
+                    <span style="font-weight: 600; font-size: 12.5px;">${escapeHtml(s.title || s.language)}</span>
+                    <span style="color: var(--adw-dim-label); font-size: 11px; margin-left: 6px;">[${escapeHtml(s.format || 'srt')}] • ${escapeHtml(s.language || 'English')}</span>
+                    ${s.is_embedded ? '<span style="background: rgba(53,132,228,0.2); color: #78aeed; font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; margin-left: 6px;">Embedded Stream</span>' : '<span style="background: rgba(46,194,126,0.2); color: #57e389; font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; margin-left: 6px;">Attached File</span>'}
+                  </div>
+                  <div>
+                    ${s.is_embedded ? `
+                      <button class="btn" style="padding: 2px 8px; font-size: 11px;" onclick="extractSubtitleStream('${hash}', ${s.stream_index || 0}, '${s.language_code || 'en'}', this)">
+                        Extract to .srt
+                      </button>
+                    ` : `
+                      <button class="btn" style="padding: 2px 8px; font-size: 11px;" onclick="showTorrentInFolder('${hash}')">
+                        ${ICONS.folder} View
+                      </button>
+                    `}
+                  </div>
+                </div>
+              `).join('')}
+            </div>`
+          }
+        </div>
+
+        <!-- Online Subtitle Search Section -->
+        <div style="background: rgba(0,0,0,0.15); border: 1px solid var(--adw-border); border-radius: var(--adw-radius-sm); padding: 12px; display: flex; flex-direction: column; gap: 10px;">
+          <div style="font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 6px;">
+            ${ICONS.search}
+            <span>Search OpenSubtitles / Global Subtitle Index</span>
+          </div>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <input type="text" id="sub-search-query" class="input-text" style="flex: 1; min-width: 180px;" value="${escapeHtml(defaultQuery)}" placeholder="Movie or Show Title">
+            <select id="sub-search-lang" class="sort-select" style="min-width: 110px;">
+              <option value="en">English (en)</option>
+              <option value="es">Spanish (es)</option>
+              <option value="fr">French (fr)</option>
+              <option value="de">German (de)</option>
+              <option value="it">Italian (it)</option>
+              <option value="pt">Portuguese (pt)</option>
+              <option value="ru">Russian (ru)</option>
+              <option value="zh">Chinese (zh)</option>
+              <option value="ja">Japanese (ja)</option>
+              <option value="ko">Korean (ko)</option>
+              <option value="eo">Esperanto (eo)</option>
+              <option value="nl">Dutch (nl)</option>
+              <option value="pl">Polish (pl)</option>
+              <option value="all">All Languages</option>
+            </select>
+            <button class="btn btn-primary" onclick="performSubtitleSearch('${hash}')">
+              ${ICONS.search} Search
+            </button>
+          </div>
+
+          <div id="sub-search-results" style="display: none; margin-top: 6px;">
+            <!-- Subtitle search results rendered dynamically -->
+          </div>
+        </div>
+      </div>
+    `;
   } else if (tab === 'webseeds') {
     const seeds = currentDetailData.webseeds || [];
     content.innerHTML = `
@@ -1112,6 +1197,139 @@ async function submitAddWebSeed(hash) {
     }
   } catch (err) {
     alert("Error adding WebSeed: " + err.message);
+  }
+}
+
+async function performSubtitleSearch(hash) {
+  const qInput = document.getElementById('sub-search-query');
+  const langSelect = document.getElementById('sub-search-lang');
+  const resultsBox = document.getElementById('sub-search-results');
+  if (!qInput || !resultsBox) return;
+
+  const query = qInput.value.trim();
+  const lang = langSelect ? langSelect.value : 'en';
+  if (!query) {
+    showToast("Please enter a title to search subtitles", "warning");
+    return;
+  }
+
+  resultsBox.style.display = 'block';
+  resultsBox.innerHTML = '<div style="color: var(--adw-dim-label); font-size: 12px; padding: 10px; text-align: center;">Searching OpenSubtitles & global indices...</div>';
+
+  try {
+    const res = await fetch('/api/subtitles/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hash, query, lang })
+    });
+    if (!res.ok) {
+      throw new Error(`Server returned ${res.status}`);
+    }
+    const tracks = await res.json();
+    if (!tracks || tracks.length === 0) {
+      resultsBox.innerHTML = '<div style="color: var(--adw-dim-label); font-size: 12px; padding: 10px; text-align: center;">No matching subtitle tracks found. Try modifying the search query.</div>';
+      return;
+    }
+
+    resultsBox.innerHTML = `
+      <div style="font-weight: 600; font-size: 12px; margin-bottom: 6px; color: var(--adw-fg-color);">Search Results (${tracks.length}):</div>
+      <div style="display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto;">
+        ${tracks.map(tr => `
+          <div class="sub-track-card">
+            <div style="min-width: 0; flex: 1;">
+              <div style="font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(tr.title || tr.language)}</div>
+              <div style="font-size: 11px; color: var(--adw-dim-label); display: flex; gap: 8px; margin-top: 2px;">
+                <span>${escapeHtml(tr.language || 'English')}</span>
+                <span>• ${escapeHtml(tr.provider || 'OpenSubtitles')}</span>
+                ${tr.downloads ? `<span>• ↓ ${tr.downloads} downloads</span>` : ''}
+                ${tr.hearing_impaired ? '<span style="color: #f6d32d;">• [HI]</span>' : ''}
+              </div>
+            </div>
+            <div>
+              <button class="btn btn-primary" style="padding: 3px 8px; font-size: 11px;" onclick="downloadSubtitleTrack('${hash}', '${encodeURI(tr.download_url)}', '${tr.language_code || 'en'}', '${escapeHtml(tr.title || '')}', this)">
+                ${ICONS.download} Download & Pair
+              </button>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  } catch (err) {
+    resultsBox.innerHTML = `<div style="color: var(--adw-error); font-size: 12px; padding: 10px; text-align: center;">Failed to search subtitles: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+async function downloadSubtitleTrack(hash, downloadUrl, lang, filename, btn) {
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Downloading...";
+  }
+
+  try {
+    const res = await fetch('/api/subtitles/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        hash,
+        download_url: decodeURI(downloadUrl),
+        lang,
+        file_name: filename
+      })
+    });
+    if (!res.ok) {
+      throw new Error(`Server returned ${res.status}`);
+    }
+    const data = await res.json();
+    showToast("Subtitle attached successfully!", "success");
+
+    // Refresh details modal
+    if (currentDetailData && currentDetailData.info_hash === hash) {
+      const detailRes = await fetch(`/api/torrents/${hash}/details`);
+      if (detailRes.ok) {
+        currentDetailData = await detailRes.json();
+        switchDetailTab('subtitles');
+      }
+    }
+  } catch (err) {
+    showToast(`Download failed: ${err.message}`, "error");
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Retry";
+    }
+  }
+}
+
+async function extractSubtitleStream(hash, streamIndex, lang, btn) {
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Extracting...";
+  }
+
+  try {
+    const res = await fetch('/api/subtitles/extract', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hash, stream_index: streamIndex, lang })
+    });
+    if (!res.ok) {
+      throw new Error(`Server returned ${res.status}`);
+    }
+    showToast("Embedded subtitle extracted to .srt file!", "success");
+
+    // Refresh details modal
+    if (currentDetailData && currentDetailData.info_hash === hash) {
+      const detailRes = await fetch(`/api/torrents/${hash}/details`);
+      if (detailRes.ok) {
+        currentDetailData = await detailRes.json();
+        switchDetailTab('subtitles');
+      }
+    }
+  } catch (err) {
+    showToast(`Extraction failed: ${err.message}`, "error");
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Retry";
+    }
   }
 }
 

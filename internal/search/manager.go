@@ -67,6 +67,10 @@ func (m *Manager) UpdateProviders(cfg *config.Config) {
 			m.providers = append(m.providers, NewTorLockProvider(pCfg.Name, pCfg.URL, pCfg.Enabled, weight))
 		case "archiveorg":
 			m.providers = append(m.providers, NewArchiveOrgProvider(pCfg.Name, pCfg.URL, pCfg.Enabled, weight))
+		case "soulseek":
+			m.providers = append(m.providers, NewSoulseekProvider(pCfg.Name, pCfg.URL, pCfg.Enabled, weight))
+		case "documents":
+			m.providers = append(m.providers, NewDocumentProvider(pCfg.Name, pCfg.URL, pCfg.Enabled, weight))
 		case "torznab":
 			m.providers = append(m.providers, NewTorznabProvider(pCfg.Name, pCfg.URL, pCfg.APIKey, pCfg.Enabled, weight))
 		default:
