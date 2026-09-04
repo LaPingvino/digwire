@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"digwire/internal/config"
 )
@@ -313,6 +314,71 @@ func TestMediaTaskTorrentLikeActions(t *testing.T) {
 		t.Fatalf("expected mediaDir to be deleted from disk on deleteFiles=true")
 	}
 }
+
+func TestMediaManagerCancelInspectingTask(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "digwire_media_cancel_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	cfg := &config.Config{
+		DownloadDir: tempDir,
+		ListenPort:  0,
+		GermanyMode: false,
+	}
+	cfg.SetConfigPath(filepath.Join(tempDir, "config.yaml"))
+	eng, err := NewEngine(cfg)
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+	defer eng.Close()
+
+	taskURL := "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+	taskID := HashURL(taskURL)
+	mTask := &MediaTask{
+		ID:       taskID,
+		URL:      taskURL,
+		Title:    "Rick Astley - Never Gonna Give You Up",
+		Platform: "youtube",
+		State:    "inspecting",
+		Progress: 5.0,
+		AddedAt:  time.Now().Unix(),
+	}
+	eng.mediaManager.mu.Lock()
+	eng.mediaManager.tasks[taskID] = mTask
+	eng.mediaManager.mu.Unlock()
+
+	// Should be listed in GetTorrents
+	torrents := eng.GetTorrents()
+	found := false
+	for _, tor := range torrents {
+		if tor.InfoHash == taskID && tor.State == "inspecting" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected inspecting task to be returned by GetTorrents()")
+	}
+
+	// Remove inspecting task
+	if err := eng.Remove(taskID, false); err != nil {
+		t.Fatalf("failed to remove inspecting task: %v", err)
+	}
+
+	if got := eng.mediaManager.GetTask(taskID); got != nil {
+		t.Fatalf("expected inspecting task to be removed from media manager")
+	}
+
+	// Should not be in GetTorrents
+	for _, tor := range eng.GetTorrents() {
+		if tor.InfoHash == taskID {
+			t.Fatalf("expected task not to be in GetTorrents() after Remove()")
+		}
+	}
+}
+
 
 
 

@@ -355,6 +355,9 @@ func InspectMedia(ctx context.Context, rawURL string) (*MediaMetadata, error) {
 	var winningCookieArgs []string
 
 	for _, cookieArgs := range extractorCandidates {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		inspectCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
 
 		args := []string{
@@ -377,6 +380,10 @@ func InspectMedia(ctx context.Context, rawURL string) (*MediaMetadata, error) {
 			winningCookieArgs = cookieArgs
 			break
 		}
+		if ctx.Err() != nil {
+			cancel()
+			return nil, ctx.Err()
+		}
 
 		// Retry with full dump without flat-playlist if flat-playlist failed
 		fullArgs := []string{"-J", "--no-warnings", "--no-check-certificates"}
@@ -397,11 +404,18 @@ func InspectMedia(ctx context.Context, rawURL string) (*MediaMetadata, error) {
 		}
 
 		cancel()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		errStr := strings.TrimSpace(stderr.String())
 		if errStr == "" && err != nil {
 			errStr = err.Error()
 		}
 		lastErr = fmt.Errorf("%s", errStr)
+	}
+
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 
 	if len(winningStdout) == 0 {
@@ -558,11 +572,18 @@ func (t *MediaTask) run(eng *Engine, baseDownloadDir string) {
 
 	// Inspect metadata first
 	meta, err := InspectMedia(ctx, rawURL)
+	if ctx.Err() != nil {
+		return
+	}
 	if err != nil {
 		t.mu.Lock()
 		t.State = "failed"
 		t.Error = fmt.Sprintf("Inspection error: %v", err)
 		t.mu.Unlock()
+		return
+	}
+
+	if ctx.Err() != nil {
 		return
 	}
 
@@ -971,7 +992,8 @@ func (mm *MediaManager) CancelTask(id string, deleteFiles bool) error {
 			strings.EqualFold(t.ID, clean) ||
 			strings.EqualFold(t.InfoHash, clean) ||
 			strings.EqualFold(t.URL, clean) ||
-			strings.EqualFold(HashURL(t.URL), clean) {
+			strings.EqualFold(HashURL(t.URL), clean) ||
+			(len(clean) >= 6 && (strings.Contains(strings.ToLower(t.URL), strings.ToLower(clean)) || strings.Contains(strings.ToLower(t.ID), strings.ToLower(clean)))) {
 			task = t
 			taskId = k
 			break
@@ -981,6 +1003,20 @@ func (mm *MediaManager) CancelTask(id string, deleteFiles bool) error {
 	if task != nil {
 		task.pause()
 		delete(mm.tasks, taskId)
+		if task.ID != "" {
+			delete(mm.tasks, task.ID)
+			delete(mm.tasks, strings.ToLower(task.ID))
+		}
+		if task.URL != "" {
+			delete(mm.tasks, task.URL)
+			delete(mm.tasks, strings.ToLower(task.URL))
+			delete(mm.tasks, HashURL(task.URL))
+			delete(mm.tasks, strings.ToLower(HashURL(task.URL)))
+		}
+		if task.InfoHash != "" {
+			delete(mm.tasks, task.InfoHash)
+			delete(mm.tasks, strings.ToLower(task.InfoHash))
+		}
 	}
 	mm.mu.Unlock()
 

@@ -179,11 +179,18 @@ func (t *MediaTask) runScribd(eng *Engine, baseDownloadDir string) {
 	t.mu.Unlock()
 
 	meta, err := InspectScribd(ctx, rawURL)
+	if ctx.Err() != nil {
+		return
+	}
 	if err != nil {
 		t.mu.Lock()
 		t.State = "failed"
 		t.Error = fmt.Sprintf("Scribd inspection error: %v", err)
 		t.mu.Unlock()
+		return
+	}
+
+	if ctx.Err() != nil {
 		return
 	}
 

@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -571,6 +572,16 @@ func (s *Server) handleResumeTorrent(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteTorrent(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	hash := r.PathValue("hash")
+	if qHash := r.URL.Query().Get("hash"); qHash != "" && (hash == "" || hash == "undefined") {
+		hash = qHash
+	}
+	if qURL := r.URL.Query().Get("url"); qURL != "" && (hash == "" || hash == "undefined") {
+		hash = qURL
+	}
+	if unescaped, err := url.PathUnescape(hash); err == nil && unescaped != "" {
+		hash = unescaped
+	}
+	hash = strings.TrimSpace(hash)
 	deleteFiles := r.URL.Query().Get("delete_files") == "true"
 
 	if err := s.engine.Remove(hash, deleteFiles); err != nil {
@@ -1081,14 +1092,16 @@ func (s *Server) handleGetMediaTasks(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCancelMediaTask(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	id := r.PathValue("id")
+	if qID := r.URL.Query().Get("id"); qID != "" && (id == "" || id == "undefined") {
+		id = qID
+	}
+	if unescaped, err := url.PathUnescape(id); err == nil && unescaped != "" {
+		id = unescaped
+	}
+	id = strings.TrimSpace(id)
 	deleteFiles := r.URL.Query().Get("delete_files") == "true"
 
-	if s.engine.MediaManager() == nil {
-		http.Error(w, `{"error":"media manager not initialized"}`, http.StatusInternalServerError)
-		return
-	}
-
-	if err := s.engine.MediaManager().CancelTask(id, deleteFiles); err != nil {
+	if err := s.engine.Remove(id, deleteFiles); err != nil {
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return

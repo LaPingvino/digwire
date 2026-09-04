@@ -833,8 +833,9 @@ async function confirmDelete(deleteFiles) {
     }
     if (res.ok && data.status === 'ok') {
       showToast("Transfer removed.", "info", 2500);
-      torrentsData = torrentsData.filter(t => t.info_hash !== hash && t.magnet_uri !== hash);
+      torrentsData = torrentsData.filter(t => t.info_hash !== hash && t.magnet_uri !== hash && (!t.id || t.id !== hash));
       renderTorrents();
+      setTimeout(fetchTorrents, 300);
     } else {
       showToast("Delete failed: " + (data.error || `HTTP ${res.status}`), "error", 4000);
     }

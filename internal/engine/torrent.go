@@ -2344,6 +2344,19 @@ func (e *Engine) Remove(infoHashHex string, deleteFiles bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	infoHashHex = strings.TrimSpace(infoHashHex)
+	if unescaped, err := url.PathUnescape(infoHashHex); err == nil && unescaped != "" {
+		infoHashHex = unescaped
+	}
+	if strings.HasPrefix(infoHashHex, "magnet:?") {
+		if u, err := url.Parse(infoHashHex); err == nil {
+			xt := u.Query().Get("xt")
+			if strings.HasPrefix(xt, "urn:btih:") {
+				infoHashHex = strings.TrimPrefix(xt, "urn:btih:")
+			}
+		}
+	}
+
 	removed := false
 
 	// Check if HTTP download task
