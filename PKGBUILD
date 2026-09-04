@@ -1,7 +1,7 @@
 # Maintainer: Joop Kiefte <joop@kiefte.eu>
 pkgname=digwire-git
 _pkgname=digwire
-pkgver=r100.18f0e45
+pkgver=r101.d3699ed
 pkgrel=1
 pkgdesc="Modern hybrid BitTorrent swarm & multi-source web download manager with Libadwaita aesthetic"
 arch=('x86_64' 'aarch64' 'armv7h')
@@ -9,7 +9,8 @@ url="https://github.com/LaPingvino/digwire"
 license=('GPL-3.0-or-later')
 depends=('glibc' 'gtk3' 'webkit2gtk-4.1')
 optdepends=('yt-dlp: for universal social media and streaming downloads'
-            'ffmpeg: for embedded subtitle extraction and media transcoding')
+            'ffmpeg: for embedded subtitle extraction and media transcoding'
+            'noto-fonts-emoji: for native color emoji and country flag rendering')
 makedepends=('go' 'git' 'pkgconf' 'gtk3' 'webkit2gtk-4.1')
 provides=('digwire')
 conflicts=('digwire')

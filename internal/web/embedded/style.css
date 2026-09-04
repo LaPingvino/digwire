@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Noto+Color+Emoji&display=swap');
+
 :root {
   --adw-bg-color: #242424;
   --adw-header-bg: #1e1e1e;
@@ -35,7 +37,7 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
-  font-family: system-ui, -apple-system, "Cantarell", "Ubuntu", "Segoe UI", Roboto, sans-serif;
+  font-family: system-ui, -apple-system, "Cantarell", "Ubuntu", "Noto Sans", "Segoe UI", Roboto, "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", sans-serif;
   user-select: none;
 }
 

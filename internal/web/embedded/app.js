@@ -103,20 +103,20 @@ const ICONS = {
 
 function getQualifierBadge(q) {
   if (!q) return '';
-  let icon = ICONS.zap;
+  let emoji = '⚡';
   switch (q.class) {
-    case 'blockbuster': icon = ICONS.rocket; break;
-    case 'mainstream': icon = ICONS.zap; break;
-    case 'cult': icon = ICONS.disc; break;
-    case 'long_tail': icon = ICONS.compass; break;
-    case 'deep_archive': icon = ICONS.archive; break;
-    case 'ghost_ship': icon = ICONS.ghost; break;
-    case 'discovering': icon = ICONS.search; break;
-    default: icon = ICONS.zap; break;
+    case 'blockbuster': emoji = '🚀'; break;
+    case 'mainstream': emoji = '⚡'; break;
+    case 'cult': emoji = '💿'; break;
+    case 'long_tail': emoji = '🧭'; break;
+    case 'deep_archive': emoji = '🏛️'; break;
+    case 'ghost_ship': emoji = '👻'; break;
+    case 'discovering': emoji = '🔍'; break;
+    default: emoji = '⚡'; break;
   }
   const title = escapeHtml(q.description + (q.easter_egg ? '\n\n' + q.easter_egg : ''));
   return `<span class="torrent-badge badge-qualifier badge-qualifier-${q.class}" title="${title}">
-    ${icon}<span>${escapeHtml(q.label || q.badge)}</span>
+    <span class="badge-icon" style="margin-right: 3px;">${emoji}</span><span>${escapeHtml(q.label || q.badge)}</span>
   </span>`;
 }
 
