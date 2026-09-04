@@ -238,12 +238,21 @@ func (e *Engine) saveTorrentMetainfo(t *torrent.Torrent) {
 		return
 	}
 	mi := t.Metainfo()
-	f, err := os.Create(filePath)
+	if len(mi.InfoBytes) == 0 {
+		return
+	}
+	tmpFile := filePath + ".tmp"
+	f, err := os.Create(tmpFile)
 	if err != nil {
 		return
 	}
-	defer f.Close()
-	_ = mi.Write(f)
+	if err := mi.Write(f); err != nil {
+		f.Close()
+		_ = os.Remove(tmpFile)
+		return
+	}
+	f.Close()
+	_ = os.Rename(tmpFile, filePath)
 }
 
 func NewEngine(cfg *config.Config) (*Engine, error) {
@@ -492,7 +501,7 @@ func (e *Engine) loadSession() {
 
 		// 1. Try loading cached .torrent metainfo directly so metadata & piece progress are immediately available on start!
 		if item.InfoHash != "" {
-			if _, err := os.Stat(cachedTorrentPath); err == nil {
+			if stat, err := os.Stat(cachedTorrentPath); err == nil && stat.Size() > 100 {
 				if mi, err := metainfo.LoadFromFile(cachedTorrentPath); err == nil && mi != nil {
 					if addedT, err := e.client.AddTorrent(mi); err == nil {
 						t = addedT
