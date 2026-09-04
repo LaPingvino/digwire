@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -32,6 +33,7 @@ import (
 	"github.com/anacrolix/torrent/bencode"
 	"github.com/anacrolix/torrent/metainfo"
 	"github.com/anacrolix/torrent/storage"
+	_ "modernc.org/sqlite"
 )
 
 type SavedTorrent struct {
@@ -415,6 +417,18 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 	pieceCompletion, pErr := storage.NewDefaultPieceCompletionForDir(pieceCompDir)
 	if pErr != nil {
 		pieceCompletion = storage.NewMapPieceCompletion()
+	} else {
+		// Optimize SQLite piece completion database (.torrent.db) to prevent WAL bloat
+		torrentDBPath := filepath.Join(pieceCompDir, ".torrent.db")
+		if db, dErr := sql.Open("sqlite", torrentDBPath); dErr == nil {
+			_, _ = db.Exec("PRAGMA journal_mode = WAL;")
+			_, _ = db.Exec("PRAGMA journal_size_limit = 67108864;") // 64 MB WAL limit
+			_, _ = db.Exec("PRAGMA wal_autocheckpoint = 1000;")
+			_, _ = db.Exec("PRAGMA busy_timeout = 5000;")
+			_, _ = db.Exec("PRAGMA synchronous = NORMAL;")
+			_, _ = db.Exec("PRAGMA wal_checkpoint(PASSIVE);")
+			_ = db.Close()
+		}
 	}
 
 	storageOpts := storage.NewFileClientOpts{
@@ -576,8 +590,15 @@ func (e *Engine) saveSessionLocked() {
 	}
 
 	data, err := json.MarshalIndent(SessionState{Torrents: list, HTTPTasks: httpList, MediaTasks: mediaList}, "", "  ")
-	if err == nil {
-		_ = os.WriteFile(filePath, data, 0644)
+	if err == nil && len(data) > 0 {
+		tmpPath := filePath + ".tmp"
+		bakPath := filePath + ".bak"
+		if err := os.WriteFile(tmpPath, data, 0644); err == nil {
+			if stat, err := os.Stat(filePath); err == nil && stat.Size() > 0 {
+				_ = os.Rename(filePath, bakPath)
+			}
+			_ = os.Rename(tmpPath, filePath)
+		}
 	}
 }
 
@@ -602,14 +623,45 @@ func (e *Engine) markTorrentPiecesComplete(tor *torrent.Torrent) {
 
 func (e *Engine) loadSession() {
 	filePath := e.getSessionFilePath()
+	var state SessionState
 	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return
+	if err == nil && len(data) > 0 {
+		_ = json.Unmarshal(data, &state)
 	}
 
-	var state SessionState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return
+	// 1. If session.json is empty or invalid, try backup session.json.bak
+	if len(state.Torrents) == 0 && len(state.HTTPTasks) == 0 && len(state.MediaTasks) == 0 {
+		bakPath := filePath + ".bak"
+		if bakData, bErr := os.ReadFile(bakPath); bErr == nil && len(bakData) > 0 {
+			_ = json.Unmarshal(bakData, &state)
+		}
+	}
+
+	// 2. If still no torrents in state, auto-recover from cached .torrent files in torrents cache directory!
+	if len(state.Torrents) == 0 {
+		cacheDir := e.getTorrentsCacheDir()
+		if entries, err := os.ReadDir(cacheDir); err == nil {
+			for _, entry := range entries {
+				if !entry.IsDir() && strings.HasSuffix(strings.ToLower(entry.Name()), ".torrent") {
+					tPath := filepath.Join(cacheDir, entry.Name())
+					if mi, err := metainfo.LoadFromFile(tPath); err == nil && mi != nil {
+						h := mi.HashInfoBytes().HexString()
+						if h != "" {
+							name := strings.TrimSuffix(entry.Name(), ".torrent")
+							if info, iErr := mi.UnmarshalInfo(); iErr == nil && info.BestName() != "" {
+								name = info.BestName()
+							}
+							state.Torrents = append(state.Torrents, SavedTorrent{
+								InfoHash:  h,
+								Name:      name,
+								MagnetURI: fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", h, url.QueryEscape(name)),
+								AddedAt:   time.Now().Unix(),
+							})
+						}
+					}
+				}
+			}
+		}
 	}
 
 	mediaDestDirs := make(map[string]string)
@@ -955,14 +1007,45 @@ func (e *Engine) loadSession() {
 	}
 }
 
+func (e *Engine) checkpointDatabases() {
+	var configDir string
+	if e.cfg != nil && e.cfg.GetConfigPath() != "" {
+		configDir = filepath.Dir(e.cfg.GetConfigPath())
+	} else {
+		userCfg, _ := os.UserConfigDir()
+		if userCfg != "" {
+			configDir = filepath.Join(userCfg, "digwire")
+		} else {
+			configDir = "."
+		}
+	}
+
+	for _, dbName := range []string{".torrent.db", "dht_index.sqlite"} {
+		dbPath := filepath.Join(configDir, dbName)
+		if _, err := os.Stat(dbPath); err == nil {
+			if db, err := sql.Open("sqlite", dbPath); err == nil {
+				_, _ = db.Exec("PRAGMA journal_mode = WAL;")
+				_, _ = db.Exec("PRAGMA journal_size_limit = 67108864;")
+				_, _ = db.Exec("PRAGMA wal_autocheckpoint = 1000;")
+				_, _ = db.Exec("PRAGMA wal_checkpoint(PASSIVE);")
+				_ = db.Close()
+			}
+		}
+	}
+}
+
 func (e *Engine) monitorLoop() {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
+	walTicker := time.NewTicker(3 * time.Minute)
+	defer walTicker.Stop()
 
 	for {
 		select {
 		case <-e.stopMonitor:
 			return
+		case <-walTicker.C:
+			e.checkpointDatabases()
 		case now := <-ticker.C:
 			e.mu.Lock()
 			torrents := e.client.Torrents()
