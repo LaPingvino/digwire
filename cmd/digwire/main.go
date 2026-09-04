@@ -94,7 +94,7 @@ func registerMimeTypes() {
 	}()
 }
 
-var Version = "0.2.4"
+var Version = "0.2.5"
 
 func main() {
 	// WebKit2GTK Linux rendering and sandboxing compatibility flags (prevents black screen with DMA-BUF compositing on Linux GPUs/Crostini)
