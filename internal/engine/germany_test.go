@@ -20,6 +20,7 @@ func TestGermanyModeConfigAndEngine(t *testing.T) {
 		ListenPort:  0,
 		GermanyMode: false,
 	}
+	cfg.SetConfigPath(filepath.Join(tempDir, "config.yaml"))
 
 	eng, err := NewEngine(cfg)
 	if err != nil {

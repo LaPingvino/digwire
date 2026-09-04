@@ -78,7 +78,7 @@ func (p *DocumentProvider) Search(ctx context.Context, query string) ([]Result, 
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Digwire/0.3.0 (Library & Documents Engine)")
+	req.Header.Set("User-Agent", "Digwire/0.3.1 (Library & Documents Engine)")
 
 	resp, err := p.client.Do(req)
 	if err != nil {

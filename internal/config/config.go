@@ -252,6 +252,13 @@ func (c *Config) SetConfigPath(p string) {
 	c.configPath = p
 }
 
+func (c *Config) GetConfigPath() string {
+	if c == nil {
+		return ""
+	}
+	return c.configPath
+}
+
 func (c *Config) Save() error {
 	if c.WebPort <= 0 {
 		c.WebPort = 9091

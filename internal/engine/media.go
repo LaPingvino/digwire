@@ -56,9 +56,11 @@ type MediaMetadata struct {
 	Platform    string                     `json:"platform"` // "youtube", "tiktok", "instagram", "twitter", "reddit", "scribd", "twitch", "vimeo", etc.
 	UploadDate  string                     `json:"upload_date,omitempty"`
 	ViewCount   int64                      `json:"view_count,omitempty"`
-	Formats     []MediaFormat              `json:"formats,omitempty"`
-	Subtitles   map[string][]MediaSubtitle `json:"subtitles,omitempty"`
-	DirectURL   string                     `json:"direct_url,omitempty"`
+	Formats      []MediaFormat              `json:"formats,omitempty"`
+	Subtitles    map[string][]MediaSubtitle `json:"subtitles,omitempty"`
+	DirectURL    string                     `json:"direct_url,omitempty"`
+	CookieArgs   []string                   `json:"cookie_args,omitempty"`
+	CookieSource string                     `json:"cookie_source,omitempty"`
 }
 
 // MediaDownloadOptions configures how media is fetched and converted
@@ -147,44 +149,48 @@ func DetectMediaPlatform(rawURL string) string {
 	if err != nil {
 		return "web"
 	}
-	host := strings.ToLower(u.Host)
+	host := strings.ToLower(u.Hostname())
 	host = strings.TrimPrefix(host, "www.")
 	host = strings.TrimPrefix(host, "m.")
 
+	matchDomain := func(d string) bool {
+		return host == d || strings.HasSuffix(host, "."+d)
+	}
+
 	switch {
-	case strings.Contains(host, "youtube.com") || strings.Contains(host, "youtu.be"):
+	case matchDomain("youtube.com") || matchDomain("youtu.be"):
 		return "youtube"
-	case strings.Contains(host, "tiktok.com"):
+	case matchDomain("tiktok.com"):
 		return "tiktok"
-	case strings.Contains(host, "instagram.com"):
+	case matchDomain("instagram.com"):
 		return "instagram"
-	case strings.Contains(host, "twitter.com") || strings.Contains(host, "x.com") || strings.Contains(host, "t.co"):
+	case matchDomain("twitter.com") || matchDomain("x.com") || matchDomain("t.co"):
 		return "twitter"
-	case strings.Contains(host, "reddit.com") || strings.Contains(host, "redd.it"):
+	case matchDomain("reddit.com") || matchDomain("redd.it"):
 		return "reddit"
-	case strings.Contains(host, "vimeo.com"):
+	case matchDomain("vimeo.com"):
 		return "vimeo"
-	case strings.Contains(host, "twitch.tv"):
+	case matchDomain("twitch.tv"):
 		return "twitch"
-	case strings.Contains(host, "bilibili.com"):
+	case matchDomain("bilibili.com"):
 		return "bilibili"
-	case strings.Contains(host, "soundcloud.com"):
+	case matchDomain("soundcloud.com"):
 		return "soundcloud"
-	case strings.Contains(host, "facebook.com") || strings.Contains(host, "fb.watch"):
+	case matchDomain("facebook.com") || matchDomain("fb.watch"):
 		return "facebook"
-	case strings.Contains(host, "scribd.com"):
+	case matchDomain("scribd.com"):
 		return "scribd"
-	case strings.Contains(host, "archive.org"):
+	case matchDomain("archive.org"):
 		return "archiveorg"
-	case strings.Contains(host, "rumble.com"):
+	case matchDomain("rumble.com"):
 		return "rumble"
-	case strings.Contains(host, "odysee.com"):
+	case matchDomain("odysee.com"):
 		return "odysee"
-	case strings.Contains(host, "dailymotion.com") || strings.Contains(host, "dai.ly"):
+	case matchDomain("dailymotion.com") || matchDomain("dai.ly"):
 		return "dailymotion"
-	case strings.Contains(host, "threads.net"):
+	case matchDomain("threads.net"):
 		return "threads"
-	case strings.Contains(host, "pinterest.com") || strings.Contains(host, "pin.it"):
+	case matchDomain("pinterest.com") || matchDomain("pin.it"):
 		return "pinterest"
 	default:
 		return "media"
@@ -268,46 +274,144 @@ type ytdlpJSON struct {
 	} `json:"automatic_captions"`
 }
 
-// InspectMedia inspects a media URL using yt-dlp and extracts rich metadata
+// GetMediaExtractorArgs returns prioritized combinations of cookie and extractor arguments for yt-dlp
+func GetMediaExtractorArgs() [][]string {
+	var candidates [][]string
+
+	// 1. Custom cookies.txt in user config dir
+	configDir, _ := os.UserConfigDir()
+	if configDir != "" {
+		cookiesFile := filepath.Join(configDir, "digwire", "cookies.txt")
+		if fi, err := os.Stat(cookiesFile); err == nil && fi.Size() > 0 {
+			candidates = append(candidates, []string{"--cookies", cookiesFile})
+		}
+	}
+
+	// 2. Installed browser profiles (Firefox, Chromium, Chrome, Brave, Edge, Opera, Vivaldi)
+	home, _ := os.UserHomeDir()
+	browserProfiles := []struct {
+		name string
+		path string
+	}{
+		{"firefox", filepath.Join(home, ".mozilla", "firefox")},
+		{"chromium", filepath.Join(home, ".config", "chromium")},
+		{"chrome", filepath.Join(home, ".config", "google-chrome")},
+		{"brave", filepath.Join(home, ".config", "BraveSoftware", "Brave-Browser")},
+		{"edge", filepath.Join(home, ".config", "microsoft-edge")},
+		{"opera", filepath.Join(home, ".config", "opera")},
+		{"vivaldi", filepath.Join(home, ".config", "vivaldi")},
+	}
+
+	for _, bp := range browserProfiles {
+		if fi, err := os.Stat(bp.path); err == nil && fi.IsDir() {
+			candidates = append(candidates, []string{"--cookies-from-browser", bp.name})
+		}
+	}
+
+	// 3. Browsers available on PATH
+	for _, b := range []string{"firefox", "google-chrome", "chromium", "brave-browser", "brave", "microsoft-edge", "opera", "vivaldi"} {
+		if _, err := exec.LookPath(b); err == nil {
+			cleanName := b
+			if strings.HasPrefix(b, "google-chrome") {
+				cleanName = "chrome"
+			} else if strings.HasPrefix(b, "brave") {
+				cleanName = "brave"
+			} else if strings.HasPrefix(b, "microsoft-edge") {
+				cleanName = "edge"
+			}
+			alreadyPresent := false
+			for _, c := range candidates {
+				if len(c) == 2 && c[0] == "--cookies-from-browser" && c[1] == cleanName {
+					alreadyPresent = true
+					break
+				}
+			}
+			if !alreadyPresent {
+				candidates = append(candidates, []string{"--cookies-from-browser", cleanName})
+			}
+		}
+	}
+
+	// 4. Default no-cookies attempt
+	candidates = append(candidates, []string{})
+
+	return candidates
+}
+
+// InspectMedia inspects a media URL using yt-dlp and extracts rich metadata, automatically authenticating with available browser cookies when required
 func InspectMedia(ctx context.Context, rawURL string) (*MediaMetadata, error) {
 	bin, err := DetectYtDlpPath()
 	if err != nil {
 		return nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 35*time.Second)
-	defer cancel()
+	extractorCandidates := GetMediaExtractorArgs()
+	var lastErr error
+	var winningStdout []byte
+	var winningCookieArgs []string
 
-	cmd := exec.CommandContext(ctx, bin,
-		"-J",
-		"--no-warnings",
-		"--flat-playlist",
-		"--no-check-certificates",
-		rawURL,
-	)
+	for _, cookieArgs := range extractorCandidates {
+		inspectCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+		args := []string{
+			"-J",
+			"--no-warnings",
+			"--flat-playlist",
+			"--no-check-certificates",
+		}
+		args = append(args, cookieArgs...)
+		args = append(args, rawURL)
 
-	if err := cmd.Run(); err != nil {
-		// If flat playlist fails, retry with standard dump
-		cmd2 := exec.CommandContext(ctx, bin, "-J", "--no-warnings", "--no-check-certificates", rawURL)
+		cmd := exec.CommandContext(inspectCtx, bin, args...)
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+
+		if err := cmd.Run(); err == nil && stdout.Len() > 0 {
+			cancel()
+			winningStdout = stdout.Bytes()
+			winningCookieArgs = cookieArgs
+			break
+		}
+
+		// Retry with full dump without flat-playlist if flat-playlist failed
+		fullArgs := []string{"-J", "--no-warnings", "--no-check-certificates"}
+		fullArgs = append(fullArgs, cookieArgs...)
+		fullArgs = append(fullArgs, rawURL)
+
+		cmd2 := exec.CommandContext(inspectCtx, bin, fullArgs...)
 		stdout.Reset()
 		stderr.Reset()
 		cmd2.Stdout = &stdout
 		cmd2.Stderr = &stderr
-		if err2 := cmd2.Run(); err2 != nil {
-			errStr := strings.TrimSpace(stderr.String())
-			if errStr == "" {
-				errStr = err2.Error()
-			}
-			return nil, fmt.Errorf("media inspection failed: %s", errStr)
+
+		if err2 := cmd2.Run(); err2 == nil && stdout.Len() > 0 {
+			cancel()
+			winningStdout = stdout.Bytes()
+			winningCookieArgs = cookieArgs
+			break
 		}
+
+		cancel()
+		errStr := strings.TrimSpace(stderr.String())
+		if errStr == "" && err != nil {
+			errStr = err.Error()
+		}
+		lastErr = fmt.Errorf("%s", errStr)
+	}
+
+	if len(winningStdout) == 0 {
+		if lastErr != nil && strings.Contains(strings.ToLower(lastErr.Error()), "sign in to confirm you") {
+			return nil, fmt.Errorf("YouTube requires sign-in: Please log into YouTube in your browser (Firefox/Chrome/Chromium/Brave) or export cookies to ~/.config/digwire/cookies.txt")
+		}
+		if lastErr != nil {
+			return nil, fmt.Errorf("media inspection failed: %w", lastErr)
+		}
+		return nil, fmt.Errorf("failed to extract media metadata")
 	}
 
 	var data ytdlpJSON
-	if err := json.Unmarshal(stdout.Bytes(), &data); err != nil {
+	if err := json.Unmarshal(winningStdout, &data); err != nil {
 		return nil, fmt.Errorf("failed to parse media metadata: %w", err)
 	}
 
@@ -326,20 +430,27 @@ func InspectMedia(ctx context.Context, rawURL string) (*MediaMetadata, error) {
 		durationSec, _ = strconv.ParseInt(d, 10, 64)
 	}
 
+	cookieSource := "default"
+	if len(winningCookieArgs) >= 2 {
+		cookieSource = winningCookieArgs[1]
+	}
+
 	meta := &MediaMetadata{
-		URL:         rawURL,
-		ID:          data.ID,
-		Title:       data.Title,
-		Description: data.Description,
-		Thumbnail:   data.Thumbnail,
-		Duration:    durationSec,
-		Uploader:    data.Uploader,
-		UploaderURL: data.UploaderURL,
-		Platform:    platform,
-		UploadDate:  data.UploadDate,
-		ViewCount:   data.ViewCount,
-		DirectURL:   data.URL,
-		Subtitles:   make(map[string][]MediaSubtitle),
+		URL:          rawURL,
+		ID:           data.ID,
+		Title:        data.Title,
+		Description:  data.Description,
+		Thumbnail:    data.Thumbnail,
+		Duration:     durationSec,
+		Uploader:     data.Uploader,
+		UploaderURL:  data.UploaderURL,
+		Platform:     platform,
+		UploadDate:   data.UploadDate,
+		ViewCount:    data.ViewCount,
+		DirectURL:    data.URL,
+		CookieArgs:   winningCookieArgs,
+		CookieSource: cookieSource,
+		Subtitles:    make(map[string][]MediaSubtitle),
 	}
 
 	if meta.Title == "" {
@@ -490,6 +601,10 @@ func (t *MediaTask) run(eng *Engine, baseDownloadDir string) {
 		"--write-subs",
 		"--sub-langs", "all,-live_chat",
 		"--no-check-certificates",
+	}
+
+	if len(meta.CookieArgs) > 0 {
+		args = append(args, meta.CookieArgs...)
 	}
 
 	if opts.AudioOnly {

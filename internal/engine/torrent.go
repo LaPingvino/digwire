@@ -256,7 +256,10 @@ func formatBytes(b int64) string {
 	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
-func getSessionFilePath() string {
+func (e *Engine) getSessionFilePath() string {
+	if e != nil && e.cfg != nil && e.cfg.GetConfigPath() != "" {
+		return filepath.Join(filepath.Dir(e.cfg.GetConfigPath()), "session.json")
+	}
 	configDir, err := os.UserConfigDir()
 	if err != nil {
 		configDir = "."
@@ -264,7 +267,12 @@ func getSessionFilePath() string {
 	return filepath.Join(configDir, "digwire", "session.json")
 }
 
-func getTorrentsCacheDir() string {
+func (e *Engine) getTorrentsCacheDir() string {
+	if e != nil && e.cfg != nil && e.cfg.GetConfigPath() != "" {
+		dir := filepath.Join(filepath.Dir(e.cfg.GetConfigPath()), "torrents")
+		_ = os.MkdirAll(dir, 0755)
+		return dir
+	}
 	configDir, err := os.UserConfigDir()
 	if err != nil {
 		configDir = "."
@@ -274,11 +282,11 @@ func getTorrentsCacheDir() string {
 	return dir
 }
 
-func getTorrentCacheFilePath(infoHashHex string) string {
+func (e *Engine) getTorrentCacheFilePath(infoHashHex string) string {
 	if infoHashHex == "" {
 		return ""
 	}
-	return filepath.Join(getTorrentsCacheDir(), strings.ToLower(infoHashHex)+".torrent")
+	return filepath.Join(e.getTorrentsCacheDir(), strings.ToLower(infoHashHex)+".torrent")
 }
 
 func (e *Engine) saveTorrentMetainfo(t *torrent.Torrent) {
@@ -286,7 +294,7 @@ func (e *Engine) saveTorrentMetainfo(t *torrent.Torrent) {
 		return
 	}
 	hash := t.InfoHash().HexString()
-	filePath := getTorrentCacheFilePath(hash)
+	filePath := e.getTorrentCacheFilePath(hash)
 	if filePath == "" {
 		return
 	}
@@ -320,7 +328,7 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 	tConfig.ListenPort = cfg.ListenPort
 
 	// BEP 10 / BEP 20 Protocol Identity & Extension Handshake
-	tConfig.ExtendedHandshakeClientVersion = "Digwire 0.3.0"
+	tConfig.ExtendedHandshakeClientVersion = "Digwire 0.3.1"
 	tConfig.Bep20 = "-DW0300-"
 
 	// Swarm Altruism & Reliable Metadata Exchange (BEP 9 / ut_metadata)
@@ -390,12 +398,16 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 	}
 
 	// Persistent SQLite Piece Completion Database (.torrent.db, stores verified SHA-1 piece hashes on disk across restarts)
-	configDir, _ := os.UserConfigDir()
 	var pieceCompDir string
-	if configDir != "" {
-		pieceCompDir = filepath.Join(configDir, "digwire")
+	if cfg != nil && cfg.GetConfigPath() != "" {
+		pieceCompDir = filepath.Dir(cfg.GetConfigPath())
 	} else {
-		pieceCompDir = cfg.DownloadDir
+		configDir, _ := os.UserConfigDir()
+		if configDir != "" {
+			pieceCompDir = filepath.Join(configDir, "digwire")
+		} else {
+			pieceCompDir = cfg.DownloadDir
+		}
 	}
 	_ = os.MkdirAll(pieceCompDir, 0755)
 
@@ -452,7 +464,7 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 }
 
 func (e *Engine) saveSessionLocked() {
-	filePath := getSessionFilePath()
+	filePath := e.getSessionFilePath()
 	_ = os.MkdirAll(filepath.Dir(filePath), 0755)
 
 	torrents := e.client.Torrents()
@@ -578,7 +590,7 @@ func (e *Engine) markTorrentPiecesComplete(tor *torrent.Torrent) {
 }
 
 func (e *Engine) loadSession() {
-	filePath := getSessionFilePath()
+	filePath := e.getSessionFilePath()
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return
@@ -599,7 +611,7 @@ func (e *Engine) loadSession() {
 
 		var t *torrent.Torrent
 		var hash string
-		cachedTorrentPath := getTorrentCacheFilePath(item.InfoHash)
+		cachedTorrentPath := e.getTorrentCacheFilePath(item.InfoHash)
 
 		// 1. Try loading cached .torrent metainfo directly so metadata & piece progress are immediately available on start!
 		if item.InfoHash != "" {
@@ -630,7 +642,10 @@ func (e *Engine) loadSession() {
 		t.AddTrackers(GetTier1TrackerList())
 
 		savedCompleted := item.CompletedBytes
+		isPlausiblePureSeed := item.IsSeeding || (item.TotalBytes > 0 && savedCompleted >= item.TotalBytes)
+
 		if t != nil && t.Info() != nil {
+			tLen := t.Length()
 			bComp := t.BytesCompleted()
 			if bComp > savedCompleted {
 				savedCompleted = bComp
@@ -639,8 +654,14 @@ func (e *Engine) loadSession() {
 			if onDisk > savedCompleted {
 				savedCompleted = onDisk
 			}
-			if t.Length() > 0 && item.TotalBytes == 0 {
-				item.TotalBytes = t.Length()
+			if tLen > 0 {
+				if item.TotalBytes == 0 {
+					item.TotalBytes = tLen
+				}
+				if onDisk >= tLen || savedCompleted >= tLen {
+					isPlausiblePureSeed = true
+					savedCompleted = tLen
+				}
 			}
 		}
 
@@ -654,13 +675,12 @@ func (e *Engine) loadSession() {
 		}
 
 		isGermanMode := e.cfg != nil && e.cfg.GermanyMode
-		isCompleteOnDisk := (item.TotalBytes > 0 && savedCompleted >= item.TotalBytes) || (t != nil && t.Info() != nil && t.Length() > 0 && savedCompleted >= t.Length())
-		isSeeding := isCompleteOnDisk && !isGermanMode
+		isSeeding := isPlausiblePureSeed && !isGermanMode
 
-		if isCompleteOnDisk && t != nil && t.Info() != nil {
+		if isPlausiblePureSeed && t != nil && t.Info() != nil {
 			e.markTorrentPiecesComplete(t)
-			savedCompleted = t.Length()
-			if item.TotalBytes == 0 {
+			if t.Length() > 0 {
+				savedCompleted = t.Length()
 				item.TotalBytes = t.Length()
 			}
 		}
@@ -709,7 +729,7 @@ func (e *Engine) loadSession() {
 		}
 
 		// Background resolver and completion handler for torrents
-		if isCompleteOnDisk {
+		if isPlausiblePureSeed {
 			// Already complete and seeding: simply inject webseeds and persist metainfo once info is ready
 			go func(tor *torrent.Torrent, seeds []string) {
 				<-tor.GotInfo()
@@ -1387,6 +1407,22 @@ func (e *Engine) CreateWebBridgeTorrent(ctx context.Context, fileURL string, mir
 // AdoptExistingLocalProgress scans for any partial or remnant files matching the torrent layout
 // (such as .part, .crdownload, .download, or direct wget partial downloads) and moves/renames them
 // into the expected torrent file path so VerifyData() can immediately discover and reuse existing progress.
+// getFileTargetPath calculates the canonical file path on disk for a torrent file
+func (e *Engine) getFileTargetPath(info *metainfo.Info, f metainfo.FileInfo) string {
+	if info == nil {
+		return ""
+	}
+	baseDownloadDir := e.cfg.DownloadDir
+	displayPath := f.DisplayPath(info)
+	if info.IsDir() {
+		return filepath.Join(baseDownloadDir, info.BestName(), displayPath)
+	}
+	return filepath.Join(baseDownloadDir, displayPath)
+}
+
+// AdoptExistingLocalProgress scans for any partial or remnant files matching the torrent layout
+// (such as .part, .crdownload, .download, or direct wget partial downloads) and moves/renames them
+// into the expected torrent file path so VerifyData() can immediately discover and reuse existing progress.
 func (e *Engine) AdoptExistingLocalProgress(tor *torrent.Torrent) {
 	if tor == nil || tor.Info() == nil {
 		return
@@ -1396,8 +1432,8 @@ func (e *Engine) AdoptExistingLocalProgress(tor *torrent.Torrent) {
 	baseDownloadDir := e.cfg.DownloadDir
 
 	for _, f := range info.UpvertedFiles() {
+		targetPath := e.getFileTargetPath(info, f)
 		displayPath := f.DisplayPath(info)
-		targetPath := filepath.Join(baseDownloadDir, displayPath)
 
 		// If target file already exists and has data, keep it
 		if fi, err := os.Stat(targetPath); err == nil && fi.Size() > 0 {
@@ -1412,17 +1448,31 @@ func (e *Engine) AdoptExistingLocalProgress(tor *torrent.Torrent) {
 			targetPath + ".tmp",
 		}
 
-		// If multi-file torrent, also check if the file was downloaded directly into Downloads root (e.g. via wget)
+		// Flat candidate in baseDownloadDir
+		flatCandidate := filepath.Join(baseDownloadDir, displayPath)
+		if flatCandidate != targetPath {
+			candidates = append(candidates,
+				flatCandidate,
+				flatCandidate+".part",
+				flatCandidate+".crdownload",
+				flatCandidate+".download",
+				flatCandidate+".tmp",
+			)
+		}
+
+		// Root basename candidate in baseDownloadDir
 		filenameOnly := filepath.Base(displayPath)
 		if filenameOnly != "" && filenameOnly != displayPath {
 			rootCandidate := filepath.Join(baseDownloadDir, filenameOnly)
-			candidates = append(candidates,
-				rootCandidate,
-				rootCandidate+".part",
-				rootCandidate+".crdownload",
-				rootCandidate+".download",
-				rootCandidate+".tmp",
-			)
+			if rootCandidate != targetPath && rootCandidate != flatCandidate {
+				candidates = append(candidates,
+					rootCandidate,
+					rootCandidate+".part",
+					rootCandidate+".crdownload",
+					rootCandidate+".download",
+					rootCandidate+".tmp",
+				)
+			}
 		}
 
 		// Check candidates and adopt directly into expected targetPath
@@ -1473,8 +1523,7 @@ func (e *Engine) hasAnyExistingLocalFiles(tor *torrent.Torrent) bool {
 	baseDownloadDir := e.cfg.DownloadDir
 
 	for _, f := range info.UpvertedFiles() {
-		displayPath := f.DisplayPath(info)
-		targetPath := filepath.Join(baseDownloadDir, displayPath)
+		targetPath := e.getFileTargetPath(info, f)
 		if fi, err := os.Stat(targetPath); err == nil && fi.Size() > 0 {
 			return true
 		}
@@ -1483,16 +1532,18 @@ func (e *Engine) hasAnyExistingLocalFiles(tor *torrent.Torrent) bool {
 				return true
 			}
 		}
+		displayPath := f.DisplayPath(info)
+		flatCandidate := filepath.Join(baseDownloadDir, displayPath)
+		if flatCandidate != targetPath {
+			if fi, err := os.Stat(flatCandidate); err == nil && fi.Size() > 0 {
+				return true
+			}
+		}
 		filenameOnly := filepath.Base(displayPath)
 		if filenameOnly != "" && filenameOnly != displayPath {
 			rootCandidate := filepath.Join(baseDownloadDir, filenameOnly)
 			if fi, err := os.Stat(rootCandidate); err == nil && fi.Size() > 0 {
 				return true
-			}
-			for _, ext := range []string{".part", ".crdownload", ".download", ".tmp"} {
-				if fi, err := os.Stat(rootCandidate + ext); err == nil && fi.Size() > 0 {
-					return true
-				}
 			}
 		}
 	}
@@ -1509,8 +1560,7 @@ func (e *Engine) checkExistingLocalFileSize(tor *torrent.Torrent) int64 {
 	var totalOnDisk int64
 
 	for _, f := range info.UpvertedFiles() {
-		displayPath := f.DisplayPath(info)
-		targetPath := filepath.Join(baseDownloadDir, displayPath)
+		targetPath := e.getFileTargetPath(info, f)
 		if fi, err := os.Stat(targetPath); err == nil && !fi.IsDir() {
 			sz := fi.Size()
 			if sz > f.Length {
@@ -1529,10 +1579,11 @@ func (e *Engine) checkExistingLocalFileSize(tor *torrent.Torrent) int64 {
 				break
 			}
 		}
-		filenameOnly := filepath.Base(displayPath)
-		if filenameOnly != "" && filenameOnly != displayPath {
-			rootCandidate := filepath.Join(baseDownloadDir, filenameOnly)
-			if fi, err := os.Stat(rootCandidate); err == nil && !fi.IsDir() {
+
+		displayPath := f.DisplayPath(info)
+		flatCandidate := filepath.Join(baseDownloadDir, displayPath)
+		if flatCandidate != targetPath {
+			if fi, err := os.Stat(flatCandidate); err == nil && !fi.IsDir() {
 				sz := fi.Size()
 				if sz > f.Length {
 					sz = f.Length
@@ -1541,13 +1592,38 @@ func (e *Engine) checkExistingLocalFileSize(tor *torrent.Torrent) int64 {
 				continue
 			}
 			for _, ext := range []string{".part", ".crdownload", ".download", ".tmp"} {
-				if fi, err := os.Stat(rootCandidate + ext); err == nil && !fi.IsDir() {
+				if fi, err := os.Stat(flatCandidate + ext); err == nil && !fi.IsDir() {
 					sz := fi.Size()
 					if sz > f.Length {
 						sz = f.Length
 					}
 					totalOnDisk += sz
 					break
+				}
+			}
+		}
+
+		filenameOnly := filepath.Base(displayPath)
+		if filenameOnly != "" && filenameOnly != displayPath {
+			rootCandidate := filepath.Join(baseDownloadDir, filenameOnly)
+			if rootCandidate != targetPath && rootCandidate != flatCandidate {
+				if fi, err := os.Stat(rootCandidate); err == nil && !fi.IsDir() {
+					sz := fi.Size()
+					if sz > f.Length {
+						sz = f.Length
+					}
+					totalOnDisk += sz
+					continue
+				}
+				for _, ext := range []string{".part", ".crdownload", ".download", ".tmp"} {
+					if fi, err := os.Stat(rootCandidate + ext); err == nil && !fi.IsDir() {
+						sz := fi.Size()
+						if sz > f.Length {
+							sz = f.Length
+						}
+						totalOnDisk += sz
+						break
+					}
 				}
 			}
 		}
@@ -1975,7 +2051,7 @@ func (e *Engine) Remove(infoHashHex string, deleteFiles bool) error {
 			t.Drop()
 			delete(e.rateMap, infoHashHex)
 			delete(e.webSeedsMap, infoHashHex)
-			_ = os.Remove(getTorrentCacheFilePath(infoHashHex))
+			_ = os.Remove(e.getTorrentCacheFilePath(infoHashHex))
 			e.saveSessionLocked()
 
 			if deleteFiles && name != "" {
@@ -3010,7 +3086,7 @@ func (e *Engine) GetTorrentFileBytes(infoHashHex string) ([]byte, string, error)
 	hash := strings.ToLower(infoHashHex)
 
 	// 1. Check if cached .torrent file exists on disk
-	filePath := getTorrentCacheFilePath(hash)
+	filePath := e.getTorrentCacheFilePath(hash)
 	if filePath != "" {
 		if data, err := os.ReadFile(filePath); err == nil && len(data) > 0 {
 			name := hash + ".torrent"
@@ -3097,7 +3173,7 @@ func (e *Engine) InspectMagnetMetadata(ctx context.Context, uriOrHash string) (*
 	e.mu.RUnlock()
 
 	// 2. Check if cached .torrent metainfo exists on disk
-	cachedPath := getTorrentCacheFilePath(hash)
+	cachedPath := e.getTorrentCacheFilePath(hash)
 	if cachedPath != "" {
 		if mi, err := metainfo.LoadFromFile(cachedPath); err == nil && mi != nil {
 			if info, err := mi.UnmarshalInfo(); err == nil {
