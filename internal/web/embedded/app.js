@@ -303,11 +303,32 @@ function getTorrentMetaString(t) {
   const isPaused = t.state === 'paused';
   const isSeeding = t.state === 'seeding' || t.state === 'completed';
   const isMeta = t.state === 'metadata';
+  const isInspecting = t.state === 'inspecting';
+  const isProcessing = t.state === 'processing';
+  const isCreatingSwarm = t.state === 'creating_swarm';
   const isVerifying = t.is_verifying || t.state === 'verifying' || (t.verify_progress !== undefined && t.verify_progress > 0);
   const isWebDownload = t.magnet_uri && (t.magnet_uri.startsWith('http://') || t.magnet_uri.startsWith('https://'));
 
-  let metaString = `${formatBytes(t.completed_bytes)} of ${formatBytes(t.total_bytes)} (${t.progress.toFixed(1)}%)`;
-  if (isMeta) {
+  let metaString = '';
+  if (t.total_bytes > 0 && t.completed_bytes > 0) {
+    metaString = `${formatBytes(t.completed_bytes)} of ${formatBytes(t.total_bytes)} (${t.progress.toFixed(1)}%)`;
+  } else if (t.completed_bytes > 0) {
+    metaString = `${formatBytes(t.completed_bytes)} (${t.progress.toFixed(1)}%)`;
+  } else if (t.total_bytes > 0) {
+    metaString = `${formatBytes(t.total_bytes)} (${t.progress.toFixed(1)}%)`;
+  } else if (t.progress > 0) {
+    metaString = `${t.progress.toFixed(1)}%`;
+  } else {
+    metaString = '0.0%';
+  }
+
+  if (isInspecting) {
+    metaString = `<span style="color: #62a0ea; font-weight: 500;">${ICONS.search || ''}Inspecting stream / document metadata...</span>`;
+  } else if (isProcessing) {
+    metaString = `<span style="color: #e5a50a; font-weight: 500;">${ICONS.clock || ''}Processing / merging media container...</span>`;
+  } else if (isCreatingSwarm) {
+    metaString = `<span style="color: #33d17a; font-weight: 500;">${ICONS.zap || ''}Packaging BitTorrent swarm for DHT...</span>`;
+  } else if (isMeta) {
     metaString = 'Downloading metadata from peers...';
   } else {
     if (isVerifying) {
@@ -327,7 +348,13 @@ function getTorrentMetaString(t) {
     if (t.upload_rate > 0) {
       metaString += ` • ${ICONS.arrowUp}${formatSpeed(t.upload_rate)}`;
     }
-    if (isWebDownload) {
+    if (t.is_media || t.platform) {
+      if (isSeeding) {
+        metaString += ` • Seeding swarm`;
+      } else if (t.download_rate > 0) {
+        metaString += ` • Streaming`;
+      }
+    } else if (isWebDownload) {
       const mirrorCount = t.webseeds && t.webseeds.length > 0 ? t.webseeds.length : (t.peers || 1);
       metaString += ` • ${mirrorCount} mirror${mirrorCount !== 1 ? 's' : ''}`;
     } else {
@@ -526,7 +553,13 @@ function renderTorrents() {
 
   let filtered = [...torrentsData];
   if (currentFilter === 'downloading') {
-    filtered = filtered.filter(t => t.state === 'downloading' || t.state === 'metadata');
+    filtered = filtered.filter(t => 
+      t.state === 'downloading' || 
+      t.state === 'metadata' || 
+      t.state === 'inspecting' || 
+      t.state === 'processing' || 
+      t.state === 'creating_swarm'
+    );
   } else if (currentFilter === 'completed') {
     filtered = filtered.filter(t => t.state === 'seeding' || t.state === 'completed' || t.progress >= 100);
   }

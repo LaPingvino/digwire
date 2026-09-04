@@ -340,6 +340,10 @@ func GetMediaExtractorArgs() [][]string {
 
 // InspectMedia inspects a media URL using yt-dlp and extracts rich metadata, automatically authenticating with available browser cookies when required
 func InspectMedia(ctx context.Context, rawURL string) (*MediaMetadata, error) {
+	if DetectMediaPlatform(rawURL) == "scribd" || IsScribdURL(rawURL) {
+		return InspectScribd(ctx, rawURL)
+	}
+
 	bin, err := DetectYtDlpPath()
 	if err != nil {
 		return nil, err
@@ -529,10 +533,16 @@ func (mm *MediaManager) StartDownload(rawURL string, opts MediaDownloadOptions) 
 }
 
 func (t *MediaTask) run(eng *Engine, baseDownloadDir string) {
+	if t.Platform == "scribd" || DetectMediaPlatform(t.URL) == "scribd" || IsScribdURL(t.URL) {
+		t.runScribd(eng, baseDownloadDir)
+		return
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	t.mu.Lock()
 	t.cancel = cancel
 	t.State = "inspecting"
+	t.Progress = 5.0
 	rawURL := t.URL
 	opts := t.Options
 	t.mu.Unlock()
@@ -564,6 +574,7 @@ func (t *MediaTask) run(eng *Engine, baseDownloadDir string) {
 	t.Uploader = meta.Uploader
 	t.Platform = meta.Platform
 	t.State = "downloading"
+	t.Progress = 10.0
 	t.mu.Unlock()
 
 	// Prepare destination directory
@@ -594,7 +605,9 @@ func (t *MediaTask) run(eng *Engine, baseDownloadDir string) {
 	args := []string{
 		"--no-warnings",
 		"--newline",
-		"--progress-template", "%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress._total_bytes_estimate_str)s",
+		"--progress",
+		"--no-colors",
+		"--progress-template", "download:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress._total_bytes_estimate_str)s",
 		"--output", filepath.Join(mediaDir, "%(title)s.%(ext)s"),
 		"--write-thumbnail",
 		"--write-info-json",
@@ -638,7 +651,7 @@ func (t *MediaTask) run(eng *Engine, baseDownloadDir string) {
 	t.cmd = cmd
 	t.mu.Unlock()
 
-	stdout, err := cmd.StdoutPipe()
+	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		t.mu.Lock()
 		t.State = "failed"
@@ -646,6 +659,16 @@ func (t *MediaTask) run(eng *Engine, baseDownloadDir string) {
 		t.mu.Unlock()
 		return
 	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		t.mu.Lock()
+		t.State = "failed"
+		t.Error = err.Error()
+		t.mu.Unlock()
+		return
+	}
+
+	combinedReader := io.MultiReader(stdoutPipe, stderrPipe)
 
 	if err := cmd.Start(); err != nil {
 		t.mu.Lock()
@@ -656,67 +679,34 @@ func (t *MediaTask) run(eng *Engine, baseDownloadDir string) {
 	}
 
 	// Stream progress in real-time
-	scanner := bufio.NewScanner(stdout)
+	scanner := bufio.NewScanner(combinedReader)
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if strings.Contains(line, "|") {
-			parts := strings.Split(line, "|")
-			if len(parts) >= 4 {
-				pctStr := strings.Trim(strings.TrimSuffix(parts[0], "%"), " ")
-				speedStr := strings.TrimSpace(parts[1])
-				etaStr := strings.TrimSpace(parts[2])
-				totalStr := strings.TrimSpace(parts[3])
-
-				pct, _ := strconv.ParseFloat(pctStr, 64)
-				var speedBytes int64
-				if strings.HasSuffix(speedStr, "KiB/s") || strings.HasSuffix(speedStr, "KB/s") {
-					s, _ := strconv.ParseFloat(strings.Fields(speedStr)[0], 64)
-					speedBytes = int64(s * 1024)
-				} else if strings.HasSuffix(speedStr, "MiB/s") || strings.HasSuffix(speedStr, "MB/s") {
-					s, _ := strconv.ParseFloat(strings.Fields(speedStr)[0], 64)
-					speedBytes = int64(s * 1024 * 1024)
-				} else if strings.HasSuffix(speedStr, "GiB/s") {
-					s, _ := strconv.ParseFloat(strings.Fields(speedStr)[0], 64)
-					speedBytes = int64(s * 1024 * 1024 * 1024)
-				}
-
-				var etaSec int64
-				if strings.Contains(etaStr, ":") {
-					etaParts := strings.Split(etaStr, ":")
-					if len(etaParts) == 2 {
-						m, _ := strconv.ParseInt(etaParts[0], 10, 64)
-						s, _ := strconv.ParseInt(etaParts[1], 10, 64)
-						etaSec = m*60 + s
-					} else if len(etaParts) == 3 {
-						h, _ := strconv.ParseInt(etaParts[0], 10, 64)
-						m, _ := strconv.ParseInt(etaParts[1], 10, 64)
-						s, _ := strconv.ParseInt(etaParts[2], 10, 64)
-						etaSec = h*3600 + m*60 + s
-					}
-				}
-
-				var totalBytes int64
-				if strings.HasSuffix(totalStr, "KiB") || strings.HasSuffix(totalStr, "KB") {
-					t, _ := strconv.ParseFloat(strings.Fields(totalStr)[0], 64)
-					totalBytes = int64(t * 1024)
-				} else if strings.HasSuffix(totalStr, "MiB") || strings.HasSuffix(totalStr, "MB") {
-					t, _ := strconv.ParseFloat(strings.Fields(totalStr)[0], 64)
-					totalBytes = int64(t * 1024 * 1024)
-				} else if strings.HasSuffix(totalStr, "GiB") {
-					t, _ := strconv.ParseFloat(strings.Fields(totalStr)[0], 64)
-					totalBytes = int64(t * 1024 * 1024 * 1024)
-				}
-
-				t.mu.Lock()
+		line := scanner.Text()
+		if pct, speed, eta, total, ok := parseYtDlpProgressLine(line); ok {
+			t.mu.Lock()
+			if pct > t.Progress || t.Progress < 10.0 {
 				t.Progress = pct
-				t.DownloadRate = speedBytes
-				t.ETASeconds = etaSec
-				t.TotalBytes = totalBytes
-				if totalBytes > 0 && pct > 0 {
-					t.CompletedBytes = int64(float64(totalBytes) * (pct / 100.0))
-				}
-				t.mu.Unlock()
 			}
+			if speed > 0 {
+				t.DownloadRate = speed
+			}
+			if eta > 0 {
+				t.ETASeconds = eta
+			}
+			if total > 0 {
+				t.TotalBytes = total
+			}
+			if t.TotalBytes > 0 && t.Progress > 0 {
+				t.CompletedBytes = int64(float64(t.TotalBytes) * (t.Progress / 100.0))
+			}
+			t.mu.Unlock()
+		} else if strings.Contains(line, "[Merger]") || strings.Contains(line, "[ExtractAudio]") || strings.Contains(line, "[EmbedSubtitle]") {
+			t.mu.Lock()
+			t.State = "processing"
+			if t.Progress < 98.0 {
+				t.Progress = 98.0
+			}
+			t.mu.Unlock()
 		}
 	}
 
@@ -755,7 +745,11 @@ func (t *MediaTask) run(eng *Engine, baseDownloadDir string) {
 			t.mu.Lock()
 			t.InfoHash = infoHash
 			t.MagnetURI = magnetURI
-			t.State = "seeding"
+			if eng.IsGermanyMode() {
+				t.State = "completed"
+			} else {
+				t.State = "seeding"
+			}
 			t.mu.Unlock()
 		} else {
 			t.mu.Lock()
@@ -767,6 +761,141 @@ func (t *MediaTask) run(eng *Engine, baseDownloadDir string) {
 		t.State = "completed"
 		t.mu.Unlock()
 	}
+}
+
+var (
+	ansiRegex     = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+	stdDlRegex    = regexp.MustCompile(`\[download\]\s+([0-9.]+)%\s+of\s+~?([0-9.]+\s*[a-zA-Z/]+)(?:\s+at\s+([0-9.]+\s*[a-zA-Z/]+))?(?:\s+ETA\s+([0-9:]+))?`)
+	completeRegex = regexp.MustCompile(`\[download\]\s+100(?:\.0+)?%\s+of\s+~?([0-9.]+\s*[a-zA-Z/]+)`)
+	fragRegex     = regexp.MustCompile(`\[download\]\s+(?:Downloading\s+video\s+fragment|fragment)\s+(\d+)\s+of\s+(\d+)`)
+)
+
+func parseByteSize(s string) int64 {
+	s = strings.TrimSpace(strings.TrimPrefix(s, "~"))
+	if s == "" || s == "N/A" || s == "NA" || s == "Unknown" {
+		return 0
+	}
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
+		return 0
+	}
+	numStr := fields[0]
+	val, err := strconv.ParseFloat(numStr, 64)
+	if err != nil {
+		for i, c := range numStr {
+			if (c < '0' || c > '9') && c != '.' {
+				unit := strings.ToUpper(numStr[i:])
+				val, _ = strconv.ParseFloat(numStr[:i], 64)
+				return convertUnitToBytes(val, unit)
+			}
+		}
+		return 0
+	}
+	unit := ""
+	if len(fields) > 1 {
+		unit = strings.ToUpper(fields[1])
+	}
+	return convertUnitToBytes(val, unit)
+}
+
+func convertUnitToBytes(val float64, unit string) int64 {
+	unit = strings.TrimSuffix(unit, "/S")
+	unit = strings.TrimSuffix(unit, "PS")
+	switch unit {
+	case "B", "BYTES":
+		return int64(val)
+	case "KB", "KIB", "K":
+		return int64(val * 1024)
+	case "MB", "MIB", "M":
+		return int64(val * 1024 * 1024)
+	case "GB", "GIB", "G":
+		return int64(val * 1024 * 1024 * 1024)
+	case "TB", "TIB", "T":
+		return int64(val * 1024 * 1024 * 1024 * 1024)
+	default:
+		return int64(val)
+	}
+}
+
+func parseETASec(s string) int64 {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "N/A" || s == "NA" || s == "Unknown" {
+		return 0
+	}
+	parts := strings.Split(s, ":")
+	switch len(parts) {
+	case 2:
+		m, _ := strconv.ParseInt(parts[0], 10, 64)
+		sec, _ := strconv.ParseInt(parts[1], 10, 64)
+		return m*60 + sec
+	case 3:
+		h, _ := strconv.ParseInt(parts[0], 10, 64)
+		m, _ := strconv.ParseInt(parts[1], 10, 64)
+		sec, _ := strconv.ParseInt(parts[2], 10, 64)
+		return h*3600 + m*60 + sec
+	default:
+		v, _ := strconv.ParseInt(s, 10, 64)
+		return v
+	}
+}
+
+func parseYtDlpProgressLine(rawLine string) (pct float64, speed int64, eta int64, total int64, ok bool) {
+	clean := ansiRegex.ReplaceAllString(rawLine, "")
+	clean = strings.TrimSpace(clean)
+	if clean == "" {
+		return 0, 0, 0, 0, false
+	}
+
+	// 1. Template format: pct|speed|eta|total
+	if strings.Contains(clean, "|") {
+		parts := strings.Split(clean, "|")
+		if len(parts) >= 4 {
+			pStr := strings.Trim(strings.TrimSuffix(strings.TrimSpace(parts[0]), "%"), " ")
+			p, err := strconv.ParseFloat(pStr, 64)
+			if err == nil {
+				pct = p
+				speed = parseByteSize(parts[1])
+				eta = parseETASec(parts[2])
+				total = parseByteSize(parts[3])
+				return pct, speed, eta, total, true
+			}
+		}
+	}
+
+	// 2. Standard yt-dlp [download] XX.X% of ...
+	if m := stdDlRegex.FindStringSubmatch(clean); len(m) >= 3 {
+		p, err := strconv.ParseFloat(m[1], 64)
+		if err == nil {
+			pct = p
+			total = parseByteSize(m[2])
+			if len(m) >= 4 && m[3] != "" {
+				speed = parseByteSize(m[3])
+			}
+			if len(m) >= 5 && m[4] != "" {
+				eta = parseETASec(m[4])
+			}
+			return pct, speed, eta, total, true
+		}
+	}
+
+	// 3. Complete line [download] 100% of ...
+	if m := completeRegex.FindStringSubmatch(clean); len(m) >= 2 {
+		pct = 100.0
+		total = parseByteSize(m[1])
+		return pct, 0, 0, total, true
+	}
+
+	// 4. Fragment line
+	if m := fragRegex.FindStringSubmatch(clean); len(m) >= 3 {
+		cur, _ := strconv.ParseFloat(m[1], 64)
+		tot, _ := strconv.ParseFloat(m[2], 64)
+		if tot > 0 {
+			pct = (cur / tot) * 100.0
+			return pct, 0, 0, 0, true
+		}
+	}
+
+	return 0, 0, 0, 0, false
 }
 
 func (t *MediaTask) pause() {

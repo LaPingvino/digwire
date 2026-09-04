@@ -54,3 +54,103 @@ func TestGetMediaExtractorArgs(t *testing.T) {
 		t.Errorf("expected at least one extractor candidate set")
 	}
 }
+
+func TestParseYtDlpProgressLine(t *testing.T) {
+	tests := []struct {
+		line        string
+		expectedPct float64
+		hasSpeed    bool
+		hasTotal    bool
+		valid       bool
+	}{
+		{
+			line:        " 45.2%| 2.50MiB/s|00:35| 50.20MiB",
+			expectedPct: 45.2,
+			hasSpeed:    true,
+			hasTotal:    true,
+			valid:       true,
+		},
+		{
+			line:        "\x1b[0;94m 75.0%\x1b[0m|\x1b[0;32m 10.00MiB/s\x1b[0m|\x1b[0;33m00:10\x1b[0m|\x1b[0;35m 100.00MiB\x1b[0m",
+			expectedPct: 75.0,
+			hasSpeed:    true,
+			hasTotal:    true,
+			valid:       true,
+		},
+		{
+			line:        "[download]  25.4% of ~50.20MiB at  3.50MiB/s ETA 00:15",
+			expectedPct: 25.4,
+			hasSpeed:    true,
+			hasTotal:    true,
+			valid:       true,
+		},
+		{
+			line:        "[download] 100% of 100.00MiB in 00:10 at 9.80MiB/s",
+			expectedPct: 100.0,
+			hasSpeed:    false,
+			hasTotal:    true,
+			valid:       true,
+		},
+		{
+			line:        "[download] Downloading video fragment 12 of 48",
+			expectedPct: 25.0,
+			hasSpeed:    false,
+			hasTotal:    false,
+			valid:       true,
+		},
+		{
+			line:        "Just some random log line",
+			expectedPct: 0,
+			hasSpeed:    false,
+			hasTotal:    false,
+			valid:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		pct, speed, _, total, ok := parseYtDlpProgressLine(tt.line)
+		if ok != tt.valid {
+			t.Errorf("parseYtDlpProgressLine(%q) ok = %v; want %v", tt.line, ok, tt.valid)
+			continue
+		}
+		if tt.valid && pct != tt.expectedPct {
+			t.Errorf("parseYtDlpProgressLine(%q) pct = %v; want %v", tt.line, pct, tt.expectedPct)
+		}
+		if tt.hasSpeed && speed <= 0 {
+			t.Errorf("parseYtDlpProgressLine(%q) speed = %v; want > 0", tt.line, speed)
+		}
+		if tt.hasTotal && total <= 0 {
+			t.Errorf("parseYtDlpProgressLine(%q) total = %v; want > 0", tt.line, total)
+		}
+	}
+}
+
+func TestParseByteSize(t *testing.T) {
+	var expected50MB float64 = 50.20 * 1024 * 1024
+	if parseByteSize("50.20MiB") != int64(expected50MB) {
+		t.Errorf("unexpected byte size for 50.20MiB: %d", parseByteSize("50.20MiB"))
+	}
+	var expected15GB float64 = 1.5 * 1024 * 1024 * 1024
+	if parseByteSize("1.5GiB") != int64(expected15GB) {
+		t.Errorf("unexpected byte size for 1.5GiB: %d", parseByteSize("1.5GiB"))
+	}
+	if parseByteSize("500KiB") != 500*1024 {
+		t.Errorf("unexpected byte size for 500KiB: %d", parseByteSize("500KiB"))
+	}
+	if parseByteSize("N/A") != 0 {
+		t.Errorf("expected 0 for N/A")
+	}
+}
+
+func TestParseETASec(t *testing.T) {
+	if parseETASec("01:30") != 90 {
+		t.Errorf("unexpected ETA for 01:30: %d", parseETASec("01:30"))
+	}
+	if parseETASec("01:02:03") != 3723 {
+		t.Errorf("unexpected ETA for 01:02:03: %d", parseETASec("01:02:03"))
+	}
+	if parseETASec("N/A") != 0 {
+		t.Errorf("expected 0 for N/A")
+	}
+}
+

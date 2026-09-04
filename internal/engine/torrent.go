@@ -2403,22 +2403,40 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 		for _, task := range e.mediaManager.tasks {
 			task.mu.Lock()
 			var prog float64 = task.Progress
-			if task.TotalBytes > 0 && task.CompletedBytes > 0 {
-				prog = (float64(task.CompletedBytes) / float64(task.TotalBytes)) * 100.0
+			totalBytes := task.TotalBytes
+			completedBytes := task.CompletedBytes
+
+			if totalBytes > 0 && completedBytes > 0 {
+				prog = (float64(completedBytes) / float64(totalBytes)) * 100.0
+			} else if totalBytes > 0 && completedBytes == 0 && prog > 0 {
+				completedBytes = int64(float64(totalBytes) * (prog / 100.0))
+			} else if totalBytes == 0 && completedBytes > 0 && prog > 0 {
+				totalBytes = int64(float64(completedBytes) / (prog / 100.0))
 			}
+
+			name := task.Title
+			if name == "" {
+				name = fmt.Sprintf("Archiving %s (%s)", strings.Title(task.Platform), task.ID[:min(8, len(task.ID))])
+			}
+
+			desc := fmt.Sprintf("%s Universal Media", strings.Title(task.Platform))
+			if task.Platform == "scribd" {
+				desc = "Scribd Document & Book Archival"
+			}
+
 			qualifier := SwarmQualifier{
 				Class:       "mainstream",
 				Label:       strings.ToUpper(task.Platform),
 				Badge:       strings.ToUpper(task.Platform),
-				Description: fmt.Sprintf("%s Universal Media", strings.Title(task.Platform)),
+				Description: desc,
 				UptimeRatio: 1.0,
 			}
 			statuses = append(statuses, TorrentStatus{
 				InfoHash:        task.ID,
-				Name:            task.Title,
+				Name:            name,
 				MagnetURI:       task.URL,
-				TotalBytes:      task.TotalBytes,
-				CompletedBytes:  task.CompletedBytes,
+				TotalBytes:      totalBytes,
+				CompletedBytes:  completedBytes,
 				Progress:        prog,
 				DownloadRate:    task.DownloadRate,
 				UploadRate:      0,
@@ -2427,7 +2445,7 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 				SavePath:        task.DestPath,
 				Seeders:         1,
 				Peers:           1,
-				Files:           []string{task.Title},
+				Files:           []string{name},
 				AddedAt:         task.AddedAt,
 				Platform:        task.Platform,
 				Thumbnail:       task.Thumbnail,
