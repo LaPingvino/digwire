@@ -291,19 +291,22 @@ function getTorrentMetaString(t) {
   const isPaused = t.state === 'paused';
   const isSeeding = t.state === 'seeding' || t.state === 'completed';
   const isMeta = t.state === 'metadata';
-  const isVerifying = t.state === 'verifying';
+  const isVerifying = t.is_verifying || t.state === 'verifying' || (t.verify_progress !== undefined && t.verify_progress > 0);
   const isWebDownload = t.magnet_uri && (t.magnet_uri.startsWith('http://') || t.magnet_uri.startsWith('https://'));
 
   let metaString = `${formatBytes(t.completed_bytes)} of ${formatBytes(t.total_bytes)} (${t.progress.toFixed(1)}%)`;
   if (isMeta) {
     metaString = 'Downloading metadata from peers...';
-  } else if (isVerifying) {
-    metaString = `Verifying & hashing local data... (${t.progress.toFixed(1)}%)`;
-  } else if (t.download_rate > 0) {
-    metaString += ` • ${ICONS.arrowDown}${formatSpeed(t.download_rate)}`;
-    const eta = formatETA(t.eta_seconds);
-    if (eta) metaString += ` • ETA: ${eta}`;
-  } else if (!isSeeding && !isPaused && t.progress < 100 && t.availability_eta) {
+  } else {
+    if (isVerifying) {
+      const vProg = (t.verify_progress !== undefined && t.verify_progress > 0) ? ` (${t.verify_progress.toFixed(0)}% checked)` : '';
+      metaString += ` • <span style="color: #c061cb; font-weight: 500;">${ICONS.verify || ''}Verifying integrity${vProg}</span>`;
+    }
+    if (t.download_rate > 0) {
+      metaString += ` • ${ICONS.arrowDown}${formatSpeed(t.download_rate)}`;
+      const eta = formatETA(t.eta_seconds);
+      if (eta) metaString += ` • ETA: ${eta}`;
+    } else if (!isSeeding && !isPaused && t.progress < 100 && t.availability_eta) {
     const qTooltip = t.qualifier ? 
       (t.qualifier.description + (t.qualifier.easter_egg ? '\n\n' + t.qualifier.easter_egg : '')) : 
       'Projected completion based on seeder duty cycle';
@@ -883,7 +886,7 @@ function switchDetailTab(tab) {
         <span class="detail-val">${formatBytes(currentDetailData.total_bytes)}</span>
 
         <span class="detail-label">Downloaded:</span>
-        <span class="detail-val">${formatBytes(currentDetailData.completed_bytes)} (${currentDetailData.progress.toFixed(1)}%)</span>
+        <span class="detail-val">${formatBytes(currentDetailData.completed_bytes)} (${currentDetailData.progress.toFixed(1)}%)${(currentDetailData.is_verifying || currentDetailData.state === 'verifying' || (currentDetailData.verify_progress !== undefined && currentDetailData.verify_progress > 0)) ? ` • <span style="color: #c061cb; font-weight: 500;">Verifying integrity${(currentDetailData.verify_progress !== undefined && currentDetailData.verify_progress > 0) ? ` (${currentDetailData.verify_progress.toFixed(0)}% checked)` : ''}</span>` : ''}</span>
 
         <span class="detail-label">Pieces:</span>
         <span class="detail-val">${currentDetailData.num_pieces || '1'} pieces (${formatBytes(currentDetailData.piece_length || currentDetailData.total_bytes)} per piece)</span>
