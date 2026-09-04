@@ -1,7 +1,12 @@
 package engine
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+
+	"digwire/internal/config"
 )
 
 func TestDetectMediaPlatform(t *testing.T) {
@@ -185,5 +190,129 @@ func TestMediaManagerCancelTask(t *testing.T) {
 		t.Fatalf("expected task to be deleted")
 	}
 }
+
+func TestMediaTaskTorrentLikeActions(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "digwire_media_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Create a mock media directory with multiple files (e.g. scribd / youtube package)
+	mediaDir := filepath.Join(tempDir, "Media_Item_123")
+	if err := os.MkdirAll(mediaDir, 0755); err != nil {
+		t.Fatalf("failed to create media dir: %v", err)
+	}
+
+	pdfFile := filepath.Join(mediaDir, "Document.pdf")
+	_ = os.WriteFile(pdfFile, []byte("%PDF-1.4 mock content"), 0644)
+	txtFile := filepath.Join(mediaDir, "Document.txt")
+	_ = os.WriteFile(txtFile, []byte("Mock text content"), 0644)
+	htmlFile := filepath.Join(mediaDir, "Document.html")
+	_ = os.WriteFile(htmlFile, []byte("<html>Mock reader</html>"), 0644)
+
+	// Test scanMediaTaskFiles
+	files := scanMediaTaskFiles(mediaDir, "Document", 100, 100, true)
+	if len(files) != 3 {
+		t.Fatalf("expected 3 files, got %d", len(files))
+	}
+
+	// Create engine and media manager
+	cfg := &config.Config{
+		DownloadDir: tempDir,
+		ListenPort:  0,
+		GermanyMode: false,
+	}
+	cfg.SetConfigPath(filepath.Join(tempDir, "config.yaml"))
+	eng, err := NewEngine(cfg)
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+	defer eng.Close()
+
+	taskURL := "https://www.scribd.com/document/12345/Test-Book"
+	taskID := HashURL(taskURL)
+	mTask := &MediaTask{
+		ID:             taskID,
+		URL:            taskURL,
+		Title:          "Test Book",
+		Platform:       "scribd",
+		State:          "completed",
+		Progress:       100.0,
+		DestPath:       mediaDir,
+		TotalBytes:     1000,
+		CompletedBytes: 1000,
+	}
+	eng.mediaManager.mu.Lock()
+	eng.mediaManager.tasks[taskID] = mTask
+	eng.mediaManager.mu.Unlock()
+
+	// 1. Test GetTorrentSavePath
+	savePath, err := eng.GetTorrentSavePath(taskID)
+	if err != nil {
+		t.Fatalf("GetTorrentSavePath failed: %v", err)
+	}
+	if savePath != mediaDir {
+		t.Errorf("expected savePath %s, got %s", mediaDir, savePath)
+	}
+
+	// 2. Test GetTorrentFilePath
+	filePath0, err := eng.GetTorrentFilePath(taskID, 0)
+	if err != nil {
+		t.Fatalf("GetTorrentFilePath(0) failed: %v", err)
+	}
+	if !strings.HasSuffix(filePath0, "Document.html") {
+		t.Errorf("expected Document.html (alphabetical), got %s", filePath0)
+	}
+
+	filePath1, err := eng.GetTorrentFilePath(taskID, 1)
+	if err != nil {
+		t.Fatalf("GetTorrentFilePath(1) failed: %v", err)
+	}
+	if !strings.HasSuffix(filePath1, "Document.pdf") {
+		t.Errorf("expected Document.pdf, got %s", filePath1)
+	}
+
+	// 3. Test GetTorrentDetails
+	details, err := eng.GetTorrentDetails(taskID)
+	if err != nil {
+		t.Fatalf("GetTorrentDetails failed: %v", err)
+	}
+	if details.Name != "Test Book" {
+		t.Errorf("expected details name 'Test Book', got %s", details.Name)
+	}
+	if len(details.Files) != 3 {
+		t.Errorf("expected 3 files in details, got %d", len(details.Files))
+	}
+	if !details.IsMedia || details.Platform != "scribd" {
+		t.Errorf("expected IsMedia true and Platform scribd, got %v / %s", details.IsMedia, details.Platform)
+	}
+
+	// 4. Test GetTorrentFileBytes (on the fly export)
+	torrentBytes, name, err := eng.GetTorrentFileBytes(taskID)
+	if err != nil {
+		t.Fatalf("GetTorrentFileBytes failed: %v", err)
+	}
+	if len(torrentBytes) == 0 {
+		t.Fatalf("expected non-empty torrent bytes")
+	}
+	if name == "" {
+		t.Fatalf("expected non-empty torrent name")
+	}
+
+	// 5. Test Remove
+	if err := eng.Remove(taskID, true); err != nil {
+		t.Fatalf("Remove failed: %v", err)
+	}
+
+	// Verify task deleted from manager and files removed
+	if eng.mediaManager.GetTask(taskID) != nil {
+		t.Fatalf("expected media task to be removed")
+	}
+	if _, err := os.Stat(mediaDir); !os.IsNotExist(err) {
+		t.Fatalf("expected mediaDir to be deleted from disk on deleteFiles=true")
+	}
+}
+
 
 

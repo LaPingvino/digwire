@@ -612,6 +612,13 @@ func (e *Engine) loadSession() {
 		return
 	}
 
+	mediaDestDirs := make(map[string]string)
+	for _, mt := range state.MediaTasks {
+		if mt.InfoHash != "" && mt.DestPath != "" {
+			mediaDestDirs[strings.ToLower(mt.InfoHash)] = filepath.Dir(mt.DestPath)
+		}
+	}
+
 	for _, item := range state.Torrents {
 		if item.MagnetURI == "" && item.InfoHash != "" {
 			item.MagnetURI = "magnet:?xt=urn:btih:" + item.InfoHash
@@ -623,12 +630,17 @@ func (e *Engine) loadSession() {
 		var t *torrent.Torrent
 		var hash string
 		cachedTorrentPath := e.getTorrentCacheFilePath(item.InfoHash)
+		customDir := mediaDestDirs[strings.ToLower(item.InfoHash)]
 
 		// 1. Try loading cached .torrent metainfo directly so metadata & piece progress are immediately available on start!
 		if item.InfoHash != "" {
 			if stat, err := os.Stat(cachedTorrentPath); err == nil && stat.Size() > 100 {
 				if mi, err := metainfo.LoadFromFile(cachedTorrentPath); err == nil && mi != nil {
-					if addedT, err := e.client.AddTorrent(mi); err == nil {
+					spec := torrent.TorrentSpecFromMetaInfo(mi)
+					if customDir != "" {
+						spec.Storage = storage.NewFile(customDir)
+					}
+					if addedT, _, err := e.client.AddTorrentSpec(spec); err == nil {
 						t = addedT
 						hash = t.InfoHash().HexString()
 					}
@@ -641,12 +653,24 @@ func (e *Engine) loadSession() {
 			if item.MagnetURI == "" {
 				continue
 			}
-			addedT, err := e.client.AddMagnet(item.MagnetURI)
-			if err != nil {
-				continue
+			spec, specErr := torrent.TorrentSpecFromMagnetUri(item.MagnetURI)
+			if specErr == nil && spec != nil {
+				if customDir != "" {
+					spec.Storage = storage.NewFile(customDir)
+				}
+				if addedT, _, err := e.client.AddTorrentSpec(spec); err == nil {
+					t = addedT
+					hash = t.InfoHash().HexString()
+				}
 			}
-			t = addedT
-			hash = t.InfoHash().HexString()
+			if t == nil {
+				addedT, err := e.client.AddMagnet(item.MagnetURI)
+				if err != nil {
+					continue
+				}
+				t = addedT
+				hash = t.InfoHash().HexString()
+			}
 		}
 
 		// Inject tier-1 trackers
@@ -1377,7 +1401,19 @@ func (e *Engine) CreateTorrent(sourcePath, comment string) (string, string, erro
 		return "", "", fmt.Errorf("path not found: %w", err)
 	}
 
-	pieceLen := metainfo.ChoosePieceLength(stat.Size())
+	var totalSize int64
+	if stat.IsDir() {
+		_ = filepath.Walk(sourcePath, func(_ string, fi os.FileInfo, err error) error {
+			if err == nil && fi != nil && !fi.IsDir() {
+				totalSize += fi.Size()
+			}
+			return nil
+		})
+	} else {
+		totalSize = stat.Size()
+	}
+
+	pieceLen := metainfo.ChoosePieceLength(totalSize)
 	info := metainfo.Info{
 		PieceLength: pieceLen,
 	}
@@ -1415,12 +1451,16 @@ func (e *Engine) CreateTorrent(sourcePath, comment string) (string, string, erro
 		_ = f.Close()
 	}
 
-	t, err := e.client.AddTorrent(&mi)
+	spec := torrent.TorrentSpecFromMetaInfo(&mi)
+	spec.Storage = storage.NewFile(filepath.Dir(sourcePath))
+	t, _, err := e.client.AddTorrentSpec(spec)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to seed created torrent: %w", err)
 	}
 
 	hash := t.InfoHash().HexString()
+	e.saveTorrentMetainfo(t)
+
 	h := t.InfoHash()
 	magnetObj := mi.Magnet(&h, &info)
 	magnetURI := magnetObj.String()
@@ -2012,6 +2052,17 @@ func (e *Engine) VerifyTorrentData(infoHashHex string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	// Check if Media Task
+	if e.mediaManager != nil {
+		if mTask := e.mediaManager.GetTask(infoHashHex); mTask != nil {
+			if mTask.InfoHash != "" {
+				infoHashHex = mTask.InfoHash
+			} else {
+				return nil
+			}
+		}
+	}
+
 	// Check if HTTP Task
 	e.httpManager.mu.RLock()
 	httpTask, httpExists := e.httpManager.tasks[infoHashHex]
@@ -2055,9 +2106,11 @@ func (e *Engine) Pause(infoHashHex string) error {
 				for _, tor := range e.client.Torrents() {
 					if strings.EqualFold(tor.InfoHash().HexString(), t.InfoHash) {
 						tor.DisallowDataDownload()
-						if tr, ok := e.rateMap[t.InfoHash]; ok {
-							tr.isPaused = true
-							tr.downloadRate = 0
+						for k, tr := range e.rateMap {
+							if strings.EqualFold(k, t.InfoHash) {
+								tr.isPaused = true
+								tr.downloadRate = 0
+							}
 						}
 					}
 				}
@@ -2069,11 +2122,14 @@ func (e *Engine) Pause(infoHashHex string) error {
 
 	torrents := e.client.Torrents()
 	for _, t := range torrents {
-		if strings.EqualFold(t.InfoHash().HexString(), infoHashHex) {
+		hex := t.InfoHash().HexString()
+		if strings.EqualFold(hex, infoHashHex) {
 			t.DisallowDataDownload()
-			if tr, ok := e.rateMap[infoHashHex]; ok {
-				tr.isPaused = true
-				tr.downloadRate = 0
+			for k, tr := range e.rateMap {
+				if strings.EqualFold(k, hex) {
+					tr.isPaused = true
+					tr.downloadRate = 0
+				}
 			}
 			e.saveSessionLocked()
 			return nil
@@ -2099,12 +2155,14 @@ func (e *Engine) Resume(infoHashHex string) error {
 			if t.InfoHash != "" {
 				for _, tor := range e.client.Torrents() {
 					if strings.EqualFold(tor.InfoHash().HexString(), t.InfoHash) {
-						if tr, ok := e.rateMap[t.InfoHash]; ok {
-							tr.isPaused = false
-							if tr.isSeeding {
-								tor.AllowDataUpload()
-							} else {
-								tor.AllowDataDownload()
+						for k, tr := range e.rateMap {
+							if strings.EqualFold(k, t.InfoHash) {
+								tr.isPaused = false
+								if tr.isSeeding {
+									tor.AllowDataUpload()
+								} else {
+									tor.AllowDataDownload()
+								}
 							}
 						}
 					}
@@ -2118,8 +2176,16 @@ func (e *Engine) Resume(infoHashHex string) error {
 	isGermanMode := e.cfg != nil && e.cfg.GermanyMode
 	torrents := e.client.Torrents()
 	for _, t := range torrents {
-		if strings.EqualFold(t.InfoHash().HexString(), infoHashHex) {
-			if tr, ok := e.rateMap[infoHashHex]; ok {
+		hex := t.InfoHash().HexString()
+		if strings.EqualFold(hex, infoHashHex) {
+			var tr *rateTracker
+			for k, v := range e.rateMap {
+				if strings.EqualFold(k, hex) {
+					tr = v
+					break
+				}
+			}
+			if tr != nil {
 				tr.isPaused = false
 				if tr.isSeeding {
 					t.DisallowDataDownload()
@@ -2172,11 +2238,18 @@ func (e *Engine) Remove(infoHashHex string, deleteFiles bool) error {
 	// Check if Media download task
 	if e.mediaManager != nil {
 		var createdSwarmHash string
+		var destPath string
 		if t := e.mediaManager.GetTask(infoHashHex); t != nil {
+			t.mu.Lock()
 			createdSwarmHash = t.InfoHash
+			destPath = t.DestPath
+			t.mu.Unlock()
 		}
 		if err := e.mediaManager.CancelTask(infoHashHex, deleteFiles); err == nil {
 			removed = true
+			if deleteFiles && destPath != "" && destPath != "/" && destPath != e.cfg.DownloadDir {
+				_ = os.RemoveAll(destPath)
+			}
 			if createdSwarmHash != "" {
 				infoHashHex = createdSwarmHash
 			}
@@ -2185,12 +2258,21 @@ func (e *Engine) Remove(infoHashHex string, deleteFiles bool) error {
 
 	torrents := e.client.Torrents()
 	for _, t := range torrents {
-		if strings.EqualFold(t.InfoHash().HexString(), infoHashHex) {
+		hex := t.InfoHash().HexString()
+		if strings.EqualFold(hex, infoHashHex) {
 			name := t.Name()
 			t.Drop()
-			delete(e.rateMap, infoHashHex)
-			delete(e.webSeedsMap, infoHashHex)
-			_ = os.Remove(e.getTorrentCacheFilePath(infoHashHex))
+			for k := range e.rateMap {
+				if strings.EqualFold(k, hex) {
+					delete(e.rateMap, k)
+				}
+			}
+			for k := range e.webSeedsMap {
+				if strings.EqualFold(k, hex) {
+					delete(e.webSeedsMap, k)
+				}
+			}
+			_ = os.Remove(e.getTorrentCacheFilePath(hex))
 
 			if deleteFiles && name != "" {
 				targetPath := filepath.Join(e.cfg.DownloadDir, name)
@@ -2209,16 +2291,134 @@ func (e *Engine) Remove(infoHashHex string, deleteFiles bool) error {
 	return fmt.Errorf("torrent or download not found: %s", infoHashHex)
 }
 
+func scanMediaTaskFiles(destPath, defaultTitle string, totalBytes, completedBytes int64, isComplete bool) []TorrentFileDetail {
+	if destPath == "" {
+		return []TorrentFileDetail{
+			{
+				Index:          0,
+				Path:           defaultTitle,
+				FullPath:       "",
+				Length:         totalBytes,
+				BytesCompleted: completedBytes,
+				Progress:       100.0,
+				Priority:       1,
+				Completed:      isComplete,
+			},
+		}
+	}
+
+	stat, err := os.Stat(destPath)
+	if err != nil {
+		return []TorrentFileDetail{
+			{
+				Index:          0,
+				Path:           defaultTitle,
+				FullPath:       destPath,
+				Length:         totalBytes,
+				BytesCompleted: completedBytes,
+				Progress:       100.0,
+				Priority:       1,
+				Completed:      isComplete,
+			},
+		}
+	}
+
+	if !stat.IsDir() {
+		return []TorrentFileDetail{
+			{
+				Index:          0,
+				Path:           filepath.Base(destPath),
+				FullPath:       destPath,
+				Length:         stat.Size(),
+				BytesCompleted: stat.Size(),
+				Progress:       100.0,
+				Priority:       1,
+				Completed:      true,
+			},
+		}
+	}
+
+	entries, err := os.ReadDir(destPath)
+	if err != nil || len(entries) == 0 {
+		return []TorrentFileDetail{
+			{
+				Index:          0,
+				Path:           defaultTitle,
+				FullPath:       destPath,
+				Length:         totalBytes,
+				BytesCompleted: completedBytes,
+				Progress:       100.0,
+				Priority:       1,
+				Completed:      isComplete,
+			},
+		}
+	}
+
+	var fileEntries []os.DirEntry
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			fileEntries = append(fileEntries, entry)
+		}
+	}
+
+	sort.Slice(fileEntries, func(i, j int) bool {
+		return fileEntries[i].Name() < fileEntries[j].Name()
+	})
+
+	var files []TorrentFileDetail
+	for idx, entry := range fileEntries {
+		filePath := filepath.Join(destPath, entry.Name())
+		info, err := entry.Info()
+		var sz int64
+		if err == nil && info != nil {
+			sz = info.Size()
+		}
+		files = append(files, TorrentFileDetail{
+			Index:          idx,
+			Path:           entry.Name(),
+			FullPath:       filePath,
+			Length:         sz,
+			BytesCompleted: sz,
+			Progress:       100.0,
+			Priority:       1,
+			Completed:      true,
+		})
+	}
+
+	if len(files) == 0 {
+		files = append(files, TorrentFileDetail{
+			Index:          0,
+			Path:           defaultTitle,
+			FullPath:       destPath,
+			Length:         totalBytes,
+			BytesCompleted: completedBytes,
+			Progress:       100.0,
+			Priority:       1,
+			Completed:      isComplete,
+		})
+	}
+	return files
+}
+
 func (e *Engine) GetTorrents() []TorrentStatus {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
 	torrents := e.client.Torrents()
 	statuses := make([]TorrentStatus, 0, len(torrents))
+	seenMedia := make(map[string]bool)
 
 	for _, t := range torrents {
 		hash := t.InfoHash().HexString()
 		tracker := e.rateMap[hash]
+		if tracker == nil {
+			for k, v := range e.rateMap {
+				if strings.EqualFold(k, hash) {
+					tracker = v
+					break
+				}
+			}
+		}
 		if tracker == nil {
 			// Skip internal background probing torrents
 			continue
@@ -2285,6 +2485,29 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 			if totalBytes > 0 && completedBytes > 0 {
 				progress = (float64(completedBytes) / float64(totalBytes)) * 100.0
 			}
+		}
+
+		var mTask *MediaTask
+		if e.mediaManager != nil {
+			mTask = e.mediaManager.GetTask(hash)
+		}
+
+		var isMedia bool
+		var platform string
+		var thumbnail string
+		var mediaSavePath string
+		if mTask != nil {
+			isMedia = true
+			platform = mTask.Platform
+			thumbnail = mTask.Thumbnail
+			mediaSavePath = mTask.DestPath
+			if mTask.Title != "" {
+				name = mTask.Title
+			}
+			seenMedia[strings.ToLower(mTask.ID)] = true
+			seenMedia[strings.ToLower(mTask.InfoHash)] = true
+			seenMedia[strings.ToLower(mTask.URL)] = true
+			seenMedia[strings.ToLower(HashURL(mTask.URL))] = true
 		}
 
 		var eta int64 = 0
@@ -2360,6 +2583,10 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 		})
 
 		savePath := e.getTorrentSavePath(t)
+		if mediaSavePath != "" {
+			savePath = mediaSavePath
+		}
+
 		statuses = append(statuses, TorrentStatus{
 			InfoHash:        hash,
 			Name:            name,
@@ -2382,6 +2609,9 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 			AvailabilityETA: qualifier.AvailabilityETA,
 			IsVerifying:     tracker.isVerifying.Load(),
 			VerifyProgress:  verifyProg,
+			IsMedia:         isMedia,
+			Platform:        platform,
+			Thumbnail:       thumbnail,
 		})
 	}
 
@@ -2440,6 +2670,14 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 		e.mediaManager.mu.RLock()
 		for _, task := range e.mediaManager.tasks {
 			task.mu.Lock()
+			taskIDLower := strings.ToLower(task.ID)
+			taskHashLower := strings.ToLower(task.InfoHash)
+			taskURLLower := strings.ToLower(task.URL)
+			if seenMedia[taskIDLower] || (taskHashLower != "" && seenMedia[taskHashLower]) || seenMedia[taskURLLower] {
+				task.mu.Unlock()
+				continue
+			}
+
 			var prog float64 = task.Progress
 			totalBytes := task.TotalBytes
 			completedBytes := task.CompletedBytes
@@ -2521,42 +2759,66 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 				prog = (float64(mTask.CompletedBytes) / float64(mTask.TotalBytes)) * 100.0
 			}
 			subs := ScanAttachedSubtitles(mTask.DestPath)
+			desc := fmt.Sprintf("%s Media Swarm", strings.Title(mTask.Platform))
+			if mTask.Platform == "scribd" {
+				desc = "Scribd Document & Book Archival"
+			}
 			qualifier := SwarmQualifier{
 				Class:       "mainstream",
 				Label:       strings.ToUpper(mTask.Platform),
 				Badge:       strings.ToUpper(mTask.Platform),
-				Description: fmt.Sprintf("%s Media Swarm", strings.Title(mTask.Platform)),
+				Description: desc,
 				UptimeRatio: 1.0,
 			}
+
+			files := scanMediaTaskFiles(mTask.DestPath, mTask.Title, mTask.TotalBytes, mTask.CompletedBytes, mTask.State == "completed" || mTask.State == "seeding")
+
+			seeders := 1
+			peers := 1
+			if mTask.InfoHash != "" {
+				for _, t := range e.client.Torrents() {
+					if strings.EqualFold(t.InfoHash().HexString(), mTask.InfoHash) {
+						st := t.Stats()
+						if st.ConnectedSeeders > 0 || st.ActivePeers > 0 {
+							seeders = st.ConnectedSeeders
+							if seeders == 0 {
+								seeders = st.ActivePeers
+							}
+							peers = st.TotalPeers
+						}
+						break
+					}
+				}
+			}
+
+			ih := mTask.ID
+			if mTask.InfoHash != "" {
+				ih = mTask.InfoHash
+			}
+
+			mag := mTask.MagnetURI
+			if mag == "" {
+				mag = mTask.URL
+			}
+
 			return &TorrentDetails{
-				InfoHash:       mTask.ID,
-				Name:           mTask.Title,
-				MagnetURI:      mTask.URL,
-				TotalBytes:     mTask.TotalBytes,
-				CompletedBytes: mTask.CompletedBytes,
-				Progress:       prog,
-				DownloadDir:    e.cfg.DownloadDir,
-				SavePath:       mTask.DestPath,
-				State:          mTask.State,
-				Files: []TorrentFileDetail{
-					{
-						Index:          0,
-						Path:           mTask.Title,
-						FullPath:       mTask.DestPath,
-						Length:         mTask.TotalBytes,
-						BytesCompleted: mTask.CompletedBytes,
-						Progress:       prog,
-						Priority:       1,
-						Completed:      mTask.State == "completed" || mTask.State == "seeding",
-					},
-				},
-				Seeders:         1,
-				TotalPeers:      1,
+				InfoHash:        ih,
+				Name:            mTask.Title,
+				MagnetURI:       mag,
+				TotalBytes:      mTask.TotalBytes,
+				CompletedBytes:  mTask.CompletedBytes,
+				Progress:        prog,
+				DownloadDir:     e.cfg.DownloadDir,
+				SavePath:        mTask.DestPath,
+				State:           mTask.State,
+				Files:           files,
+				Seeders:         seeders,
+				TotalPeers:      peers,
 				Platform:        mTask.Platform,
 				Thumbnail:       mTask.Thumbnail,
 				IsMedia:         true,
 				Subtitles:       subs,
-				CreatedBy:       "Digwire Universal Media Engine (yt-dlp)",
+				CreatedBy:       fmt.Sprintf("Digwire %s Engine", strings.Title(mTask.Platform)),
 				Qualifier:       &qualifier,
 				AvailabilityETA: "",
 			}, nil
@@ -2875,6 +3137,15 @@ func (e *Engine) AddWebSeed(infoHashHex string, webSeedURL string) error {
 		return fmt.Errorf("empty webseed url")
 	}
 
+	// Check if Media Task
+	if e.mediaManager != nil {
+		if mTask := e.mediaManager.GetTask(infoHashHex); mTask != nil {
+			if mTask.InfoHash != "" {
+				infoHashHex = mTask.InfoHash
+			}
+		}
+	}
+
 	// Check if HTTP Task
 	e.httpManager.mu.RLock()
 	task, exists := e.httpManager.tasks[infoHashHex]
@@ -2908,6 +3179,17 @@ func (e *Engine) AddWebSeed(infoHashHex string, webSeedURL string) error {
 func (e *Engine) SetFilePriority(infoHashHex string, fileIndex int, priority int) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
+	// Check if Media Task
+	if e.mediaManager != nil {
+		if mTask := e.mediaManager.GetTask(infoHashHex); mTask != nil {
+			if mTask.InfoHash != "" {
+				infoHashHex = mTask.InfoHash
+			} else {
+				return nil
+			}
+		}
+	}
 
 	torrents := e.client.Torrents()
 	for _, t := range torrents {
@@ -2946,6 +3228,18 @@ func (e *Engine) SetFilePriority(infoHashHex string, fileIndex int, priority int
 func (e *Engine) GetTorrentSavePath(infoHashHex string) (string, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+
+	// Check Media task
+	if e.mediaManager != nil {
+		if mTask := e.mediaManager.GetTask(infoHashHex); mTask != nil {
+			mTask.mu.Lock()
+			dest := mTask.DestPath
+			mTask.mu.Unlock()
+			if dest != "" {
+				return dest, nil
+			}
+		}
+	}
 
 	// Check HTTP task
 	e.httpManager.mu.RLock()
@@ -2988,6 +3282,42 @@ func (e *Engine) getTorrentSavePath(t *torrent.Torrent) string {
 func (e *Engine) GetTorrentFilePath(infoHashHex string, fileIndex int) (string, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+
+	// Check Media task
+	if e.mediaManager != nil {
+		if mTask := e.mediaManager.GetTask(infoHashHex); mTask != nil {
+			mTask.mu.Lock()
+			dest := mTask.DestPath
+			mTask.mu.Unlock()
+			if dest != "" {
+				stat, err := os.Stat(dest)
+				if err == nil {
+					if !stat.IsDir() {
+						if fileIndex == 0 {
+							return dest, nil
+						}
+					} else {
+						entries, err := os.ReadDir(dest)
+						if err == nil {
+							var fileEntries []os.DirEntry
+							for _, entry := range entries {
+								if !entry.IsDir() {
+									fileEntries = append(fileEntries, entry)
+								}
+							}
+							sort.Slice(fileEntries, func(i, j int) bool {
+								return fileEntries[i].Name() < fileEntries[j].Name()
+							})
+							if fileIndex >= 0 && fileIndex < len(fileEntries) {
+								return filepath.Join(dest, fileEntries[fileIndex].Name()), nil
+							}
+						}
+					}
+				}
+				return dest, nil
+			}
+		}
+	}
 
 	// Check HTTP task
 	e.httpManager.mu.RLock()
@@ -3247,6 +3577,65 @@ func (e *Engine) GetTorrentFileBytes(infoHashHex string) ([]byte, string, error)
 	defer e.mu.RUnlock()
 
 	hash := strings.ToLower(infoHashHex)
+
+	// Check if Media Task with custom InfoHash or DestPath
+	if e.mediaManager != nil {
+		if mTask := e.mediaManager.GetTask(infoHashHex); mTask != nil {
+			mTask.mu.Lock()
+			taskHash := strings.ToLower(mTask.InfoHash)
+			destPath := mTask.DestPath
+			taskTitle := mTask.Title
+			taskURL := mTask.URL
+			mTask.mu.Unlock()
+
+			if taskHash != "" {
+				hash = taskHash
+			} else if destPath != "" {
+				stat, err := os.Stat(destPath)
+				if err == nil {
+					var totalSize int64
+					if stat.IsDir() {
+						_ = filepath.Walk(destPath, func(_ string, fi os.FileInfo, err error) error {
+							if err == nil && fi != nil && !fi.IsDir() {
+								totalSize += fi.Size()
+							}
+							return nil
+						})
+					} else {
+						totalSize = stat.Size()
+					}
+					pieceLen := metainfo.ChoosePieceLength(totalSize)
+					info := metainfo.Info{PieceLength: pieceLen}
+					if err := info.BuildFromFilePath(destPath); err == nil {
+						mi := metainfo.MetaInfo{
+							Comment:      fmt.Sprintf("Digwire Swarm: %s", taskURL),
+							CreatedBy:    "Digwire P2P",
+							CreationDate: time.Now().Unix(),
+							AnnounceList: [][]string{
+								{"udp://tracker.opentrackr.org:1337/announce"},
+								{"udp://open.stealth.si:80/announce"},
+								{"udp://tracker.torrent.eu.org:451/announce"},
+								{"udp://explodie.org:6969/announce"},
+							},
+						}
+						mi.SetDefaults()
+						infoBytes, err := bencode.Marshal(info)
+						if err == nil {
+							mi.InfoBytes = infoBytes
+							var buf bytes.Buffer
+							if err := mi.Write(&buf); err == nil {
+								name := info.BestName()
+								if name == "" {
+									name = SanitizeMediaFilename(taskTitle)
+								}
+								return buf.Bytes(), name + ".torrent", nil
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 
 	// 1. Check if cached .torrent file exists on disk
 	filePath := e.getTorrentCacheFilePath(hash)
