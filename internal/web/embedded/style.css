@@ -651,17 +651,17 @@ select option, select optgroup, .sort-select option, .sort-select optgroup {
 .search-path-breadcrumb {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  flex-wrap: wrap;
+  row-gap: 4px;
+  column-gap: 4px;
   font-size: 11px;
+  line-height: 1.5;
   color: var(--adw-dim-label);
   background: rgba(128, 128, 128, 0.08);
-  padding: 2px 6px;
-  border-radius: 4px;
-  margin-top: 3px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  margin-top: 4px;
   max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .search-path-breadcrumb .crumb-folder {
@@ -669,6 +669,9 @@ select option, select optgroup, .sort-select option, .sort-select optgroup {
   font-weight: 500;
   cursor: pointer;
   transition: opacity 0.15s;
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
 }
 
 .search-path-breadcrumb .crumb-folder:hover {
@@ -700,6 +703,7 @@ select option, select optgroup, .sort-select option, .sort-select optgroup {
   color: var(--adw-dim-label);
   opacity: 0.5;
   margin: 0 1px;
+  user-select: none;
 }
 
 .active-path-filter-bar {

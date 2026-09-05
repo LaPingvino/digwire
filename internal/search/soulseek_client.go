@@ -245,7 +245,7 @@ func (s *SoulseekClient) Search(ctx context.Context, query string, timeout time.
 	}
 }
 
-var tokenRegex = regexp.MustCompile(`^(?:[a-zA-Z]:|[a-zA-Z0-9_-]{3,12}|@@[^\/]+)[\/\\]+`)
+var tokenRegex = regexp.MustCompile(`^(?:[a-zA-Z]:|@@[^\/\\]+)[\/\\]+`)
 
 func parseSoulseekFile(username string, f peer.File, freeSlot bool, queue int, avgSpeed int) Result {
 	norm := strings.ReplaceAll(f.Name, "\\", "/")

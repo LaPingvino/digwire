@@ -1750,59 +1750,81 @@ function escapeJs(str) {
   return (str || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
 }
 
+function extractPathSegments(r) {
+  let dir = r.directory || '';
+  if (!dir && r.path) {
+    let normPath = (r.path || '').replace(/\\/g, '/');
+    const lastSlash = normPath.lastIndexOf('/');
+    if (lastSlash !== -1) {
+      dir = normPath.substring(0, lastSlash);
+    }
+  }
+
+  // If still no directory, fallback to metadata if available
+  if (!dir) {
+    const fallback = [];
+    if (r.artist) fallback.push({ name: r.artist, isArtist: true, isAlbum: false });
+    if (r.album && (!r.artist || r.album.toLowerCase() !== r.artist.toLowerCase())) {
+      fallback.push({ name: r.album, isArtist: false, isAlbum: true });
+    }
+    return fallback;
+  }
+
+  // Normalize slashes
+  let norm = dir.replace(/\\/g, '/');
+  // Strip Windows drive letter (e.g. C:/ or D:/)
+  norm = norm.replace(/^[a-zA-Z]:\/?/, '');
+  norm = norm.replace(/^\/+/, '');
+
+  // Split path into parts
+  const rawParts = norm.split(/[\/\\]+/).map(p => p.trim()).filter(Boolean);
+
+  const artistLower = (r.artist || '').trim().toLowerCase();
+  const albumLower = (r.album || '').trim().toLowerCase();
+  const userLower = (r.user || '').trim().toLowerCase();
+
+  const segments = [];
+  for (let i = 0; i < rawParts.length; i++) {
+    const p = rawParts[i];
+    const pLower = p.toLowerCase();
+
+    // Skip if first segment is the username (already displayed as user crumb)
+    if (i === 0 && userLower && pLower === userLower) {
+      continue;
+    }
+
+    const isArtist = Boolean(artistLower && (pLower === artistLower || pLower.startsWith(artistLower + ' - ')));
+    const isAlbum = Boolean(!isArtist && albumLower && (pLower === albumLower || pLower.endsWith(' - ' + albumLower)));
+
+    segments.push({
+      name: p,
+      isArtist: isArtist,
+      isAlbum: isAlbum
+    });
+  }
+
+  if (segments.length === 0) {
+    if (r.artist) segments.push({ name: r.artist, isArtist: true, isAlbum: false });
+    if (r.album && (!r.artist || r.album.toLowerCase() !== r.artist.toLowerCase())) {
+      segments.push({ name: r.album, isArtist: false, isAlbum: true });
+    }
+  }
+
+  return segments;
+}
+
 function generatePathBreadcrumbsHtml(r, idx) {
   const crumbs = [];
   const userArg = r.user ? `'${escapeJs(r.user)}'` : "''";
 
-  // Pre-calculate counts across rawSearchResults
+  // Pre-calculate user count across rawSearchResults
   let userCount = 0;
-  let artistCount = 0;
-  let albumCount = 0;
-
-  if (rawSearchResults && rawSearchResults.length > 0) {
-    if (r.user) {
-      const uLower = r.user.toLowerCase();
-      userCount = rawSearchResults.filter(item => (item.user || '').toLowerCase() === uLower).length;
-    }
-    if (r.artist) {
-      const aLower = r.artist.toLowerCase();
-      if (r.user) {
-        const uLower = r.user.toLowerCase();
-        artistCount = rawSearchResults.filter(item => (item.user || '').toLowerCase() === uLower && (
-          (item.artist || '').toLowerCase() === aLower ||
-          (item.directory || '').toLowerCase().includes(aLower) ||
-          (item.path || '').toLowerCase().includes(aLower)
-        )).length;
-      }
-      if (artistCount === 0) {
-        artistCount = rawSearchResults.filter(item => (
-          (item.artist || '').toLowerCase() === aLower ||
-          (item.directory || '').toLowerCase().includes(aLower) ||
-          (item.path || '').toLowerCase().includes(aLower)
-        )).length;
-      }
-    }
-    if (r.album) {
-      const albLower = r.album.toLowerCase();
-      if (r.user) {
-        const uLower = r.user.toLowerCase();
-        albumCount = rawSearchResults.filter(item => (item.user || '').toLowerCase() === uLower && (
-          (item.album || '').toLowerCase() === albLower ||
-          (item.directory || '').toLowerCase().includes(albLower) ||
-          (item.path || '').toLowerCase().includes(albLower)
-        )).length;
-      }
-      if (albumCount === 0) {
-        albumCount = rawSearchResults.filter(item => (
-          (item.album || '').toLowerCase() === albLower ||
-          (item.directory || '').toLowerCase().includes(albLower) ||
-          (item.path || '').toLowerCase().includes(albLower)
-        )).length;
-      }
-    }
+  if (rawSearchResults && rawSearchResults.length > 0 && r.user) {
+    const uLower = r.user.toLowerCase();
+    userCount = rawSearchResults.filter(item => (item.user || '').toLowerCase() === uLower).length;
   }
 
-  // 1. User / Source Peer (rereads search for this user)
+  // 1. User / Source Peer
   if (r.user) {
     const userBadge = userCount > 0 ? `<span class="crumb-counter" title="${userCount} files from this user in current search">${userCount}</span>` : '';
     crumbs.push(`
@@ -1812,59 +1834,57 @@ function generatePathBreadcrumbsHtml(r, idx) {
     `);
   }
 
-  // 2. Artist (rereads search for this artist)
-  if (r.artist) {
-    const artistTitle = r.user ? `Artist: ${escapeHtml(r.artist)} (shared by ${escapeHtml(r.user)}). Click to search all tracks & albums for this artist.` : `Artist: ${escapeHtml(r.artist)}. Click to search all tracks & albums for this artist.`;
-    const artistBadge = artistCount > 0 ? `<span class="crumb-counter" title="${artistCount} files from this artist in current search">${artistCount}</span>` : '';
-    crumbs.push(`
-      <span class="crumb-folder" title="${artistTitle}" onclick="rereadSearchForArtist('${escapeJs(r.artist)}', event, ${userArg})">
-        🎤 ${escapeHtml(r.artist)}${artistBadge}
-      </span>
-    `);
-  }
-
-  // 3. Album (group download view)
-  if (r.album) {
-    const albumBadge = albumCount > 0 ? `<span class="crumb-counter" title="${albumCount} files in this album in current search">${albumCount}</span>` : '';
-    crumbs.push(`
-      <span class="crumb-folder" style="font-weight: 600;" title="Album: ${escapeHtml(r.album)}. Click to group download." onclick="showGroupedDownload('album', '${escapeJs(r.album)}', event, ${userArg})">
-        💿 ${escapeHtml(r.album)}${albumBadge}
-      </span>
-    `);
-  }
-
-  // 4. Directory path segments (subfolders beyond user/artist/album)
-  const dirStr = r.directory || r.path;
-  if (dirStr) {
-    const norm = dirStr.replace(/\\/g, '/');
-    const parts = norm.split('/').map(p => p.trim()).filter(Boolean);
-    for (const p of parts) {
-      const pLower = p.toLowerCase();
-      if (r.user && pLower === r.user.toLowerCase()) continue;
-      if (r.artist && (pLower === r.artist.toLowerCase() || pLower.includes(r.artist.toLowerCase()))) continue;
-      if (r.album && (pLower === r.album.toLowerCase() || pLower.includes(r.album.toLowerCase()))) continue;
-
-      let folderCount = 0;
-      if (rawSearchResults && rawSearchResults.length > 0) {
-        if (r.user) {
-          const uLower = r.user.toLowerCase();
-          folderCount = rawSearchResults.filter(item => (item.user || '').toLowerCase() === uLower && (
-            (item.directory || '').toLowerCase().includes(pLower) ||
-            (item.path || '').toLowerCase().includes(pLower)
-          )).length;
-        }
-        if (folderCount === 0) {
-          folderCount = rawSearchResults.filter(item => (
-            (item.directory || '').toLowerCase().includes(pLower) ||
-            (item.path || '').toLowerCase().includes(pLower)
-          )).length;
-        }
+  // 2. Sequential path segments representing the actual directory structure
+  const segments = extractPathSegments(r);
+  for (const seg of segments) {
+    const sLower = seg.name.toLowerCase();
+    let segCount = 0;
+    if (rawSearchResults && rawSearchResults.length > 0) {
+      if (r.user) {
+        const uLower = r.user.toLowerCase();
+        segCount = rawSearchResults.filter(item => {
+          if ((item.user || '').toLowerCase() !== uLower) return false;
+          const itemDir = (item.directory || '').toLowerCase();
+          const itemPath = (item.path || '').toLowerCase();
+          const itemArtist = (item.artist || '').toLowerCase();
+          const itemAlbum = (item.album || '').toLowerCase();
+          return itemDir.includes(sLower) || itemPath.includes(sLower) ||
+                 (seg.isArtist && itemArtist === sLower) ||
+                 (seg.isAlbum && itemAlbum === sLower);
+        }).length;
       }
-      const folderBadge = folderCount > 0 ? `<span class="crumb-counter" title="${folderCount} files in this folder in current search">${folderCount}</span>` : '';
+      if (segCount === 0) {
+        segCount = rawSearchResults.filter(item => {
+          const itemDir = (item.directory || '').toLowerCase();
+          const itemPath = (item.path || '').toLowerCase();
+          const itemArtist = (item.artist || '').toLowerCase();
+          const itemAlbum = (item.album || '').toLowerCase();
+          return itemDir.includes(sLower) || itemPath.includes(sLower) ||
+                 (seg.isArtist && itemArtist === sLower) ||
+                 (seg.isAlbum && itemAlbum === sLower);
+        }).length;
+      }
+    }
 
+    const badge = segCount > 0 ? `<span class="crumb-counter" title="${segCount} files in this folder in current search">${segCount}</span>` : '';
+
+    if (seg.isArtist) {
+      const artistTitle = r.user ? `Artist: ${escapeHtml(seg.name)} (shared by ${escapeHtml(r.user)}). Click to search all tracks & albums for this artist.` : `Artist: ${escapeHtml(seg.name)}. Click to search all tracks & albums for this artist.`;
       crumbs.push(`
-        <span class="crumb-folder" title="Folder: ${escapeHtml(p)}. Click to group download." onclick="showGroupedDownload('folder', '${escapeJs(p)}', event, ${userArg})">
-          📁 ${escapeHtml(p)}${folderBadge}
+        <span class="crumb-folder" title="${artistTitle}" onclick="rereadSearchForArtist('${escapeJs(seg.name)}', event, ${userArg})">
+          🎤 ${escapeHtml(seg.name)}${badge}
+        </span>
+      `);
+    } else if (seg.isAlbum) {
+      crumbs.push(`
+        <span class="crumb-folder" style="font-weight: 600;" title="Album: ${escapeHtml(seg.name)}. Click to group download." onclick="showGroupedDownload('folder', '${escapeJs(seg.name)}', event, ${userArg})">
+          💿 ${escapeHtml(seg.name)}${badge}
+        </span>
+      `);
+    } else {
+      crumbs.push(`
+        <span class="crumb-folder" title="Folder: ${escapeHtml(seg.name)}. Click to group download." onclick="showGroupedDownload('folder', '${escapeJs(seg.name)}', event, ${userArg})">
+          📁 ${escapeHtml(seg.name)}${badge}
         </span>
       `);
     }
@@ -1874,7 +1894,6 @@ function generatePathBreadcrumbsHtml(r, idx) {
 
   return `
     <div class="search-path-breadcrumb">
-      <span class="emoji-face" style="font-size: 12px; margin-right: 2px;">📁</span>
       ${crumbs.join(' <span class="crumb-separator">/</span> ')}
     </div>
   `;
@@ -2119,7 +2138,9 @@ function renderSearchResults() {
                (r.path || '').toLowerCase().includes(valLower);
       } else if (currentPathFilter.type === 'folder') {
         return (r.directory || '').toLowerCase().includes(valLower) ||
-               (r.path || '').toLowerCase().includes(valLower);
+               (r.path || '').toLowerCase().includes(valLower) ||
+               (r.album || '').toLowerCase() === valLower ||
+               (r.artist || '').toLowerCase() === valLower;
       }
       return true;
     });
@@ -2188,7 +2209,7 @@ function renderSearchResults() {
           <div style="min-width: 0;">
             <div style="font-size: 13.5px; font-weight: 600; display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
               <span>Grouped:</span>
-              <span style="color: var(--adw-accent-color); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(currentPathFilter.label)}</span>
+              <span style="color: var(--adw-accent-color); word-break: break-word;">${escapeHtml(currentPathFilter.label)}</span>
               <span style="font-size: 11px; opacity: 0.75; font-weight: normal;">(${currentPathFilter.type})</span>
             </div>
             <div style="font-size: 11.5px; color: var(--adw-dim-label); margin-top: 2px;">
