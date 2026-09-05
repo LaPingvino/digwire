@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -53,6 +54,7 @@ func (p *ArchiveOrgProvider) IsEnabled() bool {
 type archiveDoc struct {
 	Identifier string `json:"identifier"`
 	Title      string `json:"title"`
+	Creator    any    `json:"creator"`
 	ItemSize   any    `json:"item_size"`
 	Downloads  int    `json:"downloads"`
 	PublicDate string `json:"publicdate"`
@@ -67,7 +69,7 @@ type archiveResponse struct {
 func (p *ArchiveOrgProvider) Search(ctx context.Context, query string) ([]Result, error) {
 	// Search specifically targeting title or identifier to ensure high relevance
 	searchQuery := fmt.Sprintf("(title:(%s) OR identifier:(%s)) AND format:\"Archive BitTorrent\"", query, query)
-	endpoint := fmt.Sprintf("%s/advancedsearch.php?q=%s&fl[]=identifier,title,item_size,downloads,publicdate&rows=25&output=json",
+	endpoint := fmt.Sprintf("%s/advancedsearch.php?q=%s&fl[]=identifier,title,creator,item_size,downloads,publicdate&rows=25&output=json",
 		p.baseURL, url.QueryEscape(searchQuery))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -101,6 +103,20 @@ func (p *ArchiveOrgProvider) Search(ctx context.Context, query string) ([]Result
 			title = doc.Identifier
 		}
 
+		creatorStr := ""
+		switch c := doc.Creator.(type) {
+		case string:
+			creatorStr = c
+		case []any:
+			var parts []string
+			for _, item := range c {
+				if s, ok := item.(string); ok {
+					parts = append(parts, s)
+				}
+			}
+			creatorStr = strings.Join(parts, ", ")
+		}
+
 		var size int64
 		switch v := doc.ItemSize.(type) {
 		case float64:
@@ -112,6 +128,15 @@ func (p *ArchiveOrgProvider) Search(ctx context.Context, query string) ([]Result
 		torrentURL := fmt.Sprintf("https://archive.org/download/%s/%s_archive.torrent", doc.Identifier, doc.Identifier)
 		detailsURL := fmt.Sprintf("https://archive.org/details/%s", doc.Identifier)
 
+		var dirPath string
+		if creatorStr != "" && doc.Title != "" {
+			dirPath = fmt.Sprintf("%s / %s", creatorStr, doc.Title)
+		} else if creatorStr != "" {
+			dirPath = creatorStr
+		} else {
+			dirPath = doc.Title
+		}
+
 		results = append(results, Result{
 			Title:        title,
 			MagnetURI:    torrentURL,
@@ -121,6 +146,11 @@ func (p *ArchiveOrgProvider) Search(ctx context.Context, query string) ([]Result
 			Provider:     p.name,
 			ProviderType: "archiveorg",
 			DetailsURL:   detailsURL,
+			Artist:       creatorStr,
+			Album:        doc.Title,
+			Directory:    dirPath,
+			Path:         dirPath,
+			User:         doc.Identifier,
 		})
 	}
 

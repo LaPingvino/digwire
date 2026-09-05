@@ -159,6 +159,15 @@ func (p *SoulseekProvider) Search(ctx context.Context, query string) ([]Result, 
 		torrentURL := fmt.Sprintf("https://archive.org/download/%s/%s_archive.torrent", doc.Identifier, doc.Identifier)
 		detailsURL := fmt.Sprintf("https://archive.org/details/%s", doc.Identifier)
 
+		var dirPath string
+		if creatorStr != "" && doc.Title != "" {
+			dirPath = fmt.Sprintf("%s / %s", creatorStr, doc.Title)
+		} else if creatorStr != "" {
+			dirPath = creatorStr
+		} else {
+			dirPath = doc.Title
+		}
+
 		results = append(results, Result{
 			Title:        fullTitle,
 			MagnetURI:    torrentURL,
@@ -168,6 +177,11 @@ func (p *SoulseekProvider) Search(ctx context.Context, query string) ([]Result, 
 			Provider:     p.name,
 			ProviderType: "soulseek",
 			DetailsURL:   detailsURL,
+			Artist:       creatorStr,
+			Album:        doc.Title,
+			Directory:    dirPath,
+			Path:         dirPath,
+			User:         doc.Identifier,
 		})
 	}
 

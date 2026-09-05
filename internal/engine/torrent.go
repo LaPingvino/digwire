@@ -3867,11 +3867,34 @@ func (e *Engine) GetTorrentFileBytes(infoHashHex string) ([]byte, string, error)
 	return nil, "", fmt.Errorf("torrent file not found for hash: %s", hash)
 }
 
-// InspectMagnetMetadata resolves or retrieves the file list and metadata of any magnet link or infohash
+// InspectMagnetMetadata resolves or retrieves the file list and metadata of any magnet link, URL, or swarm
 func (e *Engine) InspectMagnetMetadata(ctx context.Context, uriOrHash string) (*InspectResult, error) {
+	uriOrHash = strings.TrimSpace(uriOrHash)
 	hash := extractInfoHash(uriOrHash)
+
+	// Check if this is an Archive.org URL or identifier (Soulseek audio collections, docs, etc.)
+	if strings.Contains(uriOrHash, "archive.org/") || strings.HasPrefix(uriOrHash, "ia:") || strings.HasPrefix(uriOrHash, "archiveorg:") {
+		res, err := inspectArchiveOrg(ctx, uriOrHash)
+		if err == nil && res != nil {
+			return res, nil
+		}
+	}
+
+	// Check if this is a streaming media URL (YouTube, Vimeo, SoundCloud, TikTok, Reddit, etc.)
+	if IsMediaURL(uriOrHash) {
+		res, err := inspectMediaStream(ctx, uriOrHash)
+		if err == nil && res != nil {
+			return res, nil
+		}
+	}
+
+	// Check if it is a general HTTP/HTTPS URL (and not a pure 40-character infohash)
+	if (strings.HasPrefix(uriOrHash, "http://") || strings.HasPrefix(uriOrHash, "https://")) && hash == "" {
+		return inspectHTTPFile(ctx, uriOrHash)
+	}
+
 	if hash == "" {
-		return nil, fmt.Errorf("invalid magnet link or infohash")
+		return nil, fmt.Errorf("invalid magnet link, URL, or infohash")
 	}
 	hash = strings.ToLower(hash)
 

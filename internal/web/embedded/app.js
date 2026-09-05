@@ -1686,9 +1686,68 @@ function setSourceFilter(source) {
   renderSearchResults();
 }
 
+let searchGroupByFolder = false;
+
+function toggleSearchGroupMode() {
+  searchGroupByFolder = !searchGroupByFolder;
+  const btn = document.getElementById('search-group-toggle-btn');
+  const label = document.getElementById('search-group-toggle-label');
+  if (btn) {
+    if (searchGroupByFolder) {
+      btn.classList.add('btn-primary');
+      if (label) label.textContent = 'Folder Grouping (On)';
+    } else {
+      btn.classList.remove('btn-primary');
+      if (label) label.textContent = 'Group by Folder';
+    }
+  }
+  renderSearchResults();
+}
+
+function filterSearchByArtist(artist) {
+  const input = document.getElementById('search-input');
+  if (input && artist) {
+    input.value = artist;
+    const form = input.closest('form');
+    if (form) {
+      form.dispatchEvent(new Event('submit', { cancelable: true }));
+    }
+  }
+}
+
 function handleSortChange(sortType) {
   currentSortBy = sortType;
   renderSearchResults();
+}
+
+function handleSearchCardKeydown(e, idx) {
+  const card = e.currentTarget;
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    const next = card.nextElementSibling;
+    if (next && next.classList.contains('search-card')) {
+      next.focus();
+    }
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    const prev = card.previousElementSibling;
+    if (prev && prev.classList.contains('search-card')) {
+      prev.focus();
+    }
+  } else if (e.key === 'Home') {
+    e.preventDefault();
+    const first = card.parentElement ? card.parentElement.querySelector('.search-card') : null;
+    if (first) first.focus();
+  } else if (e.key === 'End') {
+    e.preventDefault();
+    const cards = card.parentElement ? card.parentElement.querySelectorAll('.search-card') : [];
+    if (cards.length > 0) cards[cards.length - 1].focus();
+  } else if (e.key === 'Enter' || e.key === ' ') {
+    if (e.target === card) {
+      e.preventDefault();
+      openInspectModal(idx);
+    }
+  }
 }
 
 function renderSearchResults() {
@@ -1721,36 +1780,111 @@ function renderSearchResults() {
     return 0;
   });
 
-function handleSearchCardKeydown(e, idx) {
-  const card = e.currentTarget;
-  if (e.key === 'ArrowDown') {
-    e.preventDefault();
-    const next = card.nextElementSibling;
-    if (next && next.classList.contains('search-card')) {
-      next.focus();
-    }
-  } else if (e.key === 'ArrowUp') {
-    e.preventDefault();
-    const prev = card.previousElementSibling;
-    if (prev && prev.classList.contains('search-card')) {
-      prev.focus();
-    }
-  } else if (e.key === 'Home') {
-    e.preventDefault();
-    const first = card.parentElement ? card.parentElement.querySelector('.search-card') : null;
-    if (first) first.focus();
-  } else if (e.key === 'End') {
-    e.preventDefault();
-    const cards = card.parentElement ? card.parentElement.querySelectorAll('.search-card') : [];
-    if (cards.length > 0) cards[cards.length - 1].focus();
-  } else if (e.key === 'Enter' || e.key === ' ') {
-    if (e.target === card) {
-      e.preventDefault();
-      openInspectModal(idx);
-    }
-  }
-}
+  // Grouped by Folder / Album View
+  if (searchGroupByFolder) {
+    const folderGroups = new Map();
+    sorted.forEach((r, origIdx) => {
+      let groupKey = r.directory || r.path;
+      if (!groupKey && r.artist && r.album) {
+        groupKey = `${r.artist} / ${r.album}`;
+      } else if (!groupKey && r.artist) {
+        groupKey = r.artist;
+      }
+      if (!groupKey) {
+        groupKey = r.title || 'Ungrouped Collection';
+      }
 
+      if (!folderGroups.has(groupKey)) {
+        folderGroups.set(groupKey, {
+          key: groupKey,
+          artist: r.artist || '',
+          album: r.album || '',
+          user: r.user || '',
+          provider_type: r.provider_type || 'soulseek',
+          provider: r.provider || '',
+          items: [],
+          totalBytes: 0,
+          seeders: r.seeders !== undefined ? r.seeders : -1,
+          leechers: r.leechers !== undefined ? r.leechers : -1,
+          magnet_uri: r.magnet_uri
+        });
+      }
+      const g = folderGroups.get(groupKey);
+      g.items.push({ result: r, idx: origIdx });
+      g.totalBytes += (r.size_bytes || 0);
+      if (r.seeders !== undefined && r.seeders > g.seeders) {
+        g.seeders = r.seeders;
+      }
+    });
+
+    container.innerHTML = Array.from(folderGroups.values()).map((g, groupIdx) => {
+      const tagClass = `tag-${g.provider_type || 'soulseek'}`;
+      const itemsCount = g.items.length;
+      const firstResultIdx = g.items[0].idx;
+
+      const userBreadcrumb = g.user ? `<span class="crumb-folder" title="User / Identifier">👤 ${escapeHtml(g.user)}</span> / ` : '';
+      const artistBreadcrumb = g.artist ? `<span class="crumb-folder" title="Artist" onclick="filterSearchByArtist('${escapeHtml(g.artist)}')">🎤 ${escapeHtml(g.artist)}</span> / ` : '';
+      const albumTitle = g.album || g.key;
+
+      return `
+        <div class="folder-group-card" id="folder-group-${groupIdx}">
+          <div class="folder-group-header">
+            <div style="flex: 1; min-width: 0;">
+              <div class="folder-group-title" title="${escapeHtml(g.key)}">
+                <span class="emoji-face" style="font-size: 16px;">📁</span>
+                <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(g.key)}</span>
+              </div>
+              <div class="search-path-breadcrumb" style="margin-top: 4px;">
+                ${userBreadcrumb}${artistBreadcrumb}<span class="crumb-folder" style="font-weight: 600;">💿 ${escapeHtml(albumTitle)}</span>
+              </div>
+              <div class="folder-group-stats">
+                <span>${ICONS.package} ${formatBytes(g.totalBytes)}</span>
+                <span>${ICONS.folder} ${itemsCount} ${itemsCount === 1 ? 'item' : 'tracks/files'}</span>
+                <span class="provider-badge ${tagClass}">${escapeHtml(g.provider || g.provider_type)}</span>
+              </div>
+            </div>
+            <div class="folder-group-actions" onclick="event.stopPropagation()">
+              <button class="btn btn-sm" title="Inspect files and directory tree" onclick="openInspectModal(${firstResultIdx})">
+                <span class="emoji-face" style="margin-right: 3px;">📦</span>
+                <span>Files</span>
+              </button>
+              <button class="btn btn-primary btn-sm" title="Download entire album / folder" onclick="downloadFromSearch('${encodeURIComponent(g.magnet_uri)}', this)">
+                <span class="emoji-face" style="margin-right: 3px;">📥</span>
+                <span>Download Album</span>
+              </button>
+            </div>
+          </div>
+          <div class="folder-group-body">
+            ${g.items.map(({ result: item, idx: itemIdx }) => {
+              const itemSize = item.size_bytes > 0 ? formatBytes(item.size_bytes) : '';
+              return `
+                <div class="folder-track-row">
+                  <div style="display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; padding-right: 12px;">
+                    <span class="emoji-face" style="font-size: 13px;">🎵</span>
+                    <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500;" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</span>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 10px; flex-shrink: 0;">
+                    <span style="font-size: 11.5px; color: var(--adw-dim-label); font-weight: 500;">${itemSize}</span>
+                    <button class="btn btn-sm" style="font-size: 11px; padding: 2px 7px;" onclick="openInspectModal(${itemIdx})" title="Inspect file details">
+                      <span class="emoji-face" style="margin-right: 2px;">📦</span>
+                      <span>Inspect</span>
+                    </button>
+                    <button class="btn btn-primary btn-sm" style="font-size: 11px; padding: 2px 9px;" onclick="downloadFromSearch('${encodeURIComponent(item.magnet_uri)}', this)" title="Download track">
+                      <span class="emoji-face" style="margin-right: 2px;">📥</span>
+                      <span>Download</span>
+                    </button>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+      `;
+    }).join('');
+    return;
+  }
+
+  // Flat Search Card View (with directory breadcrumbs and higher layer actions)
   container.innerHTML = sorted.map((r, idx) => {
     const tagClass = `tag-${r.provider_type || 'torrentscsv'}`;
     const scoreText = r.score > 0 ? `<span class="score-badge">Relevance: ${r.score.toFixed(0)}</span>` : '';
@@ -1766,9 +1900,9 @@ function handleSearchCardKeydown(e, idx) {
       }
     } else {
       if (r.provider_type === 'soulseek') {
-        seedersHtml = `<span class="health-badge" style="background: rgba(53, 132, 228, 0.15); color: var(--adw-accent-color); border: 1px solid rgba(53, 132, 228, 0.3); padding: 2px 7px; border-radius: 10px; font-size: 11px; font-weight: 500;" title="Lossless P2P Music Audio">${ICONS.dot}P2P Audio</span><span class="seed-probe-btn" style="color: var(--adw-dim-label); opacity: 0.85; cursor: pointer; text-decoration: underline dotted; margin-left: 4px;" title="Probe live BitTorrent swarm & WebSeeds" onclick="scrapeSwarmCard(${idx}, event)">${ICONS.arrowUp}? seeds</span>`;
+        seedersHtml = `<span class="health-badge" style="background: rgba(255, 71, 87, 0.15); color: #ff6b81; border: 1px solid rgba(255, 71, 87, 0.35); padding: 2px 7px; border-radius: 10px; font-size: 11px; font-weight: 500;" title="Lossless P2P Music Audio">${ICONS.dot}P2P Audio</span><span class="seed-probe-btn" style="color: var(--adw-dim-label); opacity: 0.85; cursor: pointer; text-decoration: underline dotted; margin-left: 4px;" title="Probe live BitTorrent swarm & WebSeeds" onclick="scrapeSwarmCard(${idx}, event)">${ICONS.arrowUp}? seeds</span>`;
       } else if (r.provider_type === 'documents') {
-        seedersHtml = `<span class="health-badge" style="background: rgba(145, 65, 172, 0.15); color: #c061cb; border: 1px solid rgba(145, 65, 172, 0.3); padding: 2px 7px; border-radius: 10px; font-size: 11px; font-weight: 500;" title="Digital Library & Document Archive">${ICONS.dot}Library</span><span class="seed-probe-btn" style="color: var(--adw-dim-label); opacity: 0.85; cursor: pointer; text-decoration: underline dotted; margin-left: 4px;" title="Probe live swarm peers" onclick="scrapeSwarmCard(${idx}, event)">${ICONS.arrowUp}? seeds</span>`;
+        seedersHtml = `<span class="health-badge" style="background: rgba(46, 213, 115, 0.15); color: #2ed573; border: 1px solid rgba(46, 213, 115, 0.35); padding: 2px 7px; border-radius: 10px; font-size: 11px; font-weight: 500;" title="Digital Library & Document Archive">${ICONS.dot}Library</span><span class="seed-probe-btn" style="color: var(--adw-dim-label); opacity: 0.85; cursor: pointer; text-decoration: underline dotted; margin-left: 4px;" title="Probe live swarm peers" onclick="scrapeSwarmCard(${idx}, event)">${ICONS.arrowUp}? seeds</span>`;
       } else if (r.provider_type === 'archiveorg') {
         seedersHtml = `<span class="health-badge" style="background: rgba(229, 165, 10, 0.15); color: var(--adw-warning); border: 1px solid rgba(229, 165, 10, 0.3); padding: 2px 7px; border-radius: 10px; font-size: 11px; font-weight: 500;" title="Archive.org Direct WebSeed & Swarm">${ICONS.dot}WebSeed</span><span class="seed-probe-btn" style="color: var(--adw-dim-label); opacity: 0.85; cursor: pointer; text-decoration: underline dotted; margin-left: 4px;" title="Probe live swarm peers" onclick="scrapeSwarmCard(${idx}, event)">${ICONS.arrowUp}? seeds</span>`;
       } else {
@@ -1790,12 +1924,28 @@ function handleSearchCardKeydown(e, idx) {
       }
     }
 
+    // Directory path breadcrumb
+    let pathBreadcrumbHtml = '';
+    if (r.directory || r.path || r.artist || r.album || r.user) {
+      const userPart = r.user ? `<span class="crumb-folder" title="Source User: ${escapeHtml(r.user)}">👤 ${escapeHtml(r.user)}</span> / ` : '';
+      const artistPart = r.artist ? `<span class="crumb-folder" title="Artist: ${escapeHtml(r.artist)}" onclick="event.stopPropagation(); filterSearchByArtist('${escapeHtml(r.artist)}')">🎤 ${escapeHtml(r.artist)}</span> / ` : '';
+      const albumPart = r.album ? `<span class="crumb-folder" title="Album: ${escapeHtml(r.album)}" onclick="event.stopPropagation(); openInspectModal(${idx})">💿 ${escapeHtml(r.album)}</span>` : '';
+      const rawDir = (!r.artist && !r.album && r.directory) ? `<span class="crumb-folder" title="Folder: ${escapeHtml(r.directory)}">${escapeHtml(r.directory)}</span>` : '';
+      pathBreadcrumbHtml = `
+        <div class="search-path-breadcrumb">
+          <span class="emoji-face" style="font-size: 12px; margin-right: 2px;">📁</span>
+          ${userPart}${artistPart}${albumPart}${rawDir}
+        </div>
+      `;
+    }
+
     const cardAria = `Search result: ${escapeHtml(r.title)}, ${formatBytes(r.size_bytes)}, ${r.provider || ''}`;
     return `
       <div class="search-card" tabindex="0" role="region" aria-label="${cardAria}" onkeydown="handleSearchCardKeydown(event, ${idx})">
         <div class="search-info">
           <div class="search-title" title="${escapeHtml(r.title)}">${escapeHtml(r.title)}</div>
-          <div class="search-sub">
+          ${pathBreadcrumbHtml}
+          <div class="search-sub" style="margin-top: 4px;">
             <span>${ICONS.package}${formatBytes(r.size_bytes)}</span>
             ${seedersHtml}
             ${leechersHtml}
@@ -1805,12 +1955,12 @@ function handleSearchCardKeydown(e, idx) {
             ${scoreText}
           </div>
         </div>
-        <div style="display: flex; gap: 6px; align-items: center;">
-          <button class="btn" title="Inspect files inside this torrent" aria-label="Inspect files for ${escapeHtml(r.title)}" onclick="openInspectModal(${idx})">
+        <div style="display: flex; gap: 6px; align-items: center; flex-shrink: 0;">
+          <button class="btn" title="Inspect files inside this entry" aria-label="Inspect files for ${escapeHtml(r.title)}" onclick="openInspectModal(${idx})">
             <span class="emoji-face" style="margin-right: 4px;">📦</span>
             <span>Files</span>
           </button>
-          <button class="btn btn-icon" title="Copy Magnet" aria-label="Copy Magnet link for ${escapeHtml(r.title)}" onclick="copyToClipboard('${encodeURI(r.magnet_uri)}', this)">${ICONS.magnet}</button>
+          <button class="btn btn-icon" title="Copy Magnet / Link" aria-label="Copy link for ${escapeHtml(r.title)}" onclick="copyToClipboard('${encodeURI(r.magnet_uri)}', this)">${ICONS.magnet}</button>
           <button class="btn btn-primary" aria-label="Download ${escapeHtml(r.title)}" onclick="downloadFromSearch('${encodeURIComponent(r.magnet_uri)}', this)">
             ${ICONS.download}
             <span>Download</span>
@@ -1986,6 +2136,30 @@ function getIconForFile(path) {
   return ICONS.file;
 }
 
+function selectOnlyInspectFolder(dirPath, event) {
+  if (event) event.stopPropagation();
+  inspectSelectedIndices.clear();
+  currentInspectFiles.forEach(f => {
+    const rawPath = f.path || '';
+    const lastSlash = Math.max(rawPath.lastIndexOf('/'), rawPath.lastIndexOf('\\'));
+    const dir = lastSlash !== -1 ? rawPath.substring(0, lastSlash) : '';
+    if (dir === dirPath) {
+      inspectSelectedIndices.add(f.index);
+    }
+  });
+  renderInspectFiles(currentInspectFiles);
+  updateInspectSelectionSummary();
+}
+
+async function downloadInspectFolder(dirPath, event) {
+  if (event) event.stopPropagation();
+  selectOnlyInspectFolder(dirPath);
+  const btn = document.getElementById('inspect-download-btn');
+  if (btn) {
+    startDownloadFromInspect(btn, true);
+  }
+}
+
 function renderInspectFiles(files) {
   const container = document.getElementById('inspect-files-container');
   if (!container) return;
@@ -2029,15 +2203,19 @@ function renderInspectFiles(files) {
     html += `
       <div class="inspect-dir-group" style="border-bottom: 1px solid rgba(128,128,128,0.12);">
         ${hasMultipleDirs ? `
-          <div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: rgba(255,255,255,0.03); border-bottom: 1px solid rgba(128,128,128,0.08); font-size: 12px; font-weight: 600;">
+          <div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: rgba(255,255,255,0.03); border-bottom: 1px solid rgba(128,128,128,0.08); font-size: 12px; font-weight: 600; flex-wrap: wrap; gap: 6px;">
             <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; min-width: 0; flex: 1;">
               <input type="checkbox" class="inspect-dir-checkbox" data-dir="${escapeHtml(dirPath)}" ${allGroupChecked ? 'checked' : ''} onchange="toggleInspectDirGroup('${escapeHtml(dirPath)}', this.checked)">
               ${ICONS.folder}
               <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(dirTitle)}">${escapeHtml(dirTitle)}</span>
             </label>
-            <span style="font-size: 11px; color: var(--adw-dim-label); font-weight: normal; margin-left: 10px; white-space: nowrap;">
-              ${groupFiles.length} file${groupFiles.length !== 1 ? 's' : ''} • ${formatBytes(groupTotalBytes)}
-            </span>
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span style="font-size: 11px; color: var(--adw-dim-label); font-weight: normal; margin-right: 4px; white-space: nowrap;">
+                ${groupFiles.length} file${groupFiles.length !== 1 ? 's' : ''} • ${formatBytes(groupTotalBytes)}
+              </span>
+              <button type="button" class="btn btn-sm" style="font-size: 10.5px; padding: 2px 7px;" onclick="selectOnlyInspectFolder('${escapeHtml(dirPath)}', event)" title="Select only files in this directory">✔️ Select</button>
+              <button type="button" class="btn btn-sm btn-primary" style="font-size: 10.5px; padding: 2px 8px;" onclick="downloadInspectFolder('${escapeHtml(dirPath)}', event)" title="Download all files in this directory immediately">📥 Download Folder</button>
+            </div>
           </div>
         ` : ''}
         <div class="inspect-dir-files">

@@ -646,6 +646,126 @@ select option, select optgroup, .sort-select option, .sort-select optgroup {
   border-radius: 4px;
 }
 
+/* Directory Grouping and Breadcrumbs */
+.search-path-breadcrumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--adw-dim-label);
+  background: rgba(128, 128, 128, 0.08);
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-top: 3px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-path-breadcrumb .crumb-folder {
+  color: var(--adw-accent-color);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.search-path-breadcrumb .crumb-folder:hover {
+  text-decoration: underline;
+}
+
+.folder-group-card {
+  background-color: var(--adw-card-bg);
+  border: 1px solid var(--adw-border);
+  border-radius: var(--adw-radius);
+  margin-bottom: 10px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  transition: border-color 0.2s;
+}
+
+.folder-group-card:hover {
+  border-color: rgba(53, 132, 228, 0.4);
+}
+
+.folder-group-header {
+  padding: 12px 16px;
+  background: rgba(255, 255, 255, 0.02);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  user-select: none;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.08);
+}
+
+.folder-group-header:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.folder-group-title {
+  font-size: 14px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.folder-group-stats {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--adw-dim-label);
+  margin-top: 3px;
+}
+
+.folder-group-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.folder-group-body {
+  padding: 4px 0;
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.folder-track-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 16px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.05);
+  font-size: 12.5px;
+  transition: background-color 0.15s;
+}
+
+.folder-track-row:last-child {
+  border-bottom: none;
+}
+
+.folder-track-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.inspect-dir-group {
+  margin-bottom: 2px;
+}
+
+.inspect-dir-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid rgba(128, 128, 128, 0.1);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 /* Empty State */
 .empty-state {
   text-align: center;

@@ -618,7 +618,7 @@ func (s *Server) handleInspectTorrent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
 	res, err := s.engine.InspectMagnetMetadata(ctx, magOrHash)

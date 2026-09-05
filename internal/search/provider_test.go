@@ -51,6 +51,18 @@ func TestSoulseekProviderSanity(t *testing.T) {
 	if r.ProviderType != "soulseek" {
 		t.Errorf("expected ProviderType 'soulseek', got %q", r.ProviderType)
 	}
+	if r.Artist != "Queen" {
+		t.Errorf("expected Artist 'Queen', got %q", r.Artist)
+	}
+	if r.Album != "A Night at the Opera" {
+		t.Errorf("expected Album 'A Night at the Opera', got %q", r.Album)
+	}
+	if r.Directory != "Queen / A Night at the Opera" {
+		t.Errorf("expected Directory 'Queen / A Night at the Opera', got %q", r.Directory)
+	}
+	if r.User != "queen_night_opera_flac" {
+		t.Errorf("expected User 'queen_night_opera_flac', got %q", r.User)
+	}
 }
 
 func TestDocumentsProviderSanity(t *testing.T) {
@@ -86,5 +98,11 @@ func TestDocumentsProviderSanity(t *testing.T) {
 	r := results[0]
 	if r.Seeders != -1 || r.Leechers != -1 {
 		t.Errorf("expected honest unknown peer count (-1, -1), got (%d, %d)", r.Seeders, r.Leechers)
+	}
+	if r.Artist != "Christos Papadimitriou" {
+		t.Errorf("expected Artist 'Christos Papadimitriou', got %q", r.Artist)
+	}
+	if r.Directory != "Christos Papadimitriou / Computational Complexity" {
+		t.Errorf("expected Directory 'Christos Papadimitriou / Computational Complexity', got %q", r.Directory)
 	}
 }

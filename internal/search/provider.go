@@ -27,6 +27,11 @@ type Result struct {
 	PublishDate  int64                      `json:"publish_date,omitempty"`
 	Files        []FileEntry                `json:"files,omitempty"`
 	Health       *dhtindex.HealthPrediction `json:"health,omitempty"`
+	Directory    string                     `json:"directory,omitempty"`
+	Path         string                     `json:"path,omitempty"`
+	Artist       string                     `json:"artist,omitempty"`
+	Album        string                     `json:"album,omitempty"`
+	User         string                     `json:"user,omitempty"`
 }
 
 // Provider is the interface that all search backends must implement.
