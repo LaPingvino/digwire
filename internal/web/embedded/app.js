@@ -1603,11 +1603,10 @@ async function submitCreateTorrent() {
 }
 
 // Search Functionality
-async function handleSearchSubmit(e) {
-  e.preventDefault();
-  const input = document.getElementById('search-input');
-  const query = input.value.trim();
+async function executeSearch(query) {
   if (!query) return;
+  const input = document.getElementById('search-input');
+  if (input) input.value = query;
 
   currentPathFilter = null;
 
@@ -1616,30 +1615,71 @@ async function handleSearchSubmit(e) {
   const empty = document.getElementById('search-empty');
   const controls = document.getElementById('search-controls');
 
-  spinner.style.display = 'block';
-  container.innerHTML = '';
-  empty.style.display = 'none';
-  controls.style.display = 'none';
+  if (spinner) spinner.style.display = 'block';
+  if (container) container.innerHTML = '';
+  if (empty) empty.style.display = 'none';
+  if (controls) controls.style.display = 'none';
 
   try {
     const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
     rawSearchResults = await res.json() || [];
 
-    spinner.style.display = 'none';
+    if (spinner) spinner.style.display = 'none';
 
     if (rawSearchResults.length === 0) {
-      empty.style.display = 'block';
+      if (empty) empty.style.display = 'block';
       return;
     }
 
     currentSourceFilter = 'all';
-    controls.style.display = 'flex';
+    if (controls) controls.style.display = 'flex';
     renderSourceFilterChips();
     renderSearchResults();
   } catch (err) {
-    spinner.style.display = 'none';
+    if (spinner) spinner.style.display = 'none';
     showToast("Search failed: " + err.message, "error", 3500);
   }
+}
+
+async function handleSearchSubmit(e) {
+  if (e) e.preventDefault();
+  const input = document.getElementById('search-input');
+  const query = input ? input.value.trim() : '';
+  await executeSearch(query);
+}
+
+async function rereadSearchForUser(user, event) {
+  if (event) {
+    event.stopPropagation();
+    event.preventDefault();
+  }
+  if (!user) return;
+  searchGroupByFolder = true;
+  const btn = document.getElementById('search-group-toggle-btn');
+  const label = document.getElementById('search-group-toggle-label');
+  if (btn) {
+    btn.classList.add('btn-primary');
+    if (label) label.textContent = 'Folder Grouping (On)';
+  }
+  showToast(`Searching all shared files from user "${user}"...`, "info", 2500);
+  await executeSearch(`user:${user}`);
+}
+
+async function rereadSearchForArtist(artist, event, userContext) {
+  if (event) {
+    event.stopPropagation();
+    event.preventDefault();
+  }
+  if (!artist) return;
+  searchGroupByFolder = true;
+  const btn = document.getElementById('search-group-toggle-btn');
+  const label = document.getElementById('search-group-toggle-label');
+  if (btn) {
+    btn.classList.add('btn-primary');
+    if (label) label.textContent = 'Folder Grouping (On)';
+  }
+  showToast(`Searching all albums & tracks for artist "${artist}"...`, "info", 2500);
+  await executeSearch(`artist:${artist}`);
 }
 
 function renderSourceFilterChips() {
@@ -1704,30 +1744,81 @@ function generatePathBreadcrumbsHtml(r, idx) {
   const crumbs = [];
   const userArg = r.user ? `'${escapeJs(r.user)}'` : "''";
 
-  // 1. User / Source Peer
+  // Pre-calculate counts across rawSearchResults
+  let userCount = 0;
+  let artistCount = 0;
+  let albumCount = 0;
+
+  if (rawSearchResults && rawSearchResults.length > 0) {
+    if (r.user) {
+      const uLower = r.user.toLowerCase();
+      userCount = rawSearchResults.filter(item => (item.user || '').toLowerCase() === uLower).length;
+    }
+    if (r.artist) {
+      const aLower = r.artist.toLowerCase();
+      if (r.user) {
+        const uLower = r.user.toLowerCase();
+        artistCount = rawSearchResults.filter(item => (item.user || '').toLowerCase() === uLower && (
+          (item.artist || '').toLowerCase() === aLower ||
+          (item.directory || '').toLowerCase().includes(aLower) ||
+          (item.path || '').toLowerCase().includes(aLower)
+        )).length;
+      }
+      if (artistCount === 0) {
+        artistCount = rawSearchResults.filter(item => (
+          (item.artist || '').toLowerCase() === aLower ||
+          (item.directory || '').toLowerCase().includes(aLower) ||
+          (item.path || '').toLowerCase().includes(aLower)
+        )).length;
+      }
+    }
+    if (r.album) {
+      const albLower = r.album.toLowerCase();
+      if (r.user) {
+        const uLower = r.user.toLowerCase();
+        albumCount = rawSearchResults.filter(item => (item.user || '').toLowerCase() === uLower && (
+          (item.album || '').toLowerCase() === albLower ||
+          (item.directory || '').toLowerCase().includes(albLower) ||
+          (item.path || '').toLowerCase().includes(albLower)
+        )).length;
+      }
+      if (albumCount === 0) {
+        albumCount = rawSearchResults.filter(item => (
+          (item.album || '').toLowerCase() === albLower ||
+          (item.directory || '').toLowerCase().includes(albLower) ||
+          (item.path || '').toLowerCase().includes(albLower)
+        )).length;
+      }
+    }
+  }
+
+  // 1. User / Source Peer (rereads search for this user)
   if (r.user) {
+    const userBadge = userCount > 0 ? `<span class="crumb-counter" title="${userCount} files from this user in current search">${userCount}</span>` : '';
     crumbs.push(`
-      <span class="crumb-folder" title="Source User: ${escapeHtml(r.user)}. Click to group download all shares from this user." onclick="showGroupedDownload('user', '${escapeJs(r.user)}', event)">
-        👤 ${escapeHtml(r.user)}
+      <span class="crumb-folder" title="Source User: ${escapeHtml(r.user)}. Click to search all shared files from this user." onclick="rereadSearchForUser('${escapeJs(r.user)}', event)">
+        👤 ${escapeHtml(r.user)}${userBadge}
       </span>
     `);
   }
 
-  // 2. Artist (default limited to sharing user)
+  // 2. Artist (rereads search for this artist)
   if (r.artist) {
-    const artistTitle = r.user ? `Artist: ${escapeHtml(r.artist)} (shared by ${escapeHtml(r.user)}). Click to group download.` : `Artist: ${escapeHtml(r.artist)}. Click to group download.`;
+    const artistTitle = r.user ? `Artist: ${escapeHtml(r.artist)} (shared by ${escapeHtml(r.user)}). Click to search all tracks & albums for this artist.` : `Artist: ${escapeHtml(r.artist)}. Click to search all tracks & albums for this artist.`;
+    const artistBadge = artistCount > 0 ? `<span class="crumb-counter" title="${artistCount} files from this artist in current search">${artistCount}</span>` : '';
     crumbs.push(`
-      <span class="crumb-folder" title="${artistTitle}" onclick="showGroupedDownload('artist', '${escapeJs(r.artist)}', event, ${userArg})">
-        🎤 ${escapeHtml(r.artist)}
+      <span class="crumb-folder" title="${artistTitle}" onclick="rereadSearchForArtist('${escapeJs(r.artist)}', event, ${userArg})">
+        🎤 ${escapeHtml(r.artist)}${artistBadge}
       </span>
     `);
   }
 
-  // 3. Album
+  // 3. Album (group download view)
   if (r.album) {
+    const albumBadge = albumCount > 0 ? `<span class="crumb-counter" title="${albumCount} files in this album in current search">${albumCount}</span>` : '';
     crumbs.push(`
       <span class="crumb-folder" style="font-weight: 600;" title="Album: ${escapeHtml(r.album)}. Click to group download." onclick="showGroupedDownload('album', '${escapeJs(r.album)}', event, ${userArg})">
-        💿 ${escapeHtml(r.album)}
+        💿 ${escapeHtml(r.album)}${albumBadge}
       </span>
     `);
   }
@@ -1742,9 +1833,28 @@ function generatePathBreadcrumbsHtml(r, idx) {
       if (r.user && pLower === r.user.toLowerCase()) continue;
       if (r.artist && (pLower === r.artist.toLowerCase() || pLower.includes(r.artist.toLowerCase()))) continue;
       if (r.album && (pLower === r.album.toLowerCase() || pLower.includes(r.album.toLowerCase()))) continue;
+
+      let folderCount = 0;
+      if (rawSearchResults && rawSearchResults.length > 0) {
+        if (r.user) {
+          const uLower = r.user.toLowerCase();
+          folderCount = rawSearchResults.filter(item => (item.user || '').toLowerCase() === uLower && (
+            (item.directory || '').toLowerCase().includes(pLower) ||
+            (item.path || '').toLowerCase().includes(pLower)
+          )).length;
+        }
+        if (folderCount === 0) {
+          folderCount = rawSearchResults.filter(item => (
+            (item.directory || '').toLowerCase().includes(pLower) ||
+            (item.path || '').toLowerCase().includes(pLower)
+          )).length;
+        }
+      }
+      const folderBadge = folderCount > 0 ? `<span class="crumb-counter" title="${folderCount} files in this folder in current search">${folderCount}</span>` : '';
+
       crumbs.push(`
         <span class="crumb-folder" title="Folder: ${escapeHtml(p)}. Click to group download." onclick="showGroupedDownload('folder', '${escapeJs(p)}', event, ${userArg})">
-          📁 ${escapeHtml(p)}
+          📁 ${escapeHtml(p)}${folderBadge}
         </span>
       `);
     }

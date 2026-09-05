@@ -53,13 +53,15 @@ func (p *SoulseekProvider) IsEnabled() bool {
 }
 
 type soulseekAudioDoc struct {
-	Identifier string `json:"identifier"`
-	Title      string `json:"title"`
-	Creator    any    `json:"creator"`
-	Format     any    `json:"format"`
-	ItemSize   any    `json:"item_size"`
-	Downloads  int    `json:"downloads"`
-	PublicDate string `json:"publicdate"`
+	Identifier  string `json:"identifier"`
+	Title       string `json:"title"`
+	Creator     any    `json:"creator"`
+	Uploader    string `json:"uploader"`
+	Contributor any    `json:"contributor"`
+	Format      any    `json:"format"`
+	ItemSize    any    `json:"item_size"`
+	Downloads   int    `json:"downloads"`
+	PublicDate  string `json:"publicdate"`
 }
 
 type soulseekResponse struct {
@@ -69,10 +71,28 @@ type soulseekResponse struct {
 }
 
 func (p *SoulseekProvider) Search(ctx context.Context, query string) ([]Result, error) {
-	// Query targeted lossless and high-bitrate audio items
-	searchQuery := fmt.Sprintf("(mediatype:(audio) OR format:(\"FLAC\" OR \"VBR MP3\" OR \"320Kbps MP3\")) AND (title:(%s) OR creator:(%s))", query, query)
-	endpoint := fmt.Sprintf("%s/advancedsearch.php?q=%s&fl[]=identifier,title,creator,format,item_size,downloads,publicdate&rows=30&output=json",
-		p.baseURL, url.QueryEscape(searchQuery))
+	qLower := strings.ToLower(strings.TrimSpace(query))
+	var searchQuery string
+	numRows := 30
+
+	if strings.HasPrefix(qLower, "user:") {
+		user := strings.TrimSpace(query[5:])
+		searchQuery = fmt.Sprintf("mediatype:(audio) AND (uploader:(%q) OR uploader:(%s*) OR contributor:(%q) OR identifier:(%s*))", user, user, user, user)
+		numRows = 50
+	} else if strings.HasPrefix(qLower, "artist:") {
+		artist := strings.TrimSpace(query[7:])
+		searchQuery = fmt.Sprintf("(mediatype:(audio) OR format:(\"FLAC\" OR \"VBR MP3\" OR \"320Kbps MP3\")) AND creator:(%q)", artist)
+		numRows = 50
+	} else if strings.HasPrefix(qLower, "creator:") {
+		creator := strings.TrimSpace(query[8:])
+		searchQuery = fmt.Sprintf("(mediatype:(audio) OR format:(\"FLAC\" OR \"VBR MP3\" OR \"320Kbps MP3\")) AND creator:(%q)", creator)
+		numRows = 50
+	} else {
+		searchQuery = fmt.Sprintf("(mediatype:(audio) OR format:(\"FLAC\" OR \"VBR MP3\" OR \"320Kbps MP3\")) AND (title:(%s) OR creator:(%s))", query, query)
+	}
+
+	endpoint := fmt.Sprintf("%s/advancedsearch.php?q=%s&fl[]=identifier,title,creator,uploader,contributor,format,item_size,downloads,publicdate&rows=%d&output=json",
+		p.baseURL, url.QueryEscape(searchQuery), numRows)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -168,6 +188,26 @@ func (p *SoulseekProvider) Search(ctx context.Context, query string) ([]Result, 
 			dirPath = doc.Title
 		}
 
+		userStr := strings.TrimSpace(doc.Uploader)
+		if userStr != "" && strings.Contains(userStr, "@") {
+			userStr = strings.Split(userStr, "@")[0]
+		}
+		if userStr == "" {
+			switch c := doc.Contributor.(type) {
+			case string:
+				userStr = strings.TrimSpace(c)
+			case []any:
+				if len(c) > 0 {
+					if s, ok := c[0].(string); ok {
+						userStr = strings.TrimSpace(s)
+					}
+				}
+			}
+		}
+		if userStr == "" {
+			userStr = doc.Identifier
+		}
+
 		results = append(results, Result{
 			Title:        fullTitle,
 			MagnetURI:    torrentURL,
@@ -181,7 +221,7 @@ func (p *SoulseekProvider) Search(ctx context.Context, query string) ([]Result, 
 			Album:        doc.Title,
 			Directory:    dirPath,
 			Path:         dirPath,
-			User:         doc.Identifier,
+			User:         userStr,
 		})
 	}
 

@@ -153,11 +153,31 @@ func (m *Manager) SearchAll(ctx context.Context, query string) []Result {
 		wg.Add(1)
 		go func(prov Provider) {
 			defer wg.Done()
-			results, err := prov.Search(ctx, query)
+			provQuery := query
+			if _, ok := prov.(*SoulseekProvider); !ok {
+				qLower := strings.ToLower(strings.TrimSpace(query))
+				if strings.HasPrefix(qLower, "artist:") {
+					provQuery = strings.TrimSpace(query[7:])
+				} else if strings.HasPrefix(qLower, "creator:") {
+					provQuery = strings.TrimSpace(query[8:])
+				} else if strings.HasPrefix(qLower, "user:") {
+					provQuery = strings.TrimSpace(query[5:])
+				}
+			}
+			results, err := prov.Search(ctx, provQuery)
 			if err == nil && len(results) > 0 {
+				cleanQuery := query
+				qLower := strings.ToLower(strings.TrimSpace(query))
+				if strings.HasPrefix(qLower, "artist:") {
+					cleanQuery = strings.TrimSpace(query[7:])
+				} else if strings.HasPrefix(qLower, "creator:") {
+					cleanQuery = strings.TrimSpace(query[8:])
+				} else if strings.HasPrefix(qLower, "user:") {
+					cleanQuery = strings.TrimSpace(query[5:])
+				}
 				// Compute relevance score for each result
 				for i := range results {
-					results[i].Score = CalculateRelevance(query, results[i].Title, results[i].Seeders, prov.Weight())
+					results[i].Score = CalculateRelevance(cleanQuery, results[i].Title, results[i].Seeders, prov.Weight())
 				}
 				resultChan <- results
 			}

@@ -676,6 +676,26 @@ select option, select optgroup, .sort-select option, .sort-select optgroup {
   opacity: 0.85;
 }
 
+.crumb-counter {
+  display: inline-block;
+  background: rgba(127, 127, 127, 0.16);
+  border: 1px solid var(--adw-border);
+  border-radius: 999px;
+  padding: 0 5px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 14px;
+  margin-left: 3px;
+  vertical-align: middle;
+  color: var(--adw-fg);
+  opacity: 0.85;
+}
+
+.search-path-breadcrumb .crumb-folder:hover .crumb-counter {
+  border-color: var(--adw-accent-color);
+  opacity: 1;
+}
+
 .crumb-separator {
   color: var(--adw-dim-label);
   opacity: 0.5;
