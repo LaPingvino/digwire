@@ -667,10 +667,33 @@ select option, select optgroup, .sort-select option, .sort-select optgroup {
   color: var(--adw-accent-color);
   font-weight: 500;
   cursor: pointer;
+  transition: opacity 0.15s;
 }
 
 .search-path-breadcrumb .crumb-folder:hover {
   text-decoration: underline;
+  opacity: 0.85;
+}
+
+.crumb-separator {
+  color: var(--adw-dim-label);
+  opacity: 0.5;
+  margin: 0 1px;
+}
+
+.active-path-filter-bar {
+  background: var(--adw-card-bg);
+  border: 1px solid var(--adw-accent-color);
+  border-radius: var(--adw-radius);
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.12);
+  animation: fadeIn 0.15s ease-in-out;
 }
 
 .folder-group-card {
