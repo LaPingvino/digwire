@@ -21,6 +21,7 @@ import (
 	"github.com/bh90210/soul"
 	"github.com/bh90210/soul/client"
 	"github.com/bh90210/soul/peer"
+	"github.com/bh90210/soul/server"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
@@ -431,18 +432,66 @@ func (s *SoulseekClient) DownloadFile(ctx context.Context, username, remoteFile 
 		onProgress(0, size, "Connecting to peer...")
 	}
 
-	token := soul.NewToken()
-	dlCtx, dlCancel := context.WithTimeout(ctx, 30*time.Minute)
-	defer dlCancel()
+	var statusChan chan string
+	var errChan chan error
+	var dlCancel context.CancelFunc
 
-	statusChan, errChan := state.Download(dlCtx, client.Download{
-		Username: username,
-		Token:    token,
-		File: &peer.File{
-			Name: remoteFile,
-			Size: uint64(size),
-		},
-	})
+	for peerAttempt := 1; peerAttempt <= 6; peerAttempt++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		token := soul.NewToken()
+		var dlCtx context.Context
+		dlCtx, dlCancel = context.WithTimeout(ctx, 30*time.Minute)
+
+		statusChan, errChan = state.Download(dlCtx, client.Download{
+			Username: username,
+			Token:    token,
+			File: &peer.File{
+				Name: remoteFile,
+				Size: uint64(size),
+			},
+		})
+
+		// Check if immediate error (e.g. "no peer") was returned
+		select {
+		case err = <-errChan:
+			dlCancel()
+			if err != nil && strings.Contains(strings.ToLower(err.Error()), "no peer") {
+				if onProgress != nil {
+					onProgress(0, size, fmt.Sprintf("Connecting to peer %s (%d/6)...", username, peerAttempt))
+				}
+				// Request connection from server and trigger user search
+				cReq := server.ConnectToPeer{}
+				if cMsg, sErr := cReq.Serialize(soul.NewToken(), username, peer.ConnectionType); sErr == nil && s.client != nil && s.client.Writer != nil {
+					select {
+					case s.client.Writer <- cMsg:
+					default:
+					}
+				}
+				go func() {
+					sCtx, sCancel := context.WithTimeout(context.Background(), 3*time.Second)
+					defer sCancel()
+					_, _ = state.Search(sCtx, "user:"+username, soul.NewToken())
+				}()
+
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(2 * time.Second):
+					continue
+				}
+			}
+			if err != nil && !errors.Is(err, peer.ErrComplete) {
+				return fmt.Errorf("soulseek peer %s transfer error: %w", username, err)
+			}
+		case <-time.After(150 * time.Millisecond):
+			// Peer connection accepted and request sent!
+		}
+		break
+	}
+	defer dlCancel()
 
 	var lastPct int64 = -1
 	go func() {

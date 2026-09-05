@@ -1268,11 +1268,12 @@ func (e *Engine) loadSession() {
 			e.folderManager.tasks[ft.ID] = task
 			e.folderManager.mu.Unlock()
 
-			// If it was downloading, resume downloading in background!
+			// If it was downloading, resume downloading in background with startup grace period
 			if stateStr == "downloading" {
 				task.isRunning.Store(true)
 				go func(tk *FolderTask) {
 					defer tk.isRunning.Store(false)
+					time.Sleep(2 * time.Second)
 					tk.runDownload(e.folderManager)
 				}(task)
 			}
