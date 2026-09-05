@@ -1702,20 +1702,22 @@ function escapeJs(str) {
 
 function generatePathBreadcrumbsHtml(r, idx) {
   const crumbs = [];
+  const userArg = r.user ? `'${escapeJs(r.user)}'` : "''";
 
   // 1. User / Source Peer
   if (r.user) {
     crumbs.push(`
-      <span class="crumb-folder" title="Source User: ${escapeHtml(r.user)}. Click to group download." onclick="showGroupedDownload('user', '${escapeJs(r.user)}', event)">
+      <span class="crumb-folder" title="Source User: ${escapeHtml(r.user)}. Click to group download all shares from this user." onclick="showGroupedDownload('user', '${escapeJs(r.user)}', event)">
         👤 ${escapeHtml(r.user)}
       </span>
     `);
   }
 
-  // 2. Artist
+  // 2. Artist (default limited to sharing user)
   if (r.artist) {
+    const artistTitle = r.user ? `Artist: ${escapeHtml(r.artist)} (shared by ${escapeHtml(r.user)}). Click to group download.` : `Artist: ${escapeHtml(r.artist)}. Click to group download.`;
     crumbs.push(`
-      <span class="crumb-folder" title="Artist: ${escapeHtml(r.artist)}. Click to group download." onclick="showGroupedDownload('artist', '${escapeJs(r.artist)}', event)">
+      <span class="crumb-folder" title="${artistTitle}" onclick="showGroupedDownload('artist', '${escapeJs(r.artist)}', event, ${userArg})">
         🎤 ${escapeHtml(r.artist)}
       </span>
     `);
@@ -1724,7 +1726,7 @@ function generatePathBreadcrumbsHtml(r, idx) {
   // 3. Album
   if (r.album) {
     crumbs.push(`
-      <span class="crumb-folder" style="font-weight: 600;" title="Album: ${escapeHtml(r.album)}. Click to group download." onclick="showGroupedDownload('album', '${escapeJs(r.album)}', event)">
+      <span class="crumb-folder" style="font-weight: 600;" title="Album: ${escapeHtml(r.album)}. Click to group download." onclick="showGroupedDownload('album', '${escapeJs(r.album)}', event, ${userArg})">
         💿 ${escapeHtml(r.album)}
       </span>
     `);
@@ -1741,7 +1743,7 @@ function generatePathBreadcrumbsHtml(r, idx) {
       if (r.artist && (pLower === r.artist.toLowerCase() || pLower.includes(r.artist.toLowerCase()))) continue;
       if (r.album && (pLower === r.album.toLowerCase() || pLower.includes(r.album.toLowerCase()))) continue;
       crumbs.push(`
-        <span class="crumb-folder" title="Folder: ${escapeHtml(p)}. Click to group download." onclick="showGroupedDownload('folder', '${escapeJs(p)}', event)">
+        <span class="crumb-folder" title="Folder: ${escapeHtml(p)}. Click to group download." onclick="showGroupedDownload('folder', '${escapeJs(p)}', event, ${userArg})">
           📁 ${escapeHtml(p)}
         </span>
       `);
@@ -1758,23 +1760,32 @@ function generatePathBreadcrumbsHtml(r, idx) {
   `;
 }
 
-function showGroupedDownload(filterType, filterValue, event) {
+function showGroupedDownload(filterType, filterValue, event, userContext) {
   if (event) {
     event.stopPropagation();
     event.preventDefault();
   }
   if (!filterValue) return;
 
-  // Toggle off if already active for this exact filter
-  if (currentPathFilter && currentPathFilter.type === filterType && currentPathFilter.value.toLowerCase() === filterValue.toLowerCase()) {
+  // Toggle off if already active for this exact filter and user
+  if (currentPathFilter && currentPathFilter.type === filterType &&
+      currentPathFilter.value.toLowerCase() === filterValue.toLowerCase() &&
+      (currentPathFilter.user || '').toLowerCase() === (userContext || '').toLowerCase()) {
     clearPathFilter();
     return;
+  }
+
+  let displayLabel = filterValue;
+  if (userContext && (filterType === 'artist' || filterType === 'album' || filterType === 'folder')) {
+    displayLabel = `${filterValue} (from ${userContext})`;
   }
 
   currentPathFilter = {
     type: filterType,
     value: filterValue,
-    label: filterValue
+    user: userContext || null,
+    initialUser: userContext || null,
+    label: displayLabel
   };
 
   // Automatically enable folder grouping for clear album/folder card structure
@@ -1793,7 +1804,19 @@ function showGroupedDownload(filterType, filterValue, event) {
     container.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
-  showToast(`Showing grouped download view for ${filterType}: "${filterValue}"`, "info", 2200);
+  showToast(`Showing grouped download view for ${filterType}: "${displayLabel}"`, "info", 2400);
+}
+
+function toggleArtistUserScope() {
+  if (!currentPathFilter || currentPathFilter.type !== 'artist') return;
+  if (currentPathFilter.user) {
+    currentPathFilter.user = null;
+    currentPathFilter.label = `${currentPathFilter.value} (all users)`;
+  } else if (currentPathFilter.initialUser) {
+    currentPathFilter.user = currentPathFilter.initialUser;
+    currentPathFilter.label = `${currentPathFilter.value} (from ${currentPathFilter.initialUser})`;
+  }
+  renderSearchResults();
 }
 
 function clearPathFilter() {
@@ -1805,18 +1828,24 @@ function filterSearchByArtist(artist) {
   showGroupedDownload('artist', artist);
 }
 
-async function downloadGroupAsFolder(results, btn, groupTitle) {
+async function downloadGroupAsFolder(results, btn, groupTitle, userContext) {
   if (!results || results.length === 0) return;
   if (btn) {
     btn.disabled = true;
     btn.innerHTML = `<span style="opacity: 0.7;">Organizing folder download...</span>`;
   }
 
-  showToast(`Organizing ${results.length} files as unified folder download "${groupTitle || 'group'}"...`, "info", 3000);
+  const effectiveUser = userContext || (currentPathFilter ? currentPathFilter.user : null);
+  let folderName = groupTitle || 'Group Download';
+  if (effectiveUser && !folderName.toLowerCase().startsWith(effectiveUser.toLowerCase())) {
+    folderName = `${effectiveUser} - ${folderName}`;
+  }
+
+  showToast(`Organizing ${results.length} files as unified folder download "${folderName}"...`, "info", 3000);
 
   const payload = {
     name: groupTitle || 'Group Download',
-    folder_name: groupTitle || 'Group Download',
+    folder_name: folderName,
     items: results.map(r => {
       const item = r.result || r;
       let path = item.path || item.directory || '';
@@ -1868,13 +1897,14 @@ async function downloadMultipleResults(results, btn, groupTitle) {
 async function downloadAllInCurrentFilter(btn) {
   if (!currentFilteredResults || currentFilteredResults.length === 0) return;
   const label = currentPathFilter ? currentPathFilter.label : 'Group Download';
-  await downloadGroupAsFolder(currentFilteredResults, btn, label);
+  const user = currentPathFilter ? currentPathFilter.user : null;
+  await downloadGroupAsFolder(currentFilteredResults, btn, label, user);
 }
 
 async function downloadFolderGroup(groupIdx, btn) {
   const g = currentFolderGroups[groupIdx];
   if (!g || !g.items || g.items.length === 0) return;
-  await downloadGroupAsFolder(g.items, btn, g.album || g.key);
+  await downloadGroupAsFolder(g.items, btn, g.album || g.key, g.user);
 }
 
 function openGroupInspectModal() {
@@ -1951,7 +1981,12 @@ function renderSearchResults() {
   // Filter in-place by active path element without reloading search
   if (currentPathFilter) {
     const valLower = currentPathFilter.value.toLowerCase();
+    const userFilterLower = currentPathFilter.user ? currentPathFilter.user.toLowerCase() : null;
     filtered = filtered.filter(r => {
+      // If scoped to a specific sharing user, limit by user
+      if (userFilterLower && (r.user || '').toLowerCase() !== userFilterLower) {
+        return false;
+      }
       if (currentPathFilter.type === 'user') {
         return (r.user || '').toLowerCase() === valLower;
       } else if (currentPathFilter.type === 'artist') {
@@ -2009,6 +2044,23 @@ function renderSearchResults() {
   let bannerHtml = '';
   if (currentPathFilter) {
     const totalBytesInFilter = filtered.reduce((acc, r) => acc + (r.size_bytes || 0), 0);
+    let userScopeBtn = '';
+    if (currentPathFilter.type === 'artist') {
+      if (currentPathFilter.user) {
+        userScopeBtn = `
+          <button class="btn btn-sm" onclick="toggleArtistUserScope()" title="Expand to show this artist from all sharing users">
+            <span>👥 All Users</span>
+          </button>
+        `;
+      } else if (currentPathFilter.initialUser) {
+        userScopeBtn = `
+          <button class="btn btn-sm" onclick="toggleArtistUserScope()" title="Limit this artist only to sharing user ${escapeHtml(currentPathFilter.initialUser)}">
+            <span>👤 Only ${escapeHtml(currentPathFilter.initialUser)}</span>
+          </button>
+        `;
+      }
+    }
+
     bannerHtml = `
       <div class="active-path-filter-bar">
         <div style="display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1;">
@@ -2025,6 +2077,7 @@ function renderSearchResults() {
           </div>
         </div>
         <div style="display: flex; gap: 8px; align-items: center; flex-shrink: 0;">
+          ${userScopeBtn}
           <button class="btn btn-primary btn-sm" onclick="downloadAllInCurrentFilter(this)" title="Download all ${filtered.length} items as one organized folder download with automated swarm creation afterwards">
             <span class="emoji-face" style="margin-right: 4px;">📥</span>
             <span>Download Folder Swarm (${filtered.length})</span>
@@ -2053,6 +2106,10 @@ function renderSearchResults() {
       }
       if (!groupKey) {
         groupKey = r.title || 'Ungrouped Collection';
+      }
+      // Grouping by default is limited to the sharing user
+      if (r.user && !groupKey.toLowerCase().startsWith((r.user + ' /').toLowerCase())) {
+        groupKey = `${r.user} / ${groupKey}`;
       }
 
       if (!folderGroups.has(groupKey)) {
