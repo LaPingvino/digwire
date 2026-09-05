@@ -95,3 +95,87 @@ func TestSessionAutoRecoveryFromCache(t *testing.T) {
 	// Test checkpointDatabases
 	eng.checkpointDatabases()
 }
+
+func TestFolderTaskSessionPersistence(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "digwire_folder_rec_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	cfg := &config.Config{
+		DownloadDir: filepath.Join(tempDir, "downloads"),
+		ListenPort:  0,
+		GermanyMode: false,
+	}
+	cfg.SetConfigPath(filepath.Join(tempDir, "config.yaml"))
+	_ = os.MkdirAll(cfg.DownloadDir, 0755)
+
+	// Phase 1: Start engine, add a folder task, and save session
+	eng1, err := NewEngine(cfg)
+	if err != nil {
+		t.Fatalf("failed to create engine 1: %v", err)
+	}
+
+	folderTask, err := eng1.FolderManager().StartFolderDownload("Test Album", "Artist - Test Album", []FolderItemInput{
+		{
+			URL:   "slsk://testuser?file=Artist/Album/01.mp3&size=1000",
+			Title: "01.mp3",
+			Path:  "Artist/Album/01.mp3",
+			Size:  1000,
+		},
+		{
+			URL:   "slsk://testuser?file=Artist/Album/02.mp3&size=2000",
+			Title: "02.mp3",
+			Path:  "Artist/Album/02.mp3",
+			Size:  2000,
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to start folder download: %v", err)
+	}
+	taskID := folderTask.ID
+
+	// Save session and close engine 1
+	eng1.SaveSession()
+	eng1.Close()
+
+	// Phase 2: Start engine 2 from same config/session directory
+	eng2, err := NewEngine(cfg)
+	if err != nil {
+		t.Fatalf("failed to create engine 2: %v", err)
+	}
+	defer eng2.Close()
+
+	eng2.WaitForSession(5 * time.Second)
+
+	// Check if folder task was restored in FolderManager
+	restoredTask := eng2.FolderManager().GetTask(taskID)
+	if restoredTask == nil {
+		t.Fatalf("expected folder task %s to be restored across restarts, but was nil", taskID)
+	}
+
+	if restoredTask.Name != "Test Album" {
+		t.Errorf("expected restored name 'Test Album', got '%s'", restoredTask.Name)
+	}
+
+	if len(restoredTask.Files) != 2 {
+		t.Errorf("expected 2 files in restored folder task, got %d", len(restoredTask.Files))
+	}
+
+	// Check if it appears in GetTorrents() list
+	torrents := eng2.GetTorrents()
+	found := false
+	for _, tor := range torrents {
+		if tor.InfoHash == taskID || strings.Contains(tor.Name, "Test Album") {
+			found = true
+			if tor.Platform != "folder" {
+				t.Errorf("expected platform 'folder', got '%s'", tor.Platform)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected folder task to be listed in GetTorrents()")
+	}
+}

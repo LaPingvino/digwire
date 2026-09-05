@@ -278,6 +278,7 @@ func (s *Server) handleAddFolderGroup(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
+	s.engine.SaveSession()
 
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"status":    "ok",

@@ -63,26 +63,57 @@ type SavedHTTPTask struct {
 }
 
 type SavedMediaTask struct {
-	ID        string               `json:"id"`
-	URL       string               `json:"url"`
-	Title     string               `json:"title"`
-	Platform  string               `json:"platform"`
-	Thumbnail string               `json:"thumbnail,omitempty"`
-	Duration  int64                `json:"duration,omitempty"`
-	Uploader  string               `json:"uploader,omitempty"`
-	State     string               `json:"state"`
-	Progress  float64              `json:"progress"`
-	DestPath  string               `json:"dest_path"`
-	InfoHash  string               `json:"info_hash,omitempty"`
-	MagnetURI string               `json:"magnet_uri,omitempty"`
-	AddedAt   int64                `json:"added_at"`
-	Options   MediaDownloadOptions `json:"options"`
+	ID             string               `json:"id"`
+	URL            string               `json:"url"`
+	Title          string               `json:"title"`
+	Platform       string               `json:"platform"`
+	Thumbnail      string               `json:"thumbnail,omitempty"`
+	Duration       int64                `json:"duration,omitempty"`
+	Uploader       string               `json:"uploader,omitempty"`
+	State          string               `json:"state"`
+	Progress       float64              `json:"progress"`
+	TotalBytes     int64                `json:"total_bytes,omitempty"`
+	CompletedBytes int64                `json:"completed_bytes,omitempty"`
+	DestPath       string               `json:"dest_path"`
+	InfoHash       string               `json:"info_hash,omitempty"`
+	MagnetURI      string               `json:"magnet_uri,omitempty"`
+	AddedAt        int64                `json:"added_at"`
+	Options        MediaDownloadOptions `json:"options"`
+}
+
+type SavedFolderFileItem struct {
+	URL            string `json:"url"`
+	Path           string `json:"path"`
+	Name           string `json:"name"`
+	TotalBytes     int64  `json:"total_bytes"`
+	CompletedBytes int64  `json:"completed_bytes"`
+	State          string `json:"state"`
+	Status         string `json:"status,omitempty"`
+	Error          string `json:"error,omitempty"`
+}
+
+type SavedFolderTask struct {
+	ID             string                `json:"id"`
+	Name           string                `json:"name"`
+	FolderName     string                `json:"folder_name"`
+	DestPath       string                `json:"dest_path"`
+	TotalBytes     int64                 `json:"total_bytes"`
+	CompletedBytes int64                 `json:"completed_bytes"`
+	Progress       float64               `json:"progress"`
+	State          string                `json:"state"`
+	AddedAt        int64                 `json:"added_at"`
+	Files          []SavedFolderFileItem `json:"files"`
+	InfoHash       string                `json:"info_hash,omitempty"`
+	MagnetURI      string                `json:"magnet_uri,omitempty"`
+	ActiveFile     string                `json:"active_file,omitempty"`
+	StatusMessage  string                `json:"status_message,omitempty"`
 }
 
 type SessionState struct {
-	Torrents   []SavedTorrent   `json:"torrents"`
-	HTTPTasks  []SavedHTTPTask  `json:"http_tasks,omitempty"`
-	MediaTasks []SavedMediaTask `json:"media_tasks,omitempty"`
+	Torrents    []SavedTorrent    `json:"torrents"`
+	HTTPTasks   []SavedHTTPTask   `json:"http_tasks,omitempty"`
+	MediaTasks  []SavedMediaTask  `json:"media_tasks,omitempty"`
+	FolderTasks []SavedFolderTask `json:"folder_tasks,omitempty"`
 }
 
 type TorrentStatus struct {
@@ -650,34 +681,76 @@ func (e *Engine) saveSessionLocked() {
 		for _, task := range e.mediaManager.tasks {
 			task.mu.Lock()
 			mediaList = append(mediaList, SavedMediaTask{
-				ID:        task.ID,
-				URL:       task.URL,
-				Title:     task.Title,
-				Platform:  task.Platform,
-				Thumbnail: task.Thumbnail,
-				Duration:  task.Duration,
-				Uploader:  task.Uploader,
-				State:     task.State,
-				Progress:  task.Progress,
-				DestPath:  task.DestPath,
-				InfoHash:  task.InfoHash,
-				MagnetURI: task.MagnetURI,
-				AddedAt:   task.AddedAt,
-				Options:   task.Options,
+				ID:             task.ID,
+				URL:            task.URL,
+				Title:          task.Title,
+				Platform:       task.Platform,
+				Thumbnail:      task.Thumbnail,
+				Duration:       task.Duration,
+				Uploader:       task.Uploader,
+				State:          task.State,
+				Progress:       task.Progress,
+				TotalBytes:     task.TotalBytes,
+				CompletedBytes: task.CompletedBytes,
+				DestPath:       task.DestPath,
+				InfoHash:       task.InfoHash,
+				MagnetURI:      task.MagnetURI,
+				AddedAt:        task.AddedAt,
+				Options:        task.Options,
 			})
 			task.mu.Unlock()
 		}
 		e.mediaManager.mu.RUnlock()
 	}
 
+	// Save Folder tasks
+	var folderList []SavedFolderTask
+	if e.folderManager != nil {
+		e.folderManager.mu.RLock()
+		for _, task := range e.folderManager.tasks {
+			task.mu.Lock()
+			var savedFiles []SavedFolderFileItem
+			for _, f := range task.Files {
+				savedFiles = append(savedFiles, SavedFolderFileItem{
+					URL:            f.URL,
+					Path:           f.Path,
+					Name:           f.Name,
+					TotalBytes:     f.TotalBytes,
+					CompletedBytes: f.CompletedBytes,
+					State:          f.State,
+					Status:         f.Status,
+					Error:          f.Error,
+				})
+			}
+			folderList = append(folderList, SavedFolderTask{
+				ID:             task.ID,
+				Name:           task.Name,
+				FolderName:     task.FolderName,
+				DestPath:       task.DestPath,
+				TotalBytes:     task.TotalBytes,
+				CompletedBytes: task.CompletedBytes,
+				Progress:       task.Progress,
+				State:          task.State,
+				AddedAt:        task.AddedAt,
+				Files:          savedFiles,
+				InfoHash:       task.InfoHash,
+				MagnetURI:      task.MagnetURI,
+				ActiveFile:     task.ActiveFile,
+				StatusMessage:  task.StatusMessage,
+			})
+			task.mu.Unlock()
+		}
+		e.folderManager.mu.RUnlock()
+	}
+
 	// Safety check: if all lists are empty, only save if explicitly emptied by user
-	if len(list) == 0 && len(httpList) == 0 && len(mediaList) == 0 {
+	if len(list) == 0 && len(httpList) == 0 && len(mediaList) == 0 && len(folderList) == 0 {
 		if !e.sessionExplicitlyEmptied {
 			return
 		}
 	}
 
-	data, err := json.MarshalIndent(SessionState{Torrents: list, HTTPTasks: httpList, MediaTasks: mediaList}, "", "  ")
+	data, err := json.MarshalIndent(SessionState{Torrents: list, HTTPTasks: httpList, MediaTasks: mediaList, FolderTasks: folderList}, "", "  ")
 	if err == nil && len(data) > 0 {
 		tmpPath := filePath + ".tmp"
 		bakPath := filePath + ".bak"
@@ -718,7 +791,7 @@ func (e *Engine) loadSession() {
 	}
 
 	// 1. If session.json is empty or invalid, try backup session.json.bak
-	if len(state.Torrents) == 0 && len(state.HTTPTasks) == 0 && len(state.MediaTasks) == 0 {
+	if len(state.Torrents) == 0 && len(state.HTTPTasks) == 0 && len(state.MediaTasks) == 0 && len(state.FolderTasks) == 0 {
 		bakPath := filePath + ".bak"
 		if bakData, bErr := os.ReadFile(bakPath); bErr == nil && len(bakData) > 0 {
 			_ = json.Unmarshal(bakData, &state)
@@ -1074,32 +1147,129 @@ func (e *Engine) loadSession() {
 	if e.mediaManager != nil {
 		for _, mt := range state.MediaTasks {
 			task := &MediaTask{
-				ID:        mt.ID,
-				URL:       mt.URL,
-				Title:     mt.Title,
-				Platform:  mt.Platform,
-				Thumbnail: mt.Thumbnail,
-				Duration:  mt.Duration,
-				Uploader:  mt.Uploader,
-				State:     mt.State,
-				Progress:  mt.Progress,
-				DestPath:  mt.DestPath,
-				InfoHash:  mt.InfoHash,
-				MagnetURI: mt.MagnetURI,
-				AddedAt:   mt.AddedAt,
-				Options:   mt.Options,
+				ID:             mt.ID,
+				URL:            mt.URL,
+				Title:          mt.Title,
+				Platform:       mt.Platform,
+				Thumbnail:      mt.Thumbnail,
+				Duration:       mt.Duration,
+				Uploader:       mt.Uploader,
+				State:          mt.State,
+				Progress:       mt.Progress,
+				TotalBytes:     mt.TotalBytes,
+				CompletedBytes: mt.CompletedBytes,
+				DestPath:       mt.DestPath,
+				InfoHash:       mt.InfoHash,
+				MagnetURI:      mt.MagnetURI,
+				AddedAt:        mt.AddedAt,
+				Options:        mt.Options,
+			}
+			if task.DestPath != "" {
+				if fi, err := os.Stat(task.DestPath); err == nil && !fi.IsDir() {
+					if task.TotalBytes <= 0 {
+						task.TotalBytes = fi.Size()
+					}
+					task.CompletedBytes = fi.Size()
+					if task.State == "downloading" && task.CompletedBytes >= task.TotalBytes {
+						task.State = "completed"
+						task.Progress = 100.0
+					}
+				}
 			}
 			e.mediaManager.mu.Lock()
 			e.mediaManager.tasks[mt.ID] = task
 			e.mediaManager.mu.Unlock()
 
-			if mt.State == "downloading" || mt.State == "inspecting" {
+			if task.State == "downloading" || task.State == "inspecting" {
 				go task.run(e, e.cfg.DownloadDir)
 			}
 		}
 	}
 
-	e.sessionExplicitlyEmptied = (len(e.savedTorrentsMap) == 0 && len(state.HTTPTasks) == 0 && len(state.MediaTasks) == 0)
+	// Restore Folder tasks
+	if e.folderManager != nil {
+		for _, ft := range state.FolderTasks {
+			ctx, cancel := context.WithCancel(context.Background())
+			var files []*FolderFileItem
+			var totalCalculated int64
+			var completedCalculated int64
+			for _, f := range ft.Files {
+				item := &FolderFileItem{
+					URL:            f.URL,
+					Path:           f.Path,
+					Name:           f.Name,
+					TotalBytes:     f.TotalBytes,
+					CompletedBytes: f.CompletedBytes,
+					State:          f.State,
+					Status:         f.Status,
+					Error:          f.Error,
+				}
+				// Verify local file status on disk
+				targetPath := filepath.Join(ft.DestPath, f.Path)
+				if fi, err := os.Stat(targetPath); err == nil && !fi.IsDir() {
+					if f.TotalBytes > 0 && fi.Size() >= f.TotalBytes {
+						item.CompletedBytes = fi.Size()
+						item.State = "completed"
+						item.Status = "Completed"
+					} else if fi.Size() > 0 {
+						item.CompletedBytes = fi.Size()
+					}
+				}
+				totalCalculated += item.TotalBytes
+				completedCalculated += item.CompletedBytes
+				files = append(files, item)
+			}
+
+			stateStr := ft.State
+			prog := ft.Progress
+			if totalCalculated > 0 {
+				prog = (float64(completedCalculated) / float64(totalCalculated)) * 100.0
+				if completedCalculated >= totalCalculated {
+					prog = 100.0
+					if stateStr == "downloading" {
+						stateStr = "completed"
+					}
+				}
+			}
+
+			task := &FolderTask{
+				ID:             ft.ID,
+				Name:           ft.Name,
+				FolderName:     ft.FolderName,
+				DestPath:       ft.DestPath,
+				TotalBytes:     totalCalculated,
+				CompletedBytes: completedCalculated,
+				Progress:       prog,
+				State:          stateStr,
+				AddedAt:        ft.AddedAt,
+				Files:          files,
+				InfoHash:       ft.InfoHash,
+				MagnetURI:      ft.MagnetURI,
+				ActiveFile:     ft.ActiveFile,
+				StatusMessage:  ft.StatusMessage,
+				ctx:            ctx,
+				cancel:         cancel,
+				eng:            e,
+			}
+			e.folderManager.mu.Lock()
+			e.folderManager.tasks[ft.ID] = task
+			e.folderManager.mu.Unlock()
+
+			// If it was downloading, resume downloading in background!
+			if stateStr == "downloading" {
+				go task.runDownload(e.folderManager)
+			}
+		}
+	}
+
+	e.sessionExplicitlyEmptied = (len(e.savedTorrentsMap) == 0 && len(state.HTTPTasks) == 0 && len(state.MediaTasks) == 0 && len(state.FolderTasks) == 0)
+}
+
+// SaveSession triggers an immediate thread-safe write of the current session state to disk
+func (e *Engine) SaveSession() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.saveSessionLocked()
 }
 
 func (e *Engine) checkpointDatabases() {

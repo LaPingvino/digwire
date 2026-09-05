@@ -364,6 +364,10 @@ func (t *FolderTask) runDownload(m *FolderManager) {
 	t.State = "creating_swarm"
 	t.mu.Unlock()
 
+	if t.eng != nil {
+		t.eng.SaveSession()
+	}
+
 	// AUTOMATED POST-DOWNLOAD: Add it as a magnet/torrent swarm afterwards!
 	if t.eng != nil {
 		comment := fmt.Sprintf("Digwire Folder Swarm: %s", t.Name)
@@ -383,6 +387,7 @@ func (t *FolderTask) runDownload(m *FolderManager) {
 			t.State = "completed"
 			t.mu.Unlock()
 		}
+		t.eng.SaveSession()
 	} else {
 		t.mu.Lock()
 		t.State = "completed"

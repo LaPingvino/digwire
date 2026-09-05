@@ -782,6 +782,9 @@ func (t *MediaTask) run(eng *Engine, baseDownloadDir string) {
 		t.State = "completed"
 		t.mu.Unlock()
 	}
+	if eng != nil {
+		eng.SaveSession()
+	}
 }
 
 var (
@@ -1027,5 +1030,6 @@ func (mm *MediaManager) CancelTask(id string, deleteFiles bool) error {
 	if deleteFiles && task.DestPath != "" {
 		_ = os.RemoveAll(task.DestPath)
 	}
+
 	return nil
 }
