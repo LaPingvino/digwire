@@ -212,6 +212,14 @@ function switchMainView(view) {
   }
 }
 
+function switchTab(tab) {
+  if (tab === 'transfers' || tab === 'torrents') {
+    switchMainView('torrents');
+  } else if (tab === 'search') {
+    switchMainView('search');
+  }
+}
+
 function setFilter(filter) {
   currentFilter = filter;
   const filterBtns = document.getElementById('torrent-filters').querySelectorAll('.view-btn');
@@ -2123,7 +2131,7 @@ async function downloadGroupAsFolder(results, btn, groupTitle, userContext) {
     const data = await res.json();
     if (data.status === 'ok') {
       showToast(`✓ Added "${payload.name}" as folder download (${data.num_files || results.length} files)! Swarm will be created afterwards.`, "info", 4500);
-      switchTab('transfers');
+      switchMainView('torrents');
       fetchTorrents();
     } else {
       showToast(`Failed to add folder download: ${data.error || 'unknown error'}`, "error", 4500);
