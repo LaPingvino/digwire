@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"path"
@@ -20,7 +21,6 @@ import (
 	"github.com/bh90210/soul"
 	"github.com/bh90210/soul/client"
 	"github.com/bh90210/soul/peer"
-	"github.com/bh90210/soul/server"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
@@ -114,10 +114,20 @@ func (s *SoulseekClient) ensureConnected(ctx context.Context) (*client.State, er
 	}
 	s.connected = false
 
+	portToUse := s.ownPort
+	if ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", portToUse)); err != nil {
+		if freeLn, fErr := net.Listen("tcp", "127.0.0.1:0"); fErr == nil {
+			portToUse = freeLn.Addr().(*net.TCPAddr).Port
+			_ = freeLn.Close()
+		}
+	} else {
+		_ = ln.Close()
+	}
+
 	cfg := &client.Config{
 		SoulSeekAddress: s.serverAddr,
 		SoulSeekPort:    s.serverPort,
-		OwnPort:         s.ownPort,
+		OwnPort:         portToUse,
 		Username:        s.username,
 		Password:        s.password,
 		SharedFolders:   0,
@@ -144,10 +154,7 @@ func (s *SoulseekClient) ensureConnected(ctx context.Context) (*client.State, er
 	}
 
 	state := client.NewState(c)
-	loginCtx, loginCancel := context.WithTimeout(connCtx, 12*time.Second)
-	defer loginCancel()
-
-	if err := state.Login(loginCtx); err != nil {
+	if err := state.Login(connCtx); err != nil {
 		cancel()
 		return nil, fmt.Errorf("soulseek login failed: %w", err)
 	}
@@ -170,7 +177,7 @@ func (s *SoulseekClient) Search(ctx context.Context, query string, timeout time.
 
 	token := soul.NewToken()
 	if timeout <= 0 {
-		timeout = 5 * time.Second
+		timeout = 6 * time.Second
 	}
 	searchCtx, searchCancel := context.WithTimeout(ctx, timeout)
 	defer searchCancel()
@@ -178,30 +185,20 @@ func (s *SoulseekClient) Search(ctx context.Context, query string, timeout time.
 	qTrim := strings.TrimSpace(query)
 	qLower := strings.ToLower(qTrim)
 
-	var resultsChan chan *peer.FileSearchResponse
-
+	searchQuery := qTrim
+	targetUser := ""
 	if strings.HasPrefix(qLower, "user:") {
-		user := strings.TrimSpace(qTrim[5:])
-		userSearch := new(server.UserSearch)
-		userMsg, err := userSearch.Serialize(user, token, "")
-		if err != nil {
-			return nil, err
-		}
-		// Register token for response listener
-		resultsChan = make(chan *peer.FileSearchResponse, 100)
-		s.client.Writer <- userMsg
-	} else {
-		searchQuery := qTrim
-		if strings.HasPrefix(qLower, "artist:") {
-			searchQuery = strings.TrimSpace(qTrim[7:])
-		} else if strings.HasPrefix(qLower, "creator:") {
-			searchQuery = strings.TrimSpace(qTrim[8:])
-		}
-		var sErr error
-		resultsChan, sErr = state.Search(searchCtx, searchQuery, token)
-		if sErr != nil {
-			return nil, sErr
-		}
+		targetUser = strings.TrimSpace(qTrim[5:])
+		searchQuery = targetUser
+	} else if strings.HasPrefix(qLower, "artist:") {
+		searchQuery = strings.TrimSpace(qTrim[7:])
+	} else if strings.HasPrefix(qLower, "creator:") {
+		searchQuery = strings.TrimSpace(qTrim[8:])
+	}
+
+	resultsChan, sErr := state.Search(searchCtx, searchQuery, token)
+	if sErr != nil {
+		return nil, sErr
 	}
 
 	var results []Result
@@ -223,6 +220,9 @@ func (s *SoulseekClient) Search(ctx context.Context, query string, timeout time.
 			}
 
 			peerUser := r.Username
+			if targetUser != "" && !strings.EqualFold(peerUser, targetUser) && !strings.Contains(strings.ToLower(peerUser), strings.ToLower(targetUser)) {
+				continue
+			}
 			for _, f := range r.Results {
 				if f.Size == 0 {
 					continue

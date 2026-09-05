@@ -1620,6 +1620,8 @@ async function executeSearch(query) {
   if (empty) empty.style.display = 'none';
   if (controls) controls.style.display = 'none';
 
+  showToast(`Searching for "${query}" across Soulseek P2P, DHT & Trackers...`, "info", 2500);
+
   try {
     const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
     rawSearchResults = await res.json() || [];
@@ -1628,8 +1630,16 @@ async function executeSearch(query) {
 
     if (rawSearchResults.length === 0) {
       if (empty) empty.style.display = 'block';
+      showToast(`No results found for "${query}" across active providers`, "info", 3000);
       return;
     }
+
+    const soulseekCount = rawSearchResults.filter(r => r.provider_type === 'soulseek').length;
+    let feedbackMsg = `Found ${rawSearchResults.length} results`;
+    if (soulseekCount > 0) {
+      feedbackMsg += ` (${soulseekCount} from Soulseek P2P)`;
+    }
+    showToast(feedbackMsg, "success", 3000);
 
     currentSourceFilter = 'all';
     if (controls) controls.style.display = 'flex';
