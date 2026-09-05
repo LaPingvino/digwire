@@ -1664,13 +1664,9 @@ async function rereadSearchForUser(user, event) {
     event.preventDefault();
   }
   if (!user) return;
+  searchGroupMode = 'folder';
   searchGroupByFolder = true;
-  const btn = document.getElementById('search-group-toggle-btn');
-  const label = document.getElementById('search-group-toggle-label');
-  if (btn) {
-    btn.classList.add('btn-primary');
-    if (label) label.textContent = 'Folder Grouping (On)';
-  }
+  updateGroupToggleUI();
   showToast(`Searching all shared files from user "${user}"...`, "info", 2500);
   await executeSearch(`user:${user}`);
 }
@@ -1681,14 +1677,10 @@ async function rereadSearchForArtist(artist, event, userContext) {
     event.preventDefault();
   }
   if (!artist) return;
+  searchGroupMode = 'artist';
   searchGroupByFolder = true;
-  const btn = document.getElementById('search-group-toggle-btn');
-  const label = document.getElementById('search-group-toggle-label');
-  if (btn) {
-    btn.classList.add('btn-primary');
-    if (label) label.textContent = 'Folder Grouping (On)';
-  }
-  showToast(`Searching all albums & tracks for artist "${artist}"...`, "info", 2500);
+  updateGroupToggleUI();
+  showToast(`Searching all albums & tracks for artist "${artist}" across network...`, "info", 2500);
   await executeSearch(`artist:${artist}`);
 }
 
@@ -1741,10 +1733,31 @@ function setSourceFilter(source) {
   renderSearchResults();
 }
 
+let searchGroupMode = 'none'; // 'none' | 'folder' | 'artist'
 let searchGroupByFolder = false;
 let currentPathFilter = null; // { type: 'artist'|'album'|'folder'|'user', value: string, label: string }
 let currentFilteredResults = [];
 let currentFolderGroups = [];
+
+function updateGroupToggleUI() {
+  const btn = document.getElementById('search-group-toggle-btn');
+  const label = document.getElementById('search-group-toggle-label');
+  if (!btn || !label) return;
+  const emoji = btn.querySelector('.emoji-face');
+  if (searchGroupMode === 'artist') {
+    btn.classList.add('btn-primary');
+    label.textContent = 'Group: Artist';
+    if (emoji) emoji.textContent = '🎤';
+  } else if (searchGroupMode === 'folder') {
+    btn.classList.add('btn-primary');
+    label.textContent = 'Group: Folder';
+    if (emoji) emoji.textContent = '📁';
+  } else {
+    btn.classList.remove('btn-primary');
+    label.textContent = 'Group by Folder';
+    if (emoji) emoji.textContent = '📁';
+  }
+}
 
 function escapeJs(str) {
   return (str || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
@@ -1869,9 +1882,9 @@ function generatePathBreadcrumbsHtml(r, idx) {
     const badge = segCount > 0 ? `<span class="crumb-counter" title="${segCount} files in this folder in current search">${segCount}</span>` : '';
 
     if (seg.isArtist) {
-      const artistTitle = r.user ? `Artist: ${escapeHtml(seg.name)} (shared by ${escapeHtml(r.user)}). Click to search all tracks & albums for this artist.` : `Artist: ${escapeHtml(seg.name)}. Click to search all tracks & albums for this artist.`;
+      const artistTitle = r.user ? `Artist Directory: ${escapeHtml(seg.name)} (shared by ${escapeHtml(r.user)}). Click to view & download all files in this artist directory.` : `Artist Directory: ${escapeHtml(seg.name)}. Click to view & download.`;
       crumbs.push(`
-        <span class="crumb-folder" title="${artistTitle}" onclick="rereadSearchForArtist('${escapeJs(seg.name)}', event, ${userArg})">
+        <span class="crumb-folder" title="${artistTitle}" onclick="showGroupedDownload('artist', '${escapeJs(seg.name)}', event, ${userArg})">
           🎤 ${escapeHtml(seg.name)}${badge}
         </span>
       `);
@@ -1927,14 +1940,15 @@ function showGroupedDownload(filterType, filterValue, event, userContext) {
     label: displayLabel
   };
 
-  // Automatically enable folder grouping for clear album/folder card structure
-  searchGroupByFolder = true;
-  const btn = document.getElementById('search-group-toggle-btn');
-  const label = document.getElementById('search-group-toggle-label');
-  if (btn) {
-    btn.classList.add('btn-primary');
-    if (label) label.textContent = 'Folder Grouping (On)';
+  // Automatically enable artist or folder grouping
+  if (filterType === 'artist') {
+    searchGroupMode = 'artist';
+    searchGroupByFolder = true;
+  } else {
+    searchGroupMode = 'folder';
+    searchGroupByFolder = true;
   }
+  updateGroupToggleUI();
 
   renderSearchResults();
 
@@ -1960,6 +1974,9 @@ function toggleArtistUserScope() {
 
 function clearPathFilter() {
   currentPathFilter = null;
+  searchGroupMode = 'none';
+  searchGroupByFolder = false;
+  updateGroupToggleUI();
   renderSearchResults();
 }
 
@@ -1987,11 +2004,20 @@ async function downloadGroupAsFolder(results, btn, groupTitle, userContext) {
     folder_name: folderName,
     items: results.map(r => {
       const item = r.result || r;
-      let path = item.path || item.directory || '';
-      if (!path && item.album && item.title) {
-        path = `${item.album}/${item.title}`;
-      } else if (!path) {
-        path = item.title || '';
+      let path = '';
+      if (item.album && item.title) {
+        let ext = '';
+        const rawP = item.path || '';
+        const dotIdx = rawP.lastIndexOf('.');
+        if (dotIdx !== -1) {
+          ext = rawP.substring(dotIdx);
+        }
+        const fileWithExt = item.title.toLowerCase().endsWith(ext.toLowerCase()) ? item.title : (item.title + ext);
+        path = `${item.album}/${fileWithExt}`;
+      } else if (item.path) {
+        path = item.path;
+      } else {
+        path = item.title || 'file';
       }
       return {
         url: item.magnet_uri || item.url || '',
@@ -2024,7 +2050,7 @@ async function downloadGroupAsFolder(results, btn, groupTitle, userContext) {
   } finally {
     if (btn) {
       btn.disabled = false;
-      btn.innerHTML = `<span class="emoji-face" style="margin-right: 4px;">📥</span><span>Download Folder Swarm</span>`;
+      btn.innerHTML = `<span class="emoji-face" style="margin-right: 4px;">📥</span><span>Download Folder</span>`;
     }
   }
 }
@@ -2043,7 +2069,39 @@ async function downloadAllInCurrentFilter(btn) {
 async function downloadFolderGroup(groupIdx, btn) {
   const g = currentFolderGroups[groupIdx];
   if (!g || !g.items || g.items.length === 0) return;
-  await downloadGroupAsFolder(g.items, btn, g.album || g.key, g.user);
+  const title = g.artist || g.album || g.key;
+  await downloadGroupAsFolder(g.items, btn, title, g.user);
+}
+
+async function downloadAlbumSubgroup(groupIdx, albumName, btn) {
+  const g = currentFolderGroups[groupIdx];
+  if (!g || !g.items || g.items.length === 0) return;
+  const albItems = g.items.filter(it => (it.result.album || '').toLowerCase() === albumName.toLowerCase());
+  if (albItems.length === 0) return;
+  await downloadGroupAsFolder(albItems, btn, albumName, g.user);
+}
+
+function renderFolderTrackRow(item, itemIdx) {
+  const itemSize = item.size_bytes > 0 ? formatBytes(item.size_bytes) : '';
+  return `
+    <div class="folder-track-row">
+      <div style="display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; padding-right: 12px;">
+        <span class="emoji-face" style="font-size: 13px;">🎵</span>
+        <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500;" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 10px; flex-shrink: 0;">
+        <span style="font-size: 11.5px; color: var(--adw-dim-label); font-weight: 500;">${itemSize}</span>
+        <button class="btn btn-sm" style="font-size: 11px; padding: 2px 7px;" onclick="openInspectModal(${itemIdx})" title="Inspect file details">
+          <span class="emoji-face" style="margin-right: 2px;">📦</span>
+          <span>Inspect</span>
+        </button>
+        <button class="btn btn-primary btn-sm" style="font-size: 11px; padding: 2px 9px;" onclick="downloadFromSearch('${encodeURIComponent(item.magnet_uri)}', this)" title="Download track">
+          <span class="emoji-face" style="margin-right: 2px;">📥</span>
+          <span>Download</span>
+        </button>
+      </div>
+    </div>
+  `;
 }
 
 function openGroupInspectModal() {
@@ -2058,18 +2116,17 @@ function openGroupInspectModal() {
 }
 
 function toggleSearchGroupMode() {
-  searchGroupByFolder = !searchGroupByFolder;
-  const btn = document.getElementById('search-group-toggle-btn');
-  const label = document.getElementById('search-group-toggle-label');
-  if (btn) {
-    if (searchGroupByFolder) {
-      btn.classList.add('btn-primary');
-      if (label) label.textContent = 'Folder Grouping (On)';
-    } else {
-      btn.classList.remove('btn-primary');
-      if (label) label.textContent = 'Group by Folder';
-    }
+  if (searchGroupMode === 'none') {
+    searchGroupMode = 'folder';
+    searchGroupByFolder = true;
+  } else if (searchGroupMode === 'folder') {
+    searchGroupMode = 'artist';
+    searchGroupByFolder = true;
+  } else {
+    searchGroupMode = 'none';
+    searchGroupByFolder = false;
   }
+  updateGroupToggleUI();
   renderSearchResults();
 }
 
@@ -2187,25 +2244,37 @@ function renderSearchResults() {
     const totalBytesInFilter = filtered.reduce((acc, r) => acc + (r.size_bytes || 0), 0);
     let userScopeBtn = '';
     if (currentPathFilter.type === 'artist') {
+      let scopeBtn = '';
       if (currentPathFilter.user) {
-        userScopeBtn = `
+        scopeBtn = `
           <button class="btn btn-sm" onclick="toggleArtistUserScope()" title="Expand to show this artist from all sharing users">
             <span>👥 All Users</span>
           </button>
         `;
       } else if (currentPathFilter.initialUser) {
-        userScopeBtn = `
+        scopeBtn = `
           <button class="btn btn-sm" onclick="toggleArtistUserScope()" title="Limit this artist only to sharing user ${escapeHtml(currentPathFilter.initialUser)}">
             <span>👤 Only ${escapeHtml(currentPathFilter.initialUser)}</span>
           </button>
         `;
       }
+      userScopeBtn = `
+        ${scopeBtn}
+        <button class="btn btn-sm" onclick="rereadSearchForArtist('${escapeJs(currentPathFilter.value)}', event, ${currentPathFilter.user ? `'${escapeJs(currentPathFilter.user)}'` : "''"})" title="Search all network providers for this artist">
+          <span class="emoji-face">🔍</span>
+          <span>Search Network</span>
+        </button>
+      `;
     }
+
+    const downloadLabel = (currentPathFilter.type === 'artist')
+      ? `Download Artist Directory (${filtered.length})`
+      : `Download Folder Swarm (${filtered.length})`;
 
     bannerHtml = `
       <div class="active-path-filter-bar">
         <div style="display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1;">
-          <span class="emoji-face" style="font-size: 20px;">📁</span>
+          <span class="emoji-face" style="font-size: 20px;">${currentPathFilter.type === 'artist' ? '🎤' : '📁'}</span>
           <div style="min-width: 0;">
             <div style="font-size: 13.5px; font-weight: 600; display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
               <span>Grouped:</span>
@@ -2217,11 +2286,11 @@ function renderSearchResults() {
             </div>
           </div>
         </div>
-        <div style="display: flex; gap: 8px; align-items: center; flex-shrink: 0;">
+        <div style="display: flex; gap: 8px; align-items: center; flex-shrink: 0; flex-wrap: wrap;">
           ${userScopeBtn}
           <button class="btn btn-primary btn-sm" onclick="downloadAllInCurrentFilter(this)" title="Download all ${filtered.length} items as one organized folder download with automated swarm creation afterwards">
             <span class="emoji-face" style="margin-right: 4px;">📥</span>
-            <span>Download Folder Swarm (${filtered.length})</span>
+            <span>${downloadLabel}</span>
           </button>
           <button class="btn btn-sm" onclick="openGroupInspectModal()" title="Inspect individual files in this group">
             <span class="emoji-face" style="margin-right: 4px;">📦</span>
@@ -2235,31 +2304,43 @@ function renderSearchResults() {
     `;
   }
 
-  // Grouped by Folder / Album View
+  // Grouped by Folder / Album / Artist View
   if (searchGroupByFolder) {
+    const isArtistGroupMode = (searchGroupMode === 'artist') || (currentPathFilter && currentPathFilter.type === 'artist');
     const folderGroups = new Map();
+
     sorted.forEach((r, origIdx) => {
-      let groupKey = r.directory || r.path;
-      if (!groupKey && r.artist && r.album) {
-        groupKey = `${r.artist} / ${r.album}`;
-      } else if (!groupKey && r.artist) {
-        groupKey = r.artist;
-      }
-      if (!groupKey) {
-        groupKey = r.title || 'Ungrouped Collection';
-      }
-      // Grouping by default is limited to the sharing user
-      if (r.user && !groupKey.toLowerCase().startsWith((r.user + ' /').toLowerCase())) {
-        groupKey = `${r.user} / ${groupKey}`;
+      let groupKey;
+      let isArtistGroup = false;
+
+      if (isArtistGroupMode) {
+        const artName = r.artist || (currentPathFilter && currentPathFilter.type === 'artist' ? currentPathFilter.value : 'Unknown Artist');
+        groupKey = r.user ? `${r.user} / ${artName}` : artName;
+        isArtistGroup = true;
+      } else {
+        groupKey = r.directory || r.path;
+        if (!groupKey && r.artist && r.album) {
+          groupKey = `${r.artist} / ${r.album}`;
+        } else if (!groupKey && r.artist) {
+          groupKey = r.artist;
+        }
+        if (!groupKey) {
+          groupKey = r.title || 'Ungrouped Collection';
+        }
+        // Grouping by default is limited to the sharing user
+        if (r.user && !groupKey.toLowerCase().startsWith((r.user + ' /').toLowerCase())) {
+          groupKey = `${r.user} / ${groupKey}`;
+        }
       }
 
       if (!folderGroups.has(groupKey)) {
         folderGroups.set(groupKey, {
           key: groupKey,
-          artist: r.artist || '',
-          album: r.album || '',
+          isArtistGroup: isArtistGroup,
+          artist: r.artist || (isArtistGroup && currentPathFilter ? currentPathFilter.value : ''),
+          album: isArtistGroup ? '' : (r.album || ''),
           user: r.user || '',
-          directory: r.directory || r.path || groupKey,
+          directory: isArtistGroup ? (r.artist || groupKey) : (r.directory || r.path || groupKey),
           provider_type: r.provider_type || 'soulseek',
           provider: r.provider || '',
           items: [],
@@ -2285,12 +2366,54 @@ function renderSearchResults() {
       const firstResultIdx = g.items[0].idx;
       const breadcrumbHtml = generatePathBreadcrumbsHtml(g, firstResultIdx);
 
+      // Distinct albums within this group
+      const albumsMap = new Map();
+      g.items.forEach(it => {
+        const albName = it.result.album || 'Other Tracks';
+        if (!albumsMap.has(albName)) {
+          albumsMap.set(albName, []);
+        }
+        albumsMap.get(albName).push(it);
+      });
+      const albumCount = albumsMap.size;
+
+      const groupIcon = g.isArtistGroup ? '🎤' : '📁';
+      const downloadBtnLabel = g.isArtistGroup ? 'Download Artist Directory' : 'Download Folder';
+      const albumStatsText = g.isArtistGroup ? `<span>💿 ${albumCount} ${albumCount === 1 ? 'album' : 'albums'}</span>` : '';
+
+      let bodyHtml = '';
+      if (g.isArtistGroup && albumCount > 1) {
+        bodyHtml = Array.from(albumsMap.entries()).map(([albName, albItems]) => {
+          const albBytes = albItems.reduce((acc, it) => acc + (it.result.size_bytes || 0), 0);
+          return `
+            <div class="folder-album-subgroup" style="margin-bottom: 10px; border: 1px solid rgba(128,128,128,0.12); border-radius: 6px; overflow: hidden;">
+              <div style="padding: 7px 12px; background: rgba(128, 128, 128, 0.08); display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+                <div style="font-weight: 600; font-size: 12px; display: flex; align-items: center; gap: 6px; min-width: 0;">
+                  <span class="emoji-face">💿</span>
+                  <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(albName)}</span>
+                  <span style="font-size: 11px; opacity: 0.7; font-weight: normal; white-space: nowrap;">(${albItems.length} ${albItems.length === 1 ? 'track' : 'tracks'} &bull; ${formatBytes(albBytes)})</span>
+                </div>
+                <button class="btn btn-sm" style="font-size: 10.5px; padding: 2px 8px; flex-shrink: 0;" onclick="downloadAlbumSubgroup(${groupIdx}, '${escapeJs(albName)}', this)" title="Download just ${escapeHtml(albName)} as a folder">
+                  <span class="emoji-face" style="margin-right: 2px;">📥</span>
+                  <span>Download Album</span>
+                </button>
+              </div>
+              <div>
+                ${albItems.map(({ result: item, idx: itemIdx }) => renderFolderTrackRow(item, itemIdx)).join('')}
+              </div>
+            </div>
+          `;
+        }).join('');
+      } else {
+        bodyHtml = g.items.map(({ result: item, idx: itemIdx }) => renderFolderTrackRow(item, itemIdx)).join('');
+      }
+
       return `
         <div class="folder-group-card" id="folder-group-${groupIdx}">
           <div class="folder-group-header">
             <div style="flex: 1; min-width: 0;">
               <div class="folder-group-title" title="${escapeHtml(g.key)}">
-                <span class="emoji-face" style="font-size: 16px;">📁</span>
+                <span class="emoji-face" style="font-size: 16px;">${groupIcon}</span>
                 <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(g.key)}</span>
               </div>
               <div style="margin-top: 4px;">
@@ -2299,6 +2422,7 @@ function renderSearchResults() {
               <div class="folder-group-stats">
                 <span>${ICONS.package} ${formatBytes(g.totalBytes)}</span>
                 <span>${ICONS.folder} ${itemsCount} ${itemsCount === 1 ? 'item' : 'tracks/files'}</span>
+                ${albumStatsText}
                 <span class="provider-badge ${tagClass}">${escapeHtml(g.provider || g.provider_type)}</span>
               </div>
             </div>
@@ -2309,33 +2433,12 @@ function renderSearchResults() {
               </button>
               <button class="btn btn-primary btn-sm" title="Download entire folder as single download with automated swarm creation afterwards" onclick="downloadFolderGroup(${groupIdx}, this)">
                 <span class="emoji-face" style="margin-right: 3px;">📥</span>
-                <span>Download Folder</span>
+                <span>${downloadBtnLabel}</span>
               </button>
             </div>
           </div>
           <div class="folder-group-body">
-            ${g.items.map(({ result: item, idx: itemIdx }) => {
-              const itemSize = item.size_bytes > 0 ? formatBytes(item.size_bytes) : '';
-              return `
-                <div class="folder-track-row">
-                  <div style="display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; padding-right: 12px;">
-                    <span class="emoji-face" style="font-size: 13px;">🎵</span>
-                    <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500;" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</span>
-                  </div>
-                  <div style="display: flex; align-items: center; gap: 10px; flex-shrink: 0;">
-                    <span style="font-size: 11.5px; color: var(--adw-dim-label); font-weight: 500;">${itemSize}</span>
-                    <button class="btn btn-sm" style="font-size: 11px; padding: 2px 7px;" onclick="openInspectModal(${itemIdx})" title="Inspect file details">
-                      <span class="emoji-face" style="margin-right: 2px;">📦</span>
-                      <span>Inspect</span>
-                    </button>
-                    <button class="btn btn-primary btn-sm" style="font-size: 11px; padding: 2px 9px;" onclick="downloadFromSearch('${encodeURIComponent(item.magnet_uri)}', this)" title="Download track">
-                      <span class="emoji-face" style="margin-right: 2px;">📥</span>
-                      <span>Download</span>
-                    </button>
-                  </div>
-                </div>
-              `;
-            }).join('')}
+            ${bodyHtml}
           </div>
         </div>
       `;

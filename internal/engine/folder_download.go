@@ -110,10 +110,10 @@ func sanitizePathSegment(s string) string {
 }
 
 func sanitizeRelativePath(rel string) string {
+	rel = strings.ReplaceAll(rel, "\\", "/")
 	rel = filepath.Clean(rel)
 	rel = strings.TrimPrefix(rel, "/")
-	rel = strings.TrimPrefix(rel, "\\")
-	parts := strings.Split(rel, string(filepath.Separator))
+	parts := strings.Split(rel, "/")
 	var cleanParts []string
 	for _, p := range parts {
 		p = sanitizePathSegment(p)
