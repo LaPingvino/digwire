@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"digwire/internal/search"
 )
 
 // FolderItemInput is the input payload for each file or subfolder in a folder download request
@@ -397,6 +399,41 @@ func (t *FolderTask) downloadFileItem(m *FolderManager, item *FolderFileItem) {
 		t.CompletedBytes += (existingBytes - item.CompletedBytes)
 		t.mu.Unlock()
 		item.CompletedBytes = existingBytes
+	}
+
+	// Check if this is a Soulseek P2P file transfer
+	if strings.HasPrefix(item.URL, "slsk://") || strings.HasPrefix(item.URL, "soulseek://") {
+		item.State = "downloading"
+		var lastReported int64 = existingBytes
+		err := search.DownloadSoulseekFile(t.ctx, item.URL, targetPath, func(completed, total int64) {
+			if total > 0 && item.TotalBytes <= 0 {
+				item.TotalBytes = total
+				t.mu.Lock()
+				t.TotalBytes += total
+				t.mu.Unlock()
+			}
+			delta := completed - lastReported
+			if delta > 0 {
+				t.mu.Lock()
+				t.CompletedBytes += delta
+				t.mu.Unlock()
+				lastReported = completed
+				item.CompletedBytes = completed
+			}
+		})
+		if err != nil {
+			item.State = "failed"
+			item.Error = err.Error()
+			return
+		}
+		item.State = "completed"
+		if fi, sErr := os.Stat(targetPath); sErr == nil {
+			item.CompletedBytes = fi.Size()
+			if item.TotalBytes <= 0 {
+				item.TotalBytes = fi.Size()
+			}
+		}
+		return
 	}
 
 	req, err := http.NewRequestWithContext(t.ctx, http.MethodGet, item.URL, nil)

@@ -2323,10 +2323,17 @@ function renderSearchResults() {
     let seedersHtml = '';
     let leechersHtml = '';
     if (r.seeders !== undefined && r.seeders >= 0) {
-      const seedColor = r.seeders > 0 ? 'var(--adw-success)' : 'var(--adw-dim-label)';
-      seedersHtml = `<span style="color: ${seedColor}; font-weight: 600;">${ICONS.arrowUp}${r.seeders} seeds</span>`;
-      if (r.leechers !== undefined && r.leechers >= 0) {
-        leechersHtml = `<span>${ICONS.arrowDown}${r.leechers} peers</span>`;
+      if (r.provider_type === 'soulseek') {
+        const slotColor = r.seeders > 0 ? 'var(--adw-success)' : 'var(--adw-warning)';
+        const slotText = r.seeders > 0 ? 'Free Slot' : 'Queued';
+        seedersHtml = `<span style="color: ${slotColor}; font-weight: 600;">${ICONS.arrowUp}${slotText}</span>`;
+        leechersHtml = `<span>${ICONS.arrowDown}${r.leechers || 0} in queue</span>`;
+      } else {
+        const seedColor = r.seeders > 0 ? 'var(--adw-success)' : 'var(--adw-dim-label)';
+        seedersHtml = `<span style="color: ${seedColor}; font-weight: 600;">${ICONS.arrowUp}${r.seeders} seeds</span>`;
+        if (r.leechers !== undefined && r.leechers >= 0) {
+          leechersHtml = `<span>${ICONS.arrowDown}${r.leechers} peers</span>`;
+        }
       }
     } else {
       if (r.provider_type === 'soulseek') {

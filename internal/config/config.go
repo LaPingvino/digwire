@@ -44,6 +44,10 @@ type Config struct {
 	AutoPreseedDHT  bool                   `yaml:"auto_preseed_dht" json:"auto_preseed_dht"`
 	DHTCrawlWorkers int                    `yaml:"dht_crawl_workers" json:"dht_crawl_workers"`
 	GermanyMode     bool                   `yaml:"germany_mode" json:"germany_mode"`
+	SoulseekUsername string                 `yaml:"soulseek_username,omitempty" json:"soulseek_username,omitempty"`
+	SoulseekPassword string                 `yaml:"soulseek_password,omitempty" json:"soulseek_password,omitempty"`
+	SoulseekPort     int                    `yaml:"soulseek_port,omitempty" json:"soulseek_port,omitempty"`
+	SoulseekServer   string                 `yaml:"soulseek_server,omitempty" json:"soulseek_server,omitempty"`
 	SearchProviders []SearchProviderConfig `yaml:"search_providers" json:"search_providers"`
 	configPath      string                 `yaml:"-" json:"-"`
 }
@@ -147,7 +151,7 @@ func DefaultConfig() *Config {
 			{
 				Name:    "Soulseek P2P (Music & Lossless Audio)",
 				Type:    "soulseek",
-				URL:     "https://archive.org",
+				URL:     "server.slsknet.org:2242",
 				Enabled: true,
 				Weight:  1.5,
 			},

@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1328,6 +1329,39 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 		_, err := e.mediaManager.StartDownload(uriOrURL, MediaDownloadOptions{
 			Format:    "bestvideo+bestaudio/best",
 			AutoSwarm: true,
+		})
+		if err != nil {
+			return nil, err
+		}
+		e.mu.Lock()
+		e.saveSessionLocked()
+		e.mu.Unlock()
+		return nil, nil
+	}
+
+	// Soulseek P2P file download
+	if (strings.HasPrefix(uriOrURL, "slsk://") || strings.HasPrefix(uriOrURL, "soulseek://")) && e.folderManager != nil {
+		u, err := url.Parse(uriOrURL)
+		title := "Soulseek Download"
+		var size int64
+		if err == nil {
+			remoteFile := u.Query().Get("file")
+			if remoteFile != "" {
+				clean := filepath.Base(strings.ReplaceAll(remoteFile, "\\", "/"))
+				if clean != "" {
+					title = clean
+				}
+			}
+			if sVal := u.Query().Get("size"); sVal != "" {
+				size, _ = strconv.ParseInt(sVal, 10, 64)
+			}
+		}
+		_, err = e.folderManager.StartFolderDownload(title, title, []FolderItemInput{
+			{
+				URL:   uriOrURL,
+				Title: title,
+				Size:  size,
+			},
 		})
 		if err != nil {
 			return nil, err

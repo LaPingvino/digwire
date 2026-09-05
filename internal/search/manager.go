@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"math"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -68,7 +69,12 @@ func (m *Manager) UpdateProviders(cfg *config.Config) {
 		case "archiveorg":
 			m.providers = append(m.providers, NewArchiveOrgProvider(pCfg.Name, pCfg.URL, pCfg.Enabled, weight))
 		case "soulseek":
-			m.providers = append(m.providers, NewSoulseekProvider(pCfg.Name, pCfg.URL, pCfg.Enabled, weight))
+			serverURL := pCfg.URL
+			if cfg.SoulseekServer != "" {
+				serverURL = cfg.SoulseekServer
+			}
+			GetSoulseekClient().Configure(serverURL, cfg.SoulseekUsername, cfg.SoulseekPassword, cfg.SoulseekPort, filepath.Join(cfg.DownloadDir, ".slsk_stage"))
+			m.providers = append(m.providers, NewSoulseekProvider(pCfg.Name, serverURL, pCfg.Enabled, weight))
 		case "documents":
 			m.providers = append(m.providers, NewDocumentProvider(pCfg.Name, pCfg.URL, pCfg.Enabled, weight))
 		case "torznab":
