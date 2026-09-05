@@ -746,9 +746,6 @@ func (m *FolderManager) Resume(id string) error {
 		}()
 	}
 
-	if m.engine != nil {
-		m.engine.SaveSession()
-	}
 	return nil
 }
 
