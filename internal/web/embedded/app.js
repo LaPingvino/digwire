@@ -239,6 +239,18 @@ function initEventStream() {
       if (data.stats) {
         renderGlobalStats(data.stats);
       }
+      if (currentDetailData && document.getElementById('modal-details')?.classList.contains('active')) {
+        fetch(`/api/torrents/${currentDetailData.info_hash}/details`)
+          .then(r => r.json())
+          .then(updated => {
+            if (updated && updated.info_hash === currentDetailData?.info_hash) {
+              currentDetailData = updated;
+              if (document.getElementById('modal-details')?.classList.contains('active')) {
+                switchDetailTab(currentDetailTab);
+              }
+            }
+          }).catch(() => {});
+      }
     } catch (err) {
       console.error("SSE parse error:", err);
     }
@@ -247,6 +259,18 @@ function initEventStream() {
   evtSource.onerror = function() {
     console.warn("SSE connection interrupted, retrying...");
   };
+}
+
+function fetchTorrents() {
+  fetch('/api/torrents').then(r => r.json()).then(data => {
+    if (data && Array.isArray(data)) {
+      torrentsData = data;
+      if (currentView === 'torrents') renderTorrents();
+    }
+  }).catch(err => console.error("Error fetching torrents:", err));
+  fetch('/api/stats').then(r => r.json()).then(stats => {
+    if (stats) renderGlobalStats(stats);
+  }).catch(() => {});
 }
 
 function renderGlobalStats(stats) {
@@ -310,6 +334,45 @@ function getTorrentMetaString(t) {
   const isCreatingSwarm = t.state === 'creating_swarm';
   const isVerifying = t.is_verifying || t.state === 'verifying' || (t.verify_progress !== undefined && t.verify_progress > 0);
   const isWebDownload = t.magnet_uri && (t.magnet_uri.startsWith('http://') || t.magnet_uri.startsWith('https://'));
+
+  if (t.platform === 'folder') {
+    const completedCount = t.files_completed !== undefined ? t.files_completed : (t.progress >= 100 ? (t.files_total || (t.files ? t.files.length : 0)) : 0);
+    const totalCount = t.files_total !== undefined ? t.files_total : (t.files ? t.files.length : 0);
+    const countStr = totalCount > 0 ? `${completedCount}/${totalCount} files` : 'folder';
+
+    let folderMeta = '';
+    if (t.total_bytes > 0 && t.completed_bytes > 0) {
+      folderMeta = `📁 ${countStr} • ${formatBytes(t.completed_bytes)} of ${formatBytes(t.total_bytes)} (${t.progress.toFixed(1)}%)`;
+    } else if (t.completed_bytes > 0) {
+      folderMeta = `📁 ${countStr} • ${formatBytes(t.completed_bytes)} (${t.progress.toFixed(1)}%)`;
+    } else if (t.total_bytes > 0) {
+      folderMeta = `📁 ${countStr} • ${formatBytes(t.total_bytes)}`;
+    } else {
+      folderMeta = `📁 ${countStr}`;
+    }
+
+    if (t.state === 'creating_swarm') {
+      folderMeta += ` • <span style="color: #33d17a; font-weight: 500;">${ICONS.zap || ''}Packaging BitTorrent swarm for DHT...</span>`;
+    } else if (t.state === 'completed' || t.state === 'seeding' || t.progress >= 100) {
+      folderMeta += ` • <span style="color: #57e389; font-weight: 500;">Complete • Seeding swarm</span>`;
+    } else if (isPaused) {
+      folderMeta += ` • <span style="color: var(--adw-dim-label);">Paused</span>`;
+    } else {
+      if (t.download_rate > 0) {
+        folderMeta += ` • ${ICONS.arrowDown}${formatSpeed(t.download_rate)}`;
+        const eta = formatETA(t.eta_seconds);
+        if (eta) folderMeta += ` • ETA: ${eta}`;
+      }
+      if (t.active_file) {
+        folderMeta += ` • <span style="color: #62a0ea; font-weight: 500;" title="Currently downloading">⏳ ${escapeHtml(t.active_file)}</span>`;
+      } else if (t.status_message) {
+        folderMeta += ` • <span style="color: #62a0ea;">${escapeHtml(t.status_message)}</span>`;
+      } else {
+        folderMeta += ` • <span style="color: var(--adw-dim-label);">Downloading files...</span>`;
+      }
+    }
+    return folderMeta;
+  }
 
   let metaString = '';
   if (t.total_bytes > 0 && t.completed_bytes > 0) {
@@ -1112,6 +1175,26 @@ function switchDetailTab(tab) {
         const isCompleted = f.completed || f.progress >= 100;
         const isSkipped = f.priority === 0 && !isCompleted;
         const icon = getIconForFile(f.path);
+        let progressCell = `${(f.progress || 0).toFixed(0)}%`;
+        if (f.state === 'downloading') {
+          const prog = f.progress || 0;
+          const statusLbl = f.status || 'Downloading';
+          progressCell = `
+            <div style="display: flex; flex-direction: column; gap: 2px;">
+              <span style="font-size: 11px; color: #62a0ea; font-weight: 500;">${escapeHtml(statusLbl)}</span>
+              <div style="width: 70px; height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px; overflow: hidden;">
+                <div style="width: ${Math.min(100, Math.max(0, prog))}%; height: 100%; background: #3584e4; transition: width 0.3s ease;"></div>
+              </div>
+            </div>
+          `;
+        } else if (f.state === 'completed' || isCompleted) {
+          progressCell = `<span style="color: #57e389; font-weight: 500; font-size: 11px;">✓ 100%</span>`;
+        } else if (f.state === 'failed') {
+          progressCell = `<span style="color: #ed333b; font-weight: 500; font-size: 11px;" title="${escapeHtml(f.error || 'Download failed')}">✗ Failed</span>`;
+        } else if (f.state === 'pending') {
+          progressCell = `<span style="color: var(--adw-dim-label); font-size: 11px;">Pending</span>`;
+        }
+
         rowsHtml += `
           <tr>
             ${isTorrent ? `
@@ -1128,7 +1211,7 @@ function switchDetailTab(tab) {
               </div>
             </td>
             <td style="white-space: nowrap;">${formatBytes(f.length)}</td>
-            <td style="white-space: nowrap;">${f.progress.toFixed(0)}%</td>
+            <td style="white-space: nowrap;">${progressCell}</td>
             ${isTorrent ? `
               <td>
                 <select class="sort-select" style="padding: 2px 4px; font-size: 11px;" onchange="updateFilePriority('${currentDetailData.info_hash}', ${fileIdx}, this.value)">

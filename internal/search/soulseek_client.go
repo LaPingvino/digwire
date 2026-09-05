@@ -338,6 +338,11 @@ func parseSoulseekFile(username string, f peer.File, freeSlot bool, queue int, a
 		}
 	}
 
+	filePath := strings.Join(cleanParts, "/")
+	if filePath == "" {
+		filePath = fileName
+	}
+
 	return Result{
 		Title:        fullTitle,
 		MagnetURI:    slskURI,
@@ -350,13 +355,13 @@ func parseSoulseekFile(username string, f peer.File, freeSlot bool, queue int, a
 		Artist:       artist,
 		Album:        album,
 		Directory:    dirPath,
-		Path:         dirPath,
+		Path:         filePath,
 		User:         username,
 	}
 }
 
 // DownloadFile transfers a file from a Soulseek peer directly into destPath
-func (s *SoulseekClient) DownloadFile(ctx context.Context, username, remoteFile string, size int64, destPath string, onProgress func(completed, total int64)) error {
+func (s *SoulseekClient) DownloadFile(ctx context.Context, username, remoteFile string, size int64, destPath string, onProgress func(completed, total int64, statusText string)) error {
 	state, err := s.ensureConnected(ctx)
 	if err != nil {
 		return err
@@ -370,8 +375,19 @@ func (s *SoulseekClient) DownloadFile(ctx context.Context, username, remoteFile 
 
 	_ = os.MkdirAll(s.stageDir, 0755)
 
+	// Pre-create any subdirectories in stageDir that state.Download might try to write to
+	fullStagePath := path.Join(s.stageDir, remoteFile)
+	_ = os.MkdirAll(filepath.Dir(fullStagePath), 0755)
+	slashRemote := strings.ReplaceAll(remoteFile, "\\", "/")
+	_ = os.MkdirAll(filepath.Dir(path.Join(s.stageDir, slashRemote)), 0755)
+	_ = os.MkdirAll(filepath.Dir(filepath.Join(s.stageDir, slashRemote)), 0755)
+
+	if onProgress != nil {
+		onProgress(0, size, "Connecting to peer...")
+	}
+
 	token := soul.NewToken()
-	dlCtx, dlCancel := context.WithTimeout(ctx, 15*time.Minute)
+	dlCtx, dlCancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer dlCancel()
 
 	statusChan, errChan := state.Download(dlCtx, client.Download{
@@ -383,9 +399,32 @@ func (s *SoulseekClient) DownloadFile(ctx context.Context, username, remoteFile 
 		},
 	})
 
+	var lastPct int64 = -1
 	go func() {
-		for range statusChan {
-			// Track intermediate status updates if needed
+		for st := range statusChan {
+			if onProgress == nil {
+				continue
+			}
+			stLower := strings.ToLower(st)
+			if strings.HasPrefix(stLower, "copied ") {
+				var pct int64
+				if _, sErr := fmt.Sscanf(st, "copied %d%%", &pct); sErr == nil {
+					if pct != lastPct {
+						lastPct = pct
+						curBytes := int64(0)
+						if size > 0 {
+							curBytes = (size * pct) / 100
+						}
+						onProgress(curBytes, size, fmt.Sprintf("%d%%", pct))
+					}
+				}
+			} else if strings.Contains(stLower, "queue") {
+				onProgress(0, size, "Queued by peer...")
+			} else if strings.Contains(stLower, "connection") {
+				onProgress(0, size, "Connecting...")
+			} else if strings.Contains(stLower, "file created") {
+				onProgress(0, size, "Transferring...")
+			}
 		}
 	}()
 
@@ -395,18 +434,35 @@ func (s *SoulseekClient) DownloadFile(ctx context.Context, username, remoteFile 
 	}
 
 	// Locate downloaded file in stageDir
-	// state.Download creates it at path.Join(DownloadFolder, file.File.Name)
-	stageCandidate := path.Join(s.stageDir, remoteFile)
-	if _, err := os.Stat(stageCandidate); os.IsNotExist(err) {
-		// Also check basename
-		baseCandidate := filepath.Join(s.stageDir, filepath.Base(remoteFile))
-		if _, err := os.Stat(baseCandidate); err == nil {
-			stageCandidate = baseCandidate
+	candidates := []string{
+		path.Join(s.stageDir, remoteFile),
+		path.Join(s.stageDir, slashRemote),
+		filepath.Join(s.stageDir, filepath.Base(slashRemote)),
+		filepath.Join(s.stageDir, filepath.Base(remoteFile)),
+	}
+
+	var stageCandidate string
+	for _, c := range candidates {
+		if fi, sErr := os.Stat(c); sErr == nil && !fi.IsDir() && fi.Size() > 0 {
+			stageCandidate = c
+			break
 		}
 	}
 
-	if _, err := os.Stat(stageCandidate); os.IsNotExist(err) {
-		return fmt.Errorf("download completed but staged file not found at %s", stageCandidate)
+	if stageCandidate == "" {
+		// Walk stageDir looking for the matching filename
+		targetBase := strings.ToLower(filepath.Base(slashRemote))
+		_ = filepath.Walk(s.stageDir, func(p string, fi os.FileInfo, wErr error) error {
+			if wErr == nil && !fi.IsDir() && strings.ToLower(fi.Name()) == targetBase && fi.Size() > 0 {
+				stageCandidate = p
+				return filepath.SkipAll
+			}
+			return nil
+		})
+	}
+
+	if stageCandidate == "" {
+		return fmt.Errorf("download completed but staged file not found for %s in %s", remoteFile, s.stageDir)
 	}
 
 	// Move from stage to destPath
@@ -423,7 +479,11 @@ func (s *SoulseekClient) DownloadFile(ctx context.Context, username, remoteFile 
 	}
 
 	if onProgress != nil {
-		onProgress(size, size)
+		finalSize := size
+		if fi, sErr := os.Stat(destPath); sErr == nil {
+			finalSize = fi.Size()
+		}
+		onProgress(finalSize, finalSize, "Completed")
 	}
 
 	return nil
@@ -447,7 +507,7 @@ func copyFile(src, dst string) error {
 }
 
 // DownloadSoulseekFile is a top-level helper for downloading a slsk:// URI
-func DownloadSoulseekFile(ctx context.Context, slskURI string, destPath string, onProgress func(completed, total int64)) error {
+func DownloadSoulseekFile(ctx context.Context, slskURI string, destPath string, onProgress func(completed, total int64, statusText string)) error {
 	u, err := url.Parse(slskURI)
 	if err != nil {
 		return fmt.Errorf("invalid soulseek URI: %w", err)

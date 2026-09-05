@@ -37,6 +37,7 @@ type FolderFileItem struct {
 	TotalBytes     int64  `json:"total_bytes"`
 	CompletedBytes int64  `json:"completed_bytes"`
 	State          string `json:"state"` // "pending", "downloading", "completed", "failed"
+	Status         string `json:"status,omitempty"`
 	Error          string `json:"error,omitempty"`
 }
 
@@ -57,6 +58,8 @@ type FolderTask struct {
 	Files          []*FolderFileItem `json:"files"`
 	InfoHash       string            `json:"info_hash,omitempty"`
 	MagnetURI      string            `json:"magnet_uri,omitempty"`
+	ActiveFile     string            `json:"active_file,omitempty"`
+	StatusMessage  string            `json:"status_message,omitempty"`
 	Error          string            `json:"error,omitempty"`
 
 	cancel         context.CancelFunc `json:"-"`
@@ -222,12 +225,29 @@ func (m *FolderManager) StartFolderDownload(name, folderName string, items []Fol
 			relPath = sanitizePathSegment(item.Title)
 		}
 
+		// Ensure extension is preserved for Soulseek downloads if not present
+		if (strings.HasPrefix(rawURL, "slsk://") || strings.HasPrefix(rawURL, "soulseek://")) && filepath.Ext(relPath) == "" {
+			if u, err := url.Parse(rawURL); err == nil {
+				rf := u.Query().Get("file")
+				ext := filepath.Ext(rf)
+				if ext != "" {
+					relPath += ext
+				}
+			}
+		}
+
+		fileName := filepath.Base(relPath)
+		if fileName == "" || fileName == "." {
+			fileName = item.Title
+		}
+
 		task.Files = append(task.Files, &FolderFileItem{
 			URL:        rawURL,
 			Path:       relPath,
-			Name:       item.Title,
+			Name:       fileName,
 			TotalBytes: item.Size,
 			State:      "pending",
+			Status:     "Pending",
 		})
 		task.TotalBytes += item.Size
 	}
@@ -403,43 +423,62 @@ func (t *FolderTask) downloadFileItem(m *FolderManager, item *FolderFileItem) {
 
 	// Check if this is a Soulseek P2P file transfer
 	if strings.HasPrefix(item.URL, "slsk://") || strings.HasPrefix(item.URL, "soulseek://") {
+		t.mu.Lock()
 		item.State = "downloading"
+		item.Status = "Connecting to peer..."
+		t.ActiveFile = item.Name
+		t.StatusMessage = fmt.Sprintf("Downloading %s", item.Name)
+		t.mu.Unlock()
+
 		var lastReported int64 = existingBytes
-		err := search.DownloadSoulseekFile(t.ctx, item.URL, targetPath, func(completed, total int64) {
+		err := search.DownloadSoulseekFile(t.ctx, item.URL, targetPath, func(completed, total int64, statusText string) {
+			t.mu.Lock()
+			if statusText != "" {
+				item.Status = statusText
+			}
 			if total > 0 && item.TotalBytes <= 0 {
 				item.TotalBytes = total
-				t.mu.Lock()
 				t.TotalBytes += total
-				t.mu.Unlock()
 			}
 			delta := completed - lastReported
 			if delta > 0 {
-				t.mu.Lock()
 				t.CompletedBytes += delta
-				t.mu.Unlock()
 				lastReported = completed
 				item.CompletedBytes = completed
+				if item.TotalBytes > 0 {
+					item.Status = fmt.Sprintf("%.0f%%", (float64(item.CompletedBytes)/float64(item.TotalBytes))*100)
+				}
 			}
+			t.mu.Unlock()
 		})
+
+		t.mu.Lock()
 		if err != nil {
 			item.State = "failed"
 			item.Error = err.Error()
+			item.Status = "Failed: " + err.Error()
+			t.mu.Unlock()
 			return
 		}
 		item.State = "completed"
+		item.Status = "Completed"
 		if fi, sErr := os.Stat(targetPath); sErr == nil {
 			item.CompletedBytes = fi.Size()
 			if item.TotalBytes <= 0 {
 				item.TotalBytes = fi.Size()
 			}
 		}
+		t.mu.Unlock()
 		return
 	}
 
 	req, err := http.NewRequestWithContext(t.ctx, http.MethodGet, item.URL, nil)
 	if err != nil {
+		t.mu.Lock()
 		item.State = "failed"
 		item.Error = err.Error()
+		item.Status = "Failed"
+		t.mu.Unlock()
 		return
 	}
 	req.Header.Set("User-Agent", "Digwire/0.3.3 (Unified Folder Downloader)")
@@ -448,19 +487,30 @@ func (t *FolderTask) downloadFileItem(m *FolderManager, item *FolderFileItem) {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", existingBytes))
 	}
 
+	t.mu.Lock()
 	item.State = "downloading"
+	item.Status = "Connecting..."
+	t.ActiveFile = item.Name
+	t.StatusMessage = fmt.Sprintf("Downloading %s", item.Name)
+	t.mu.Unlock()
 
 	resp, err := m.client.Do(req)
 	if err != nil {
+		t.mu.Lock()
 		item.State = "failed"
 		item.Error = err.Error()
+		item.Status = "Failed"
+		t.mu.Unlock()
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		t.mu.Lock()
 		item.State = "failed"
 		item.Error = fmt.Sprintf("HTTP error: %s", resp.Status)
+		item.Status = "Failed"
+		t.mu.Unlock()
 		return
 	}
 
@@ -489,8 +539,11 @@ func (t *FolderTask) downloadFileItem(m *FolderManager, item *FolderFileItem) {
 
 	outFile, err := os.OpenFile(partPath, outFlags, 0644)
 	if err != nil {
+		t.mu.Lock()
 		item.State = "failed"
 		item.Error = err.Error()
+		item.Status = "Failed"
+		t.mu.Unlock()
 		return
 	}
 	defer outFile.Close()
@@ -511,21 +564,30 @@ func (t *FolderTask) downloadFileItem(m *FolderManager, item *FolderFileItem) {
 		if n > 0 {
 			wN, wErr := outFile.Write(buf[:n])
 			if wErr != nil {
+				t.mu.Lock()
 				item.State = "failed"
 				item.Error = wErr.Error()
+				item.Status = "Failed"
+				t.mu.Unlock()
 				return
 			}
 			t.mu.Lock()
 			t.CompletedBytes += int64(wN)
-			t.mu.Unlock()
 			item.CompletedBytes += int64(wN)
+			if item.TotalBytes > 0 {
+				item.Status = fmt.Sprintf("%.0f%%", (float64(item.CompletedBytes)/float64(item.TotalBytes))*100)
+			}
+			t.mu.Unlock()
 		}
 		if rErr != nil {
 			if rErr == io.EOF {
 				break
 			}
+			t.mu.Lock()
 			item.State = "failed"
 			item.Error = rErr.Error()
+			item.Status = "Failed"
+			t.mu.Unlock()
 			return
 		}
 	}
@@ -535,12 +597,18 @@ func (t *FolderTask) downloadFileItem(m *FolderManager, item *FolderFileItem) {
 
 	// Atomic rename to final path
 	if err := os.Rename(partPath, targetPath); err != nil {
+		t.mu.Lock()
 		item.State = "failed"
 		item.Error = err.Error()
+		item.Status = "Failed"
+		t.mu.Unlock()
 		return
 	}
 
+	t.mu.Lock()
 	item.State = "completed"
+	item.Status = "Completed"
+	t.mu.Unlock()
 }
 
 // Pause pauses the folder download

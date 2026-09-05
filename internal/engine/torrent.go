@@ -112,6 +112,10 @@ type TorrentStatus struct {
 	Thumbnail       string          `json:"thumbnail,omitempty"`
 	IsMedia         bool            `json:"is_media,omitempty"`
 	Subtitles       []SubtitleTrack `json:"subtitles,omitempty"`
+	ActiveFile      string          `json:"active_file,omitempty"`
+	FilesCompleted  int             `json:"files_completed,omitempty"`
+	FilesTotal      int             `json:"files_total,omitempty"`
+	StatusMessage   string          `json:"status_message,omitempty"`
 }
 
 type TorrentFileDetail struct {
@@ -123,6 +127,9 @@ type TorrentFileDetail struct {
 	Progress       float64 `json:"progress"`
 	Priority       int     `json:"priority"` // 0: None, 1: Normal, 2: High
 	Completed      bool    `json:"completed"`
+	State          string  `json:"state,omitempty"` // "pending", "downloading", "completed", "failed"
+	Status         string  `json:"status,omitempty"`
+	Error          string  `json:"error,omitempty"`
 }
 
 type PeerDetail struct {
@@ -3037,8 +3044,28 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 			}
 
 			var filePaths []string
+			var filesCompleted int
+			var activeFile string
 			for _, f := range task.Files {
 				filePaths = append(filePaths, f.Path)
+				if f.State == "completed" || (f.TotalBytes > 0 && f.CompletedBytes >= f.TotalBytes) {
+					filesCompleted++
+				}
+				if f.State == "downloading" && activeFile == "" {
+					activeFile = f.Name
+				}
+			}
+			if activeFile == "" {
+				activeFile = task.ActiveFile
+			}
+
+			statusMsg := task.StatusMessage
+			if statusMsg == "" && task.State == "downloading" {
+				if activeFile != "" {
+					statusMsg = fmt.Sprintf("Downloading %s", activeFile)
+				} else {
+					statusMsg = fmt.Sprintf("%d of %d files downloaded", filesCompleted, len(task.Files))
+				}
 			}
 
 			qualifier := SwarmQualifier{
@@ -3078,6 +3105,10 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 				Platform:        "folder",
 				Qualifier:       &qualifier,
 				AvailabilityETA: "Folder Download",
+				ActiveFile:      activeFile,
+				FilesCompleted:  filesCompleted,
+				FilesTotal:      len(task.Files),
+				StatusMessage:   statusMsg,
 			})
 			task.mu.Unlock()
 		}
@@ -3106,11 +3137,24 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 			defer fTask.mu.Unlock()
 			var files []TorrentFileDetail
 			for idx, f := range fTask.Files {
+				var fileProg float64 = 0
+				if f.TotalBytes > 0 {
+					fileProg = (float64(f.CompletedBytes) / float64(f.TotalBytes)) * 100.0
+				} else if f.State == "completed" {
+					fileProg = 100.0
+				}
 				files = append(files, TorrentFileDetail{
 					Index:          idx,
 					Path:           f.Path,
+					FullPath:       filepath.Join(fTask.DestPath, f.Path),
 					Length:         f.TotalBytes,
 					BytesCompleted: f.CompletedBytes,
+					Progress:       fileProg,
+					Priority:       1,
+					Completed:      f.State == "completed",
+					State:          f.State,
+					Status:         f.Status,
+					Error:          f.Error,
 				})
 			}
 			qualifier := SwarmQualifier{
