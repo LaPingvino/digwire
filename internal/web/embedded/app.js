@@ -122,6 +122,9 @@ function getQualifierBadge(q) {
 function getPlatformBadge(p) {
   if (!p) return '';
   p = p.toLowerCase();
+  if (p === 'folder') {
+    return `<span class="torrent-badge badge-platform badge-folder" style="background: rgba(53, 132, 228, 0.2); color: #3584e4; border: 1px solid rgba(53, 132, 228, 0.4);" title="Unified Folder-in-Folder Swarm">📁 Folder Swarm</span>`;
+  }
   return `<span class="torrent-badge badge-platform badge-${p}">${escapeHtml(p)}</span>`;
 }
 
@@ -1802,63 +1805,76 @@ function filterSearchByArtist(artist) {
   showGroupedDownload('artist', artist);
 }
 
-async function downloadMultipleResults(results, btn, groupTitle) {
+async function downloadGroupAsFolder(results, btn, groupTitle) {
   if (!results || results.length === 0) return;
   if (btn) {
     btn.disabled = true;
-    btn.innerHTML = `<span style="opacity: 0.7;">Adding...</span>`;
+    btn.innerHTML = `<span style="opacity: 0.7;">Organizing folder download...</span>`;
   }
 
-  const uniqueURIs = new Map();
-  for (const r of results) {
-    const item = r.result || r;
-    if (item && item.magnet_uri && !uniqueURIs.has(item.magnet_uri)) {
-      uniqueURIs.set(item.magnet_uri, item);
-    }
-  }
+  showToast(`Organizing ${results.length} files as unified folder download "${groupTitle || 'group'}"...`, "info", 3000);
 
-  showToast(`Queueing ${results.length} files (${uniqueURIs.size} package${uniqueURIs.size > 1 ? 's' : ''}) from "${groupTitle || 'group'}"...`, "info", 2500);
-
-  let successCount = 0;
-  for (const [uri, item] of uniqueURIs.entries()) {
-    try {
-      const res = await fetch('/api/torrents/add', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: uri })
-      });
-      const data = await res.json();
-      if (data.status === 'ok') {
-        successCount++;
+  const payload = {
+    name: groupTitle || 'Group Download',
+    folder_name: groupTitle || 'Group Download',
+    items: results.map(r => {
+      const item = r.result || r;
+      let path = item.path || item.directory || '';
+      if (!path && item.album && item.title) {
+        path = `${item.album}/${item.title}`;
+      } else if (!path) {
+        path = item.title || '';
       }
-    } catch (e) {
-      console.warn("Failed to add URI:", uri, e);
+      return {
+        url: item.magnet_uri || item.url || '',
+        title: item.title || '',
+        artist: item.artist || '',
+        album: item.album || '',
+        directory: item.directory || '',
+        path: path,
+        size: item.size_bytes || 0
+      };
+    })
+  };
+
+  try {
+    const res = await fetch('/api/torrents/add-group', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      showToast(`✓ Added "${payload.name}" as folder download (${data.num_files || results.length} files)! Swarm will be created afterwards.`, "info", 4500);
+      switchTab('transfers');
+      fetchTorrents();
+    } else {
+      showToast(`Failed to add folder download: ${data.error || 'unknown error'}`, "error", 4500);
+    }
+  } catch (e) {
+    showToast(`Error adding folder download: ${e.message}`, "error", 4500);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = `<span class="emoji-face" style="margin-right: 4px;">📥</span><span>Download Folder Swarm</span>`;
     }
   }
+}
 
-  if (successCount > 0) {
-    showToast(`✓ Added ${results.length} files from "${groupTitle || 'group'}" to transfers!`, "info", 3500);
-    fetchTorrents();
-  } else {
-    showToast(`Failed to add files for "${groupTitle || 'group'}"`, "error", 4000);
-  }
-
-  if (btn) {
-    btn.disabled = false;
-    btn.innerHTML = `<span class="emoji-face" style="margin-right: 4px;">📥</span><span>Download Group</span>`;
-  }
+async function downloadMultipleResults(results, btn, groupTitle) {
+  return downloadGroupAsFolder(results, btn, groupTitle);
 }
 
 async function downloadAllInCurrentFilter(btn) {
   if (!currentFilteredResults || currentFilteredResults.length === 0) return;
-  const label = currentPathFilter ? currentPathFilter.label : 'group';
-  await downloadMultipleResults(currentFilteredResults, btn, label);
+  const label = currentPathFilter ? currentPathFilter.label : 'Group Download';
+  await downloadGroupAsFolder(currentFilteredResults, btn, label);
 }
 
 async function downloadFolderGroup(groupIdx, btn) {
   const g = currentFolderGroups[groupIdx];
   if (!g || !g.items || g.items.length === 0) return;
-  await downloadMultipleResults(g.items, btn, g.album || g.key);
+  await downloadGroupAsFolder(g.items, btn, g.album || g.key);
 }
 
 function openGroupInspectModal() {
@@ -2009,9 +2025,9 @@ function renderSearchResults() {
           </div>
         </div>
         <div style="display: flex; gap: 8px; align-items: center; flex-shrink: 0;">
-          <button class="btn btn-primary btn-sm" onclick="downloadAllInCurrentFilter(this)" title="Download all ${filtered.length} files in this group">
+          <button class="btn btn-primary btn-sm" onclick="downloadAllInCurrentFilter(this)" title="Download all ${filtered.length} items as one organized folder download with automated swarm creation afterwards">
             <span class="emoji-face" style="margin-right: 4px;">📥</span>
-            <span>Download Group (${filtered.length})</span>
+            <span>Download Folder Swarm (${filtered.length})</span>
           </button>
           <button class="btn btn-sm" onclick="openGroupInspectModal()" title="Inspect individual files in this group">
             <span class="emoji-face" style="margin-right: 4px;">📦</span>
@@ -2093,9 +2109,9 @@ function renderSearchResults() {
                 <span class="emoji-face" style="margin-right: 3px;">📦</span>
                 <span>Files</span>
               </button>
-              <button class="btn btn-primary btn-sm" title="Download entire album / folder" onclick="downloadFolderGroup(${groupIdx}, this)">
+              <button class="btn btn-primary btn-sm" title="Download entire folder as single download with automated swarm creation afterwards" onclick="downloadFolderGroup(${groupIdx}, this)">
                 <span class="emoji-face" style="margin-right: 3px;">📥</span>
-                <span>Download Album</span>
+                <span>Download Folder</span>
               </button>
             </div>
           </div>

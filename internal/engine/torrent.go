@@ -213,6 +213,7 @@ type Engine struct {
 	pieceComp                storage.PieceCompletion
 	httpManager              *HTTPManager
 	mediaManager             *MediaManager
+	folderManager            *FolderManager
 	searchMgr                *search.Manager
 	dhtIndexer               *dhtindex.Indexer
 	cfg                      *config.Config
@@ -258,6 +259,10 @@ func (e *Engine) DHTIndexer() *dhtindex.Indexer {
 
 func (e *Engine) MediaManager() *MediaManager {
 	return e.mediaManager
+}
+
+func (e *Engine) FolderManager() *FolderManager {
+	return e.folderManager
 }
 
 func (e *Engine) SetSearchManager(sm *search.Manager) {
@@ -502,6 +507,7 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 		sessionLoaded:    make(chan struct{}),
 	}
 	e.mediaManager = NewMediaManager(cfg.DownloadDir, e)
+	e.folderManager = NewFolderManager(cfg.DownloadDir, e)
 
 	if dhtIdx != nil {
 		dhtIdx.SetUserTorrentChecker(func(h string) bool {
@@ -530,6 +536,10 @@ func (e *Engine) saveSessionLocked() {
 
 	if e.savedTorrentsMap == nil {
 		e.savedTorrentsMap = make(map[string]SavedTorrent)
+	}
+
+	if e.client == nil {
+		return
 	}
 
 	torrents := e.client.Torrents()
@@ -1605,15 +1615,20 @@ func (e *Engine) CreateTorrent(sourcePath, comment string) (string, string, erro
 
 	spec := torrent.TorrentSpecFromMetaInfo(&mi)
 	spec.Storage = storage.NewFile(filepath.Dir(sourcePath))
-	t, _, err := e.client.AddTorrentSpec(spec)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to seed created torrent: %w", err)
+
+	h := mi.HashInfoBytes()
+	hash := h.HexString()
+
+	var t *torrent.Torrent
+	if e.client != nil {
+		var err error
+		t, _, err = e.client.AddTorrentSpec(spec)
+		if err != nil {
+			return "", "", fmt.Errorf("failed to seed created torrent: %w", err)
+		}
+		hash = t.InfoHash().HexString()
+		e.saveTorrentMetainfo(t)
 	}
-
-	hash := t.InfoHash().HexString()
-	e.saveTorrentMetainfo(t)
-
-	h := t.InfoHash()
 	magnetObj := mi.Magnet(&h, &info)
 	magnetURI := magnetObj.String()
 	if magnetURI == "" {
@@ -1643,12 +1658,14 @@ func (e *Engine) CreateTorrent(sourcePath, comment string) (string, string, erro
 		tr.savedTotalBytes = info.TotalLength()
 		tr.savedCompletedBytes = info.TotalLength()
 	}
-	e.markTorrentPiecesComplete(t)
-	t.DisallowDataDownload()
-	if isGermanMode {
-		t.DisallowDataUpload()
-	} else {
-		t.AllowDataUpload()
+	if t != nil {
+		e.markTorrentPiecesComplete(t)
+		t.DisallowDataDownload()
+		if isGermanMode {
+			t.DisallowDataUpload()
+		} else {
+			t.AllowDataUpload()
+		}
 	}
 	e.saveSessionLocked()
 	return hash, magnetURI, nil
@@ -2250,6 +2267,14 @@ func (e *Engine) Pause(infoHashHex string) error {
 		return nil
 	}
 
+	// Check if Folder download task
+	if e.folderManager != nil {
+		if err := e.folderManager.Pause(infoHashHex); err == nil {
+			e.saveSessionLocked()
+			return nil
+		}
+	}
+
 	// Check if Media download task
 	if e.mediaManager != nil {
 		if t := e.mediaManager.GetTask(infoHashHex); t != nil {
@@ -2298,6 +2323,14 @@ func (e *Engine) Resume(infoHashHex string) error {
 	if err := e.httpManager.Resume(infoHashHex); err == nil {
 		e.saveSessionLocked()
 		return nil
+	}
+
+	// Check if Folder download task
+	if e.folderManager != nil {
+		if err := e.folderManager.Resume(infoHashHex); err == nil {
+			e.saveSessionLocked()
+			return nil
+		}
 	}
 
 	// Check if Media download task
@@ -2411,6 +2444,27 @@ func (e *Engine) Remove(infoHashHex string, deleteFiles bool) error {
 			t.mu.Unlock()
 		}
 		if err := e.mediaManager.CancelTask(infoHashHex, deleteFiles); err == nil {
+			removed = true
+			if deleteFiles && destPath != "" && destPath != "/" && destPath != e.cfg.DownloadDir {
+				_ = os.RemoveAll(destPath)
+			}
+			if createdSwarmHash != "" {
+				infoHashHex = createdSwarmHash
+			}
+		}
+	}
+
+	// Check if Folder download task
+	if e.folderManager != nil {
+		var createdSwarmHash string
+		var destPath string
+		if t := e.folderManager.GetTask(infoHashHex); t != nil {
+			t.mu.Lock()
+			createdSwarmHash = t.InfoHash
+			destPath = t.DestPath
+			t.mu.Unlock()
+		}
+		if err := e.folderManager.Remove(infoHashHex, deleteFiles); err == nil {
 			removed = true
 			if deleteFiles && destPath != "" && destPath != "/" && destPath != e.cfg.DownloadDir {
 				_ = os.RemoveAll(destPath)
@@ -2595,6 +2649,7 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 	torrents := e.client.Torrents()
 	statuses := make([]TorrentStatus, 0, len(torrents))
 	seenMedia := make(map[string]bool)
+	seenFolder := make(map[string]bool)
 
 	for _, t := range torrents {
 		hash := t.InfoHash().HexString()
@@ -2696,6 +2751,19 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 			seenMedia[strings.ToLower(mTask.InfoHash)] = true
 			seenMedia[strings.ToLower(mTask.URL)] = true
 			seenMedia[strings.ToLower(HashURL(mTask.URL))] = true
+		}
+
+		var fTask *FolderTask
+		if e.folderManager != nil {
+			fTask = e.folderManager.GetTask(hash)
+		}
+		if fTask != nil {
+			platform = "folder"
+			if fTask.Name != "" {
+				name = "📁 " + fTask.Name
+			}
+			seenFolder[strings.ToLower(fTask.ID)] = true
+			seenFolder[strings.ToLower(fTask.InfoHash)] = true
 		}
 
 		var eta int64 = 0
@@ -2922,6 +2990,66 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 		e.mediaManager.mu.RUnlock()
 	}
 
+	// Add Unified Folder Downloads
+	if e.folderManager != nil {
+		e.folderManager.mu.RLock()
+		for _, task := range e.folderManager.tasks {
+			task.mu.Lock()
+			taskIDLower := strings.ToLower(task.ID)
+			taskHashLower := strings.ToLower(task.InfoHash)
+			if seenFolder[taskIDLower] || (taskHashLower != "" && seenFolder[taskHashLower]) {
+				task.mu.Unlock()
+				continue
+			}
+
+			var filePaths []string
+			for _, f := range task.Files {
+				filePaths = append(filePaths, f.Path)
+			}
+
+			qualifier := SwarmQualifier{
+				Class:       "verified",
+				Label:       "FOLDER SWARM",
+				Badge:       "FOLDER SWARM",
+				Description: fmt.Sprintf("Unified Folder Download: %d files organized in subfolders", len(task.Files)),
+				UptimeRatio: 1.0,
+			}
+
+			ih := task.ID
+			if task.InfoHash != "" {
+				ih = task.InfoHash
+			}
+			mag := task.MagnetURI
+			if mag == "" {
+				mag = fmt.Sprintf("folder://%s", task.ID)
+			}
+
+			statuses = append(statuses, TorrentStatus{
+				InfoHash:        ih,
+				Name:            "📁 " + task.Name,
+				MagnetURI:       mag,
+				TotalBytes:      task.TotalBytes,
+				CompletedBytes:  task.CompletedBytes,
+				Progress:        task.Progress,
+				DownloadRate:    task.DownloadRate,
+				UploadRate:      0,
+				ETASeconds:      task.ETASeconds,
+				State:           task.State,
+				SavePath:        task.DestPath,
+				Seeders:         0,
+				Leechers:        0,
+				Peers:           0,
+				Files:           filePaths,
+				AddedAt:         task.AddedAt,
+				Platform:        "folder",
+				Qualifier:       &qualifier,
+				AvailabilityETA: "Folder Download",
+			})
+			task.mu.Unlock()
+		}
+		e.folderManager.mu.RUnlock()
+	}
+
 	// Sort deterministically: newest first, then alphabetical by name
 	sort.Slice(statuses, func(i, j int) bool {
 		if statuses[i].AddedAt != statuses[j].AddedAt {
@@ -2936,6 +3064,55 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+
+	// Check if Folder Task
+	if e.folderManager != nil {
+		if fTask := e.folderManager.GetTask(infoHashHex); fTask != nil {
+			fTask.mu.Lock()
+			defer fTask.mu.Unlock()
+			var files []TorrentFileDetail
+			for idx, f := range fTask.Files {
+				files = append(files, TorrentFileDetail{
+					Index:          idx,
+					Path:           f.Path,
+					Length:         f.TotalBytes,
+					BytesCompleted: f.CompletedBytes,
+				})
+			}
+			qualifier := SwarmQualifier{
+				Class:       "verified",
+				Label:       "FOLDER SWARM",
+				Badge:       "FOLDER SWARM",
+				Description: fmt.Sprintf("Unified Folder Download: %d files", len(fTask.Files)),
+				UptimeRatio: 1.0,
+			}
+			ih := fTask.ID
+			if fTask.InfoHash != "" {
+				ih = fTask.InfoHash
+			}
+			mag := fTask.MagnetURI
+			if mag == "" {
+				mag = fmt.Sprintf("folder://%s", fTask.ID)
+			}
+			return &TorrentDetails{
+				InfoHash:       ih,
+				Name:           fTask.Name,
+				MagnetURI:      mag,
+				TotalBytes:     fTask.TotalBytes,
+				CompletedBytes: fTask.CompletedBytes,
+				Progress:       fTask.Progress,
+				DownloadDir:    e.cfg.DownloadDir,
+				SavePath:       fTask.DestPath,
+				State:          fTask.State,
+				Files:          files,
+				Seeders:        0,
+				TotalPeers:     0,
+				Platform:       "folder",
+				CreatedBy:      "Digwire Folder Engine",
+				Qualifier:      &qualifier,
+			}, nil
+		}
+	}
 
 	// Check if Media Task
 	if e.mediaManager != nil {
@@ -3429,6 +3606,18 @@ func (e *Engine) GetTorrentSavePath(infoHashHex string) (string, error) {
 		}
 	}
 
+	// Check Folder task
+	if e.folderManager != nil {
+		if fTask := e.folderManager.GetTask(infoHashHex); fTask != nil {
+			fTask.mu.Lock()
+			dest := fTask.DestPath
+			fTask.mu.Unlock()
+			if dest != "" {
+				return dest, nil
+			}
+		}
+	}
+
 	// Check HTTP task
 	e.httpManager.mu.RLock()
 	task, exists := e.httpManager.tasks[infoHashHex]
@@ -3470,6 +3659,18 @@ func (e *Engine) getTorrentSavePath(t *torrent.Torrent) string {
 func (e *Engine) GetTorrentFilePath(infoHashHex string, fileIndex int) (string, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+
+	// Check Folder task
+	if e.folderManager != nil {
+		if fTask := e.folderManager.GetTask(infoHashHex); fTask != nil {
+			fTask.mu.Lock()
+			defer fTask.mu.Unlock()
+			if fileIndex >= 0 && fileIndex < len(fTask.Files) {
+				return filepath.Join(fTask.DestPath, fTask.Files[fileIndex].Path), nil
+			}
+			return fTask.DestPath, nil
+		}
+	}
 
 	// Check Media task
 	if e.mediaManager != nil {

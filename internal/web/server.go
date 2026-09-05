@@ -50,6 +50,8 @@ func (s *Server) routes() {
 	// API Endpoints
 	s.mux.HandleFunc("GET /api/torrents", s.handleGetTorrents)
 	s.mux.HandleFunc("POST /api/torrents/add", s.handleAddTorrent)
+	s.mux.HandleFunc("POST /api/torrents/add-folder", s.handleAddFolderGroup)
+	s.mux.HandleFunc("POST /api/torrents/add-group", s.handleAddFolderGroup)
 	s.mux.HandleFunc("POST /api/torrents/create", s.handleCreateTorrent)
 	s.mux.HandleFunc("POST /api/torrents/create-bridge", s.handleCreateBridgeTorrent)
 	s.mux.HandleFunc("GET /api/torrents/{hash}/details", s.handleGetTorrentDetails)
@@ -242,6 +244,48 @@ func (s *Server) handleAddTorrent(w http.ResponseWriter, r *http.Request) {
 	} else {
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "info_hash": engine.HashURL(req.URL), "type": "http"})
 	}
+}
+
+type addGroupRequest struct {
+	Name       string                   `json:"name"`
+	FolderName string                   `json:"folder_name"`
+	Items      []engine.FolderItemInput `json:"items"`
+}
+
+func (s *Server) handleAddFolderGroup(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	var req addGroupRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json body"}`, http.StatusBadRequest)
+		return
+	}
+
+	if len(req.Items) == 0 {
+		http.Error(w, `{"error":"items array is required and must not be empty"}`, http.StatusBadRequest)
+		return
+	}
+
+	if req.Name == "" {
+		req.Name = req.FolderName
+	}
+	if req.Name == "" {
+		req.Name = "Folder Download"
+	}
+
+	task, err := s.engine.FolderManager().StartFolderDownload(req.Name, req.FolderName, req.Items)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status":    "ok",
+		"id":        task.ID,
+		"name":      task.Name,
+		"dest_path": task.DestPath,
+		"num_files": len(task.Files),
+	})
 }
 
 type createTorrentRequest struct {

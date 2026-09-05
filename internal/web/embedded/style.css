@@ -616,6 +616,7 @@ select option, select optgroup, .sort-select option, .sort-select optgroup {
 .badge-vimeo { background: rgba(26, 183, 234, 0.2); color: #1ab7ea; border: 1px solid rgba(26, 183, 234, 0.4); }
 .badge-twitch { background: rgba(145, 70, 255, 0.2); color: #bf94ff; border: 1px solid rgba(145, 70, 255, 0.4); }
 .badge-soulseek { background: rgba(255, 107, 129, 0.2); color: #ff6b81; border: 1px solid rgba(255, 107, 129, 0.4); }
+.badge-folder { background: rgba(53, 132, 228, 0.2); color: #3584e4; border: 1px solid rgba(53, 132, 228, 0.4); }
 
 .card-thumbnail {
   width: 44px;
