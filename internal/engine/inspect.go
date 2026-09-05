@@ -57,7 +57,7 @@ func inspectArchiveOrg(ctx context.Context, input string) (*InspectResult, error
 	// 1. Try fetching .torrent metainfo directly
 	torrentURL := fmt.Sprintf("https://archive.org/download/%s/%s_archive.torrent", id, id)
 	if req, err := http.NewRequestWithContext(ctx, http.MethodGet, torrentURL, nil); err == nil {
-		req.Header.Set("User-Agent", "Digwire/0.3.2 (Swarm Inspector)")
+		req.Header.Set("User-Agent", "Digwire/0.3.3 (Swarm Inspector)")
 		if resp, err := client.Do(req); err == nil {
 			defer resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
@@ -96,7 +96,7 @@ func inspectArchiveOrg(ctx context.Context, input string) (*InspectResult, error
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Digwire/0.3.2 (Metadata Inspector)")
+	req.Header.Set("User-Agent", "Digwire/0.3.3 (Metadata Inspector)")
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -273,7 +273,7 @@ func inspectHTTPFile(ctx context.Context, fileURL string) (*InspectResult, error
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Digwire/0.3.2 (HTTP Inspector)")
+	req.Header.Set("User-Agent", "Digwire/0.3.3 (HTTP Inspector)")
 	req.Header.Set("Range", "bytes=0-2097151")
 
 	resp, err := client.Do(req)
@@ -313,7 +313,7 @@ func inspectHTTPFile(ctx context.Context, fileURL string) (*InspectResult, error
 	// 2. Extract metadata from HTTP headers
 	headReq, err := http.NewRequestWithContext(ctx, http.MethodHead, fileURL, nil)
 	if err == nil {
-		headReq.Header.Set("User-Agent", "Digwire/0.3.2 (HTTP Inspector)")
+		headReq.Header.Set("User-Agent", "Digwire/0.3.3 (HTTP Inspector)")
 		if headResp, err := client.Do(headReq); err == nil {
 			defer headResp.Body.Close()
 			if headResp.StatusCode == http.StatusOK || headResp.StatusCode == http.StatusPartialContent {

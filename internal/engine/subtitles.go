@@ -269,7 +269,7 @@ func SearchOpenSubtitles(ctx context.Context, title string, langCode string) ([]
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Digwire v0.3.2")
+	req.Header.Set("User-Agent", "Digwire v0.3.3")
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := client.Do(req)
@@ -352,7 +352,7 @@ func searchOpenSubtitlesFallback(ctx context.Context, title string, langCode str
 	if err != nil {
 		return tracks, nil
 	}
-	req.Header.Set("User-Agent", "Digwire v0.3.2")
+	req.Header.Set("User-Agent", "Digwire v0.3.3")
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -415,7 +415,7 @@ func DownloadAndAttachSubtitle(ctx context.Context, targetDir, videoFilename, dl
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "Digwire v0.3.2")
+	req.Header.Set("User-Agent", "Digwire v0.3.3")
 
 	resp, err := client.Do(req)
 	if err != nil {

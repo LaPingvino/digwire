@@ -121,7 +121,7 @@ func registerWindowsAssociations() {
 	_ = exec.Command("reg", "add", `HKCU\Software\Classes\Digwire.Torrent\shell\open\command`, "/ve", "/t", "REG_SZ", "/d", fmt.Sprintf(`"%s" "%%1"`, exePath), "/f").Run()
 }
 
-var Version = "0.3.2"
+var Version = "0.3.3"
 
 func main() {
 	// WebKit2GTK Linux rendering and sandboxing compatibility flags (prevents black screen with DMA-BUF compositing on Linux GPUs/Crostini)

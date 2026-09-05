@@ -1,7 +1,7 @@
 ; Digwire NSIS Installer Script
 !define PRODUCT_NAME "Digwire"
 !ifndef PRODUCT_VERSION
-  !define PRODUCT_VERSION "0.3.2"
+  !define PRODUCT_VERSION "0.3.3"
 !endif
 !define PRODUCT_PUBLISHER "Digwire Team"
 !define PRODUCT_WEB_SITE "https://github.com/LaPingvino/digwire"
