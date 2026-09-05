@@ -133,11 +133,12 @@ jobs:
           TAG="${{ steps.vars.outputs.tag }}"
           CLEAN_TAG="${{ steps.vars.outputs.clean_tag }}"
           
-          mkdir -p release_out dist/windows
-          cp dist_pkg/digwire.exe dist/windows/
-          cp assets/digwire.ico dist/windows/ 2>/dev/null || true
-          
-          makensis -DPRODUCT_VERSION="${CLEAN_TAG}" -DSOURCE_DIR="dist_pkg" -DICON_PATH="assets/digwire.ico" -DOUTFILE="release_out/Digwire-${TAG}-Setup.exe" scripts/installer.nsi
+          mkdir -p release_out
+          makensis -DPRODUCT_VERSION="${CLEAN_TAG}" \
+                   -DSOURCE_DIR="${GITHUB_WORKSPACE}/dist_pkg" \
+                   -DICON_PATH="${GITHUB_WORKSPACE}/assets/digwire.ico" \
+                   -DOUTFILE="${GITHUB_WORKSPACE}/release_out/Digwire-${TAG}-Setup.exe" \
+                   scripts/installer.nsi
           ls -lh release_out/
 
       - name: Package Archive

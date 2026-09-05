@@ -34,8 +34,13 @@ print('✓ Successfully packaged:', '$ZIP_NAME')
 # If makensis is installed, compile native installer
 if command -v makensis >/dev/null 2>&1; then
     echo "📦 Building NSIS Windows Setup executable..."
-    makensis scripts/installer.nsi
-    echo "✓ Built dist/windows/Digwire-v${VERSION}-Setup.exe"
+    ROOT_DIR="$(pwd)"
+    makensis -DPRODUCT_VERSION="${VERSION}" \
+             -DSOURCE_DIR="${ROOT_DIR}/${OUTPUT_DIR}" \
+             -DICON_PATH="${ROOT_DIR}/assets/digwire.ico" \
+             -DOUTFILE="${ROOT_DIR}/${OUTPUT_DIR}/Digwire-v${VERSION}-Setup.exe" \
+             scripts/installer.nsi
+    echo "✓ Built ${OUTPUT_DIR}/Digwire-v${VERSION}-Setup.exe"
 fi
 
 echo "✨ Windows distribution ready in $OUTPUT_DIR/"

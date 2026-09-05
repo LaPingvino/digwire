@@ -10,10 +10,10 @@
 !define PRODUCT_UNINST_ROOT_KEY "HKCU"
 
 !ifndef SOURCE_DIR
-  !define SOURCE_DIR "..\dist\windows"
+  !define SOURCE_DIR "../dist/windows"
 !endif
 !ifndef ICON_PATH
-  !define ICON_PATH "..\assets\digwire.ico"
+  !define ICON_PATH "../assets/digwire.ico"
 !endif
 
 SetCompressor /SOLID lzma
@@ -35,7 +35,7 @@ SetCompressor /SOLID lzma
 
 Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
 !ifndef OUTFILE
-  !define OUTFILE "..\dist\windows\Digwire-v${PRODUCT_VERSION}-Setup.exe"
+  !define OUTFILE "../dist/windows/Digwire-v${PRODUCT_VERSION}-Setup.exe"
 !endif
 OutFile "${OUTFILE}"
 InstallDir "$LOCALAPPDATA\Digwire"
@@ -50,8 +50,8 @@ Section "MainSection" SEC01
 
   SetOutPath "$INSTDIR"
   SetOverwrite ifnewer
-  File "${SOURCE_DIR}\digwire.exe"
-  File "${ICON_PATH}"
+  File /oname=digwire.exe "${SOURCE_DIR}/digwire.exe"
+  File /oname=digwire.ico "${ICON_PATH}"
   
   CreateDirectory "$SMPROGRAMS\Digwire"
   CreateShortcut "$SMPROGRAMS\Digwire\Digwire.lnk" "$INSTDIR\digwire.exe" "" "$INSTDIR\digwire.ico"
