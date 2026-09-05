@@ -361,20 +361,22 @@ function getTorrentMetaString(t) {
 
     if (t.state === 'creating_swarm') {
       folderMeta += ` • <span style="color: #33d17a; font-weight: 500;">${ICONS.zap || ''}Packaging BitTorrent swarm for DHT...</span>`;
-    } else if (t.state === 'completed' || t.state === 'seeding' || t.progress >= 100) {
+    } else if (t.state === 'completed' || t.state === 'seeding' || (t.progress >= 100 && t.state !== 'failed')) {
       folderMeta += ` • <span style="color: #57e389; font-weight: 500;">Complete • Seeding swarm</span>`;
     } else if (isPaused) {
       folderMeta += ` • <span style="color: var(--adw-dim-label);">Paused</span>`;
+    } else if (t.state === 'failed') {
+      folderMeta += ` • <span style="color: #ed333b; font-weight: 500;" title="${escapeHtml(t.status_message || 'Download failed')}">⚠️ ${escapeHtml(t.status_message || 'Download failed')}</span>`;
     } else {
       if (t.download_rate > 0) {
         folderMeta += ` • ${ICONS.arrowDown}${formatSpeed(t.download_rate)}`;
         const eta = formatETA(t.eta_seconds);
         if (eta) folderMeta += ` • ETA: ${eta}`;
       }
-      if (t.active_file) {
+      if (t.status_message) {
+        folderMeta += ` • <span style="color: #62a0ea; font-weight: 500;" title="Active status">⏳ ${escapeHtml(t.status_message)}</span>`;
+      } else if (t.active_file) {
         folderMeta += ` • <span style="color: #62a0ea; font-weight: 500;" title="Currently downloading">⏳ ${escapeHtml(t.active_file)}</span>`;
-      } else if (t.status_message) {
-        folderMeta += ` • <span style="color: #62a0ea;">${escapeHtml(t.status_message)}</span>`;
       } else {
         folderMeta += ` • <span style="color: var(--adw-dim-label);">Downloading files...</span>`;
       }
@@ -459,7 +461,7 @@ function getCardActionsHtml(t) {
     }
     <button class="btn btn-icon" title="Copy Magnet / URL" aria-label="Copy Magnet link for ${escapeHtml(t.name)}" onclick="copyToClipboard('${encodeURI(t.magnet_uri || '')}', this)">${ICONS.magnet}</button>
     <button class="btn btn-icon" title="Inspect Details & Peers" aria-label="Inspect details and peers for ${escapeHtml(t.name)}" onclick="openDetailsModal('${t.info_hash}')">${ICONS.info}</button>
-    ${isPaused ? 
+    ${(isPaused || t.state === 'failed') ? 
       `<button class="btn btn-icon" title="Resume" aria-label="Resume download for ${escapeHtml(t.name)}" onclick="resumeTorrent('${t.info_hash}')">${ICONS.play}</button>` :
       `<button class="btn btn-icon" title="Pause" aria-label="Pause download for ${escapeHtml(t.name)}" onclick="pauseTorrent('${t.info_hash}')">${ICONS.pause}</button>`
     }
@@ -1897,14 +1899,46 @@ function extractPathSegments(r) {
       continue;
     }
 
-    const isArtist = Boolean(artistLower && (pLower === artistLower || pLower.startsWith(artistLower + ' - ')));
-    const isAlbum = Boolean(!isArtist && albumLower && (pLower === albumLower || pLower.endsWith(' - ' + albumLower)));
+    const isArtist = Boolean(artistLower && (
+      pLower === artistLower ||
+      pLower.startsWith(artistLower + ' - ') ||
+      pLower.endsWith(' - ' + artistLower) ||
+      pLower.includes(artistLower)
+    ));
+    const isAlbum = Boolean(!isArtist && albumLower && (
+      pLower === albumLower ||
+      pLower.endsWith(' - ' + albumLower) ||
+      pLower.startsWith(albumLower + ' - ') ||
+      pLower.includes(albumLower)
+    ));
 
     segments.push({
       name: p,
       isArtist: isArtist,
       isAlbum: isAlbum
     });
+  }
+
+  // Ensure artist is present in breadcrumbs if known from result metadata
+  if (r.artist && !segments.some(s => s.isArtist)) {
+    const albIdx = segments.findIndex(s => s.isAlbum);
+    const artSeg = { name: r.artist, isArtist: true, isAlbum: false };
+    if (albIdx !== -1) {
+      segments.splice(albIdx, 0, artSeg);
+    } else {
+      segments.unshift(artSeg);
+    }
+  }
+
+  // Ensure album is present in breadcrumbs if known from result metadata
+  if (r.album && (!r.artist || r.album.toLowerCase() !== r.artist.toLowerCase()) && !segments.some(s => s.isAlbum)) {
+    const artIdx = segments.findIndex(s => s.isArtist);
+    const albSeg = { name: r.album, isArtist: false, isAlbum: true };
+    if (artIdx !== -1 && artIdx + 1 <= segments.length) {
+      segments.splice(artIdx + 1, 0, albSeg);
+    } else {
+      segments.push(albSeg);
+    }
   }
 
   if (segments.length === 0) {
@@ -2208,10 +2242,10 @@ function openGroupInspectModal() {
 
 function toggleSearchGroupMode() {
   if (searchGroupMode === 'none') {
-    searchGroupMode = 'folder';
-    searchGroupByFolder = true;
-  } else if (searchGroupMode === 'folder') {
     searchGroupMode = 'artist';
+    searchGroupByFolder = true;
+  } else if (searchGroupMode === 'artist') {
+    searchGroupMode = 'folder';
     searchGroupByFolder = true;
   } else {
     searchGroupMode = 'none';

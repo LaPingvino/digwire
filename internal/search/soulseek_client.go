@@ -43,6 +43,8 @@ type SoulseekClient struct {
 	cancel      context.CancelFunc
 	connected   bool
 	lastLogin   time.Time
+	peerSemMu   sync.Mutex
+	peerSems    map[string]chan struct{}
 }
 
 func randomHex(n int) string {
@@ -360,6 +362,21 @@ func parseSoulseekFile(username string, f peer.File, freeSlot bool, queue int, a
 	}
 }
 
+func (s *SoulseekClient) getPeerSem(username string) chan struct{} {
+	s.peerSemMu.Lock()
+	defer s.peerSemMu.Unlock()
+	if s.peerSems == nil {
+		s.peerSems = make(map[string]chan struct{})
+	}
+	key := strings.ToLower(strings.TrimSpace(username))
+	sem, ok := s.peerSems[key]
+	if !ok {
+		sem = make(chan struct{}, 1)
+		s.peerSems[key] = sem
+	}
+	return sem
+}
+
 // DownloadFile transfers a file from a Soulseek peer directly into destPath
 func (s *SoulseekClient) DownloadFile(ctx context.Context, username, remoteFile string, size int64, destPath string, onProgress func(completed, total int64, statusText string)) error {
 	state, err := s.ensureConnected(ctx)
@@ -375,12 +392,40 @@ func (s *SoulseekClient) DownloadFile(ctx context.Context, username, remoteFile 
 
 	_ = os.MkdirAll(s.stageDir, 0755)
 
+	slashRemote := strings.ReplaceAll(remoteFile, "\\", "/")
+	candidates := []string{
+		path.Join(s.stageDir, remoteFile),
+		path.Join(s.stageDir, slashRemote),
+		filepath.Join(s.stageDir, filepath.Base(slashRemote)),
+		filepath.Join(s.stageDir, filepath.Base(remoteFile)),
+	}
+
 	// Pre-create any subdirectories in stageDir that state.Download might try to write to
 	fullStagePath := path.Join(s.stageDir, remoteFile)
 	_ = os.MkdirAll(filepath.Dir(fullStagePath), 0755)
-	slashRemote := strings.ReplaceAll(remoteFile, "\\", "/")
 	_ = os.MkdirAll(filepath.Dir(path.Join(s.stageDir, slashRemote)), 0755)
 	_ = os.MkdirAll(filepath.Dir(filepath.Join(s.stageDir, slashRemote)), 0755)
+
+	// Clean up any stale files from previous attempts
+	for _, c := range candidates {
+		_ = os.Remove(c)
+	}
+
+	// Serialize transfers per peer: Soulseek peers upload to a user sequentially (one slot at a time)
+	peerSem := s.getPeerSem(username)
+	if onProgress != nil {
+		onProgress(0, size, "Queued (waiting for peer slot)...")
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case peerSem <- struct{}{}:
+		defer func() {
+			// Small cooldown to allow the peer connection to transition slots cleanly
+			time.Sleep(200 * time.Millisecond)
+			<-peerSem
+		}()
+	}
 
 	if onProgress != nil {
 		onProgress(0, size, "Connecting to peer...")
@@ -434,13 +479,6 @@ func (s *SoulseekClient) DownloadFile(ctx context.Context, username, remoteFile 
 	}
 
 	// Locate downloaded file in stageDir
-	candidates := []string{
-		path.Join(s.stageDir, remoteFile),
-		path.Join(s.stageDir, slashRemote),
-		filepath.Join(s.stageDir, filepath.Base(slashRemote)),
-		filepath.Join(s.stageDir, filepath.Base(remoteFile)),
-	}
-
 	var stageCandidate string
 	for _, c := range candidates {
 		if fi, sErr := os.Stat(c); sErr == nil && !fi.IsDir() && fi.Size() > 0 {

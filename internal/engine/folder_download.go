@@ -65,6 +65,7 @@ type FolderTask struct {
 	cancel         context.CancelFunc `json:"-"`
 	ctx            context.Context    `json:"-"`
 	isPaused       atomic.Bool        `json:"-"`
+	isRunning      atomic.Bool        `json:"-"`
 	eng            *Engine            `json:"-"`
 	workersWg      sync.WaitGroup     `json:"-"`
 }
@@ -257,7 +258,11 @@ func (m *FolderManager) StartFolderDownload(name, folderName string, items []Fol
 	m.mu.Unlock()
 
 	// Launch background downloader
-	go task.runDownload(m)
+	task.isRunning.Store(true)
+	go func() {
+		defer task.isRunning.Store(false)
+		task.runDownload(m)
+	}()
 
 	return task, nil
 }
@@ -324,6 +329,10 @@ func (t *FolderTask) runDownload(m *FolderManager) {
 			}
 		}
 
+		if fileItem.State == "completed" {
+			continue
+		}
+
 		select {
 		case <-t.ctx.Done():
 			return
@@ -347,21 +356,45 @@ func (t *FolderTask) runDownload(m *FolderManager) {
 		return
 	}
 
-	// Final verification of total downloaded bytes
+	// Final verification of total downloaded bytes and file completion
 	var finalCompleted int64
+	allCompleted := true
+	failedCount := 0
 	for _, f := range t.Files {
 		finalCompleted += f.CompletedBytes
+		if f.State != "completed" {
+			allCompleted = false
+			if f.State == "failed" {
+				failedCount++
+			}
+		}
 	}
 
 	t.mu.Lock()
 	t.CompletedBytes = finalCompleted
-	if t.TotalBytes == 0 || t.CompletedBytes > t.TotalBytes {
-		t.TotalBytes = finalCompleted
+	if t.TotalBytes > 0 {
+		t.Progress = (float64(finalCompleted) / float64(t.TotalBytes)) * 100.0
 	}
-	t.Progress = 100.0
 	t.DownloadRate = 0
 	t.ETASeconds = 0
+
+	if !allCompleted {
+		t.State = "failed"
+		if failedCount > 0 {
+			t.StatusMessage = fmt.Sprintf("%d of %d files failed to download", failedCount, len(t.Files))
+		} else {
+			t.StatusMessage = "Incomplete folder download"
+		}
+		t.mu.Unlock()
+		if t.eng != nil {
+			t.eng.SaveSession()
+		}
+		return
+	}
+
+	t.Progress = 100.0
 	t.State = "creating_swarm"
+	t.StatusMessage = "Packaging BitTorrent swarm..."
 	t.mu.Unlock()
 
 	if t.eng != nil {
@@ -381,16 +414,19 @@ func (t *FolderTask) runDownload(m *FolderManager) {
 			} else {
 				t.State = "seeding"
 			}
+			t.StatusMessage = "Seeding swarm"
 			t.mu.Unlock()
 		} else {
 			t.mu.Lock()
 			t.State = "completed"
+			t.StatusMessage = "Completed"
 			t.mu.Unlock()
 		}
 		t.eng.SaveSession()
 	} else {
 		t.mu.Lock()
 		t.State = "completed"
+		t.StatusMessage = "Completed"
 		t.mu.Unlock()
 	}
 }
@@ -405,13 +441,17 @@ func (t *FolderTask) downloadFileItem(m *FolderManager, item *FolderFileItem) {
 	}
 
 	// Check if already completed
+	if item.State == "completed" {
+		return
+	}
 	if fi, err := os.Stat(targetPath); err == nil && !fi.IsDir() {
-		if item.TotalBytes > 0 && fi.Size() == item.TotalBytes {
+		if (item.TotalBytes > 0 && fi.Size() >= item.TotalBytes) || (fi.Size() > 0 && item.State == "completed") {
 			t.mu.Lock()
 			t.CompletedBytes += (fi.Size() - item.CompletedBytes)
 			t.mu.Unlock()
 			item.CompletedBytes = fi.Size()
 			item.State = "completed"
+			item.Status = "Completed"
 			return
 		}
 	}
@@ -435,27 +475,54 @@ func (t *FolderTask) downloadFileItem(m *FolderManager, item *FolderFileItem) {
 		t.StatusMessage = fmt.Sprintf("Downloading %s", item.Name)
 		t.mu.Unlock()
 
-		var lastReported int64 = existingBytes
-		err := search.DownloadSoulseekFile(t.ctx, item.URL, targetPath, func(completed, total int64, statusText string) {
-			t.mu.Lock()
-			if statusText != "" {
-				item.Status = statusText
+		var err error
+		for attempt := 1; attempt <= 3; attempt++ {
+			if t.ctx.Err() != nil {
+				err = t.ctx.Err()
+				break
 			}
-			if total > 0 && item.TotalBytes <= 0 {
-				item.TotalBytes = total
-				t.TotalBytes += total
-			}
-			delta := completed - lastReported
-			if delta > 0 {
-				t.CompletedBytes += delta
-				lastReported = completed
-				item.CompletedBytes = completed
-				if item.TotalBytes > 0 {
-					item.Status = fmt.Sprintf("%.0f%%", (float64(item.CompletedBytes)/float64(item.TotalBytes))*100)
+			if attempt > 1 {
+				t.mu.Lock()
+				item.Status = fmt.Sprintf("Retrying (%d/3)...", attempt)
+				t.StatusMessage = fmt.Sprintf("%s: retrying (%d/3)...", item.Name, attempt)
+				t.mu.Unlock()
+				select {
+				case <-t.ctx.Done():
+					err = t.ctx.Err()
+					break
+				case <-time.After(2 * time.Second):
 				}
 			}
-			t.mu.Unlock()
-		})
+
+			var lastReported int64 = existingBytes
+			err = search.DownloadSoulseekFile(t.ctx, item.URL, targetPath, func(completed, total int64, statusText string) {
+				t.mu.Lock()
+				if statusText != "" {
+					item.Status = statusText
+					t.StatusMessage = fmt.Sprintf("%s: %s", item.Name, statusText)
+				}
+				if total > 0 && item.TotalBytes <= 0 {
+					item.TotalBytes = total
+					t.TotalBytes += total
+				}
+				delta := completed - lastReported
+				if delta > 0 {
+					t.CompletedBytes += delta
+					lastReported = completed
+					item.CompletedBytes = completed
+					if item.TotalBytes > 0 {
+						pct := (float64(item.CompletedBytes) / float64(item.TotalBytes)) * 100
+						item.Status = fmt.Sprintf("%.0f%%", pct)
+						t.StatusMessage = fmt.Sprintf("%s: %.0f%%", item.Name, pct)
+					}
+				}
+				t.mu.Unlock()
+			})
+
+			if err == nil {
+				break
+			}
+		}
 
 		t.mu.Lock()
 		if err != nil {
@@ -635,21 +702,53 @@ func (m *FolderManager) Pause(id string) error {
 	return nil
 }
 
-// Resume resumes a paused folder download
+// Resume resumes a paused or failed folder download
 func (m *FolderManager) Resume(id string) error {
 	m.mu.RLock()
 	task, ok := m.tasks[id]
-	m.mu.RUnlock()
 	if !ok {
+		for k, t := range m.tasks {
+			if strings.EqualFold(t.InfoHash, id) || strings.EqualFold(t.ID, id) {
+				task = t
+				id = k
+				ok = true
+				break
+			}
+		}
+	}
+	m.mu.RUnlock()
+	if !ok || task == nil {
 		return fmt.Errorf("task not found: %s", id)
 	}
 
-	task.isPaused.Store(false)
 	task.mu.Lock()
-	if task.State == "paused" {
-		task.State = "downloading"
+	if task.State == "completed" || task.State == "seeding" {
+		task.mu.Unlock()
+		return nil
+	}
+	task.isPaused.Store(false)
+	task.State = "downloading"
+	task.StatusMessage = "Resuming download..."
+	for _, f := range task.Files {
+		if f.State == "failed" {
+			f.State = "pending"
+			f.Status = "Pending"
+			f.Error = ""
+		}
 	}
 	task.mu.Unlock()
+
+	if task.isRunning.CompareAndSwap(false, true) {
+		task.ctx, task.cancel = context.WithCancel(context.Background())
+		go func() {
+			defer task.isRunning.Store(false)
+			task.runDownload(m)
+		}()
+	}
+
+	if m.engine != nil {
+		m.engine.SaveSession()
+	}
 	return nil
 }
 

@@ -1220,16 +1220,29 @@ func (e *Engine) loadSession() {
 				files = append(files, item)
 			}
 
+			allFilesComplete := (len(files) > 0)
+			for _, f := range files {
+				if f.State != "completed" {
+					allFilesComplete = false
+					break
+				}
+			}
+
 			stateStr := ft.State
 			prog := ft.Progress
 			if totalCalculated > 0 {
 				prog = (float64(completedCalculated) / float64(totalCalculated)) * 100.0
-				if completedCalculated >= totalCalculated {
+				if completedCalculated >= totalCalculated && allFilesComplete {
 					prog = 100.0
 					if stateStr == "downloading" {
 						stateStr = "completed"
 					}
 				}
+			}
+
+			if !allFilesComplete && (stateStr == "seeding" || stateStr == "completed") {
+				// Prevent premature seeding of incomplete folders from legacy saved sessions
+				stateStr = "failed"
 			}
 
 			task := &FolderTask{
@@ -1257,7 +1270,11 @@ func (e *Engine) loadSession() {
 
 			// If it was downloading, resume downloading in background!
 			if stateStr == "downloading" {
-				go task.runDownload(e.folderManager)
+				task.isRunning.Store(true)
+				go func(tk *FolderTask) {
+					defer tk.isRunning.Store(false)
+					tk.runDownload(e.folderManager)
+				}(task)
 			}
 		}
 	}

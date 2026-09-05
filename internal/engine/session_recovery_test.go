@@ -179,3 +179,84 @@ func TestFolderTaskSessionPersistence(t *testing.T) {
 		t.Errorf("expected folder task to be listed in GetTorrents()")
 	}
 }
+
+func TestFolderTaskFailureAndResume(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "digwire_folder_fail_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	cfg := &config.Config{
+		DownloadDir: filepath.Join(tempDir, "downloads"),
+		ListenPort:  0,
+		GermanyMode: false,
+	}
+	cfg.SetConfigPath(filepath.Join(tempDir, "config.yaml"))
+	_ = os.MkdirAll(cfg.DownloadDir, 0755)
+
+	eng, err := NewEngine(cfg)
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+	defer eng.Close()
+
+	fm := eng.FolderManager()
+	folderTask, err := fm.StartFolderDownload("Incomplete Album", "Artist - Incomplete Album", []FolderItemInput{
+		{
+			URL:   "http://127.0.0.1:59999/nonexistent1.mp3",
+			Title: "01.mp3",
+			Path:  "Artist/Album/01.mp3",
+			Size:  1000,
+		},
+		{
+			URL:   "http://127.0.0.1:59999/nonexistent2.mp3",
+			Title: "02.mp3",
+			Path:  "Artist/Album/02.mp3",
+			Size:  2000,
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to start folder download: %v", err)
+	}
+
+	// Wait for workers to fail because server is non-existent
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		folderTask.mu.RLock()
+		st := folderTask.State
+		folderTask.mu.RUnlock()
+		if st == "failed" {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	folderTask.mu.RLock()
+	if folderTask.State != "failed" {
+		t.Errorf("expected task state 'failed', got '%s'", folderTask.State)
+	}
+	if folderTask.Progress >= 100.0 {
+		t.Errorf("expected progress < 100.0 for failed task, got %f", folderTask.Progress)
+	}
+	if folderTask.InfoHash != "" {
+		t.Errorf("expected no swarm InfoHash to be created for failed task, got '%s'", folderTask.InfoHash)
+	}
+	folderTask.mu.RUnlock()
+
+	// Test Resume: resumes and resets failed files to pending
+	if err := fm.Resume(folderTask.ID); err != nil {
+		t.Fatalf("failed to resume folder task: %v", err)
+	}
+
+	folderTask.mu.RLock()
+	if folderTask.State != "downloading" {
+		t.Errorf("expected state 'downloading' after resume, got '%s'", folderTask.State)
+	}
+	for _, f := range folderTask.Files {
+		if f.State == "failed" {
+			t.Errorf("expected failed file to be reset from 'failed', got '%s'", f.State)
+		}
+	}
+	folderTask.mu.RUnlock()
+}
