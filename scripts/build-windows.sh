@@ -1,21 +1,22 @@
 #!/bin/bash
 set -e
 
-VERSION="0.3.2"
+VERSION="${1:-0.3.2}"
 OUTPUT_DIR="dist/windows"
 mkdir -p "$OUTPUT_DIR"
 
 echo "🔨 Compiling Digwire v$VERSION for Windows (amd64)..."
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w -H=windowsgui -X main.Version=$VERSION" -o "$OUTPUT_DIR/digwire.exe" ./cmd/digwire
 
-# Ensure .ico is generated
+# Ensure .ico is generated and copied
 python3 -c "
 from PIL import Image
 img = Image.open('internal/web/embedded/digwire.png')
 img.save('internal/web/embedded/digwire.ico', format='ICO', sizes=[(16,16), (32,32), (48,48), (64,64), (128,128), (256,256)])
-" 2>/dev/null || true
+img.save('assets/digwire.ico', format='ICO', sizes=[(16,16), (32,32), (48,48), (64,64), (128,128), (256,256)])
+" 2>/dev/null || cp assets/digwire.ico internal/web/embedded/digwire.ico 2>/dev/null || true
 
-cp internal/web/embedded/digwire.ico "$OUTPUT_DIR/"
+cp assets/digwire.ico "$OUTPUT_DIR/digwire.ico" 2>/dev/null || cp internal/web/embedded/digwire.ico "$OUTPUT_DIR/digwire.ico" 2>/dev/null || true
 cp scripts/install-windows.bat "$OUTPUT_DIR/install.bat"
 cp scripts/uninstall-windows.bat "$OUTPUT_DIR/uninstall.bat"
 

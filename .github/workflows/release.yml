@@ -107,12 +107,38 @@ jobs:
           mkdir -p "$OUTDIR"
           BINNAME="digwire${{ matrix.ext }}"
           
-          go build -trimpath -ldflags="-s -w -X main.Version=${{ steps.vars.outputs.clean_tag }}" -o "${OUTDIR}/${BINNAME}" ./cmd/digwire
+          LDFLAGS="-s -w -X main.Version=${{ steps.vars.outputs.clean_tag }}"
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            LDFLAGS="$LDFLAGS -H=windowsgui"
+          fi
+
+          go build -trimpath -ldflags="$LDFLAGS" -o "${OUTDIR}/${BINNAME}" ./cmd/digwire
 
           # Copy extra assets
           cp README.md "${OUTDIR}/" 2>/dev/null || true
           mkdir -p "${OUTDIR}/assets"
           cp -r assets/* "${OUTDIR}/assets/" 2>/dev/null || true
+
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            cp assets/digwire.ico "${OUTDIR}/digwire.ico" 2>/dev/null || cp internal/web/embedded/digwire.ico "${OUTDIR}/digwire.ico" 2>/dev/null || true
+            cp scripts/install-windows.bat "${OUTDIR}/install.bat" 2>/dev/null || true
+            cp scripts/uninstall-windows.bat "${OUTDIR}/uninstall.bat" 2>/dev/null || true
+          fi
+
+      - name: Build Windows Setup Installer (NSIS)
+        if: matrix.goos == 'windows' && matrix.goarch == 'amd64'
+        shell: bash
+        run: |
+          sudo apt-get update && sudo apt-get install -y nsis
+          TAG="${{ steps.vars.outputs.tag }}"
+          CLEAN_TAG="${{ steps.vars.outputs.clean_tag }}"
+          
+          mkdir -p release_out dist/windows
+          cp dist_pkg/digwire.exe dist/windows/
+          cp assets/digwire.ico dist/windows/ 2>/dev/null || true
+          
+          makensis -DPRODUCT_VERSION="${CLEAN_TAG}" -DSOURCE_DIR="dist_pkg" -DICON_PATH="assets/digwire.ico" -DOUTFILE="release_out/Digwire-${TAG}-Setup.exe" scripts/installer.nsi
+          ls -lh release_out/
 
       - name: Package Archive
         id: pack
@@ -139,7 +165,7 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.pack.outputs.archive_file }}
+          name: release-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goarm }}
           path: release_out/*
           if-no-files-found: error
 

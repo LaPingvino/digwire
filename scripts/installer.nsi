@@ -1,19 +1,28 @@
 ; Digwire NSIS Installer Script
 !define PRODUCT_NAME "Digwire"
-!define PRODUCT_VERSION "0.3.2"
+!ifndef PRODUCT_VERSION
+  !define PRODUCT_VERSION "0.3.2"
+!endif
 !define PRODUCT_PUBLISHER "Digwire Team"
 !define PRODUCT_WEB_SITE "https://github.com/LaPingvino/digwire"
 !define PRODUCT_DIR_REGKEY "Software\Microsoft\Windows\CurrentVersion\App Paths\digwire.exe"
 !define PRODUCT_UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
 !define PRODUCT_UNINST_ROOT_KEY "HKCU"
 
+!ifndef SOURCE_DIR
+  !define SOURCE_DIR "..\dist\windows"
+!endif
+!ifndef ICON_PATH
+  !define ICON_PATH "..\assets\digwire.ico"
+!endif
+
 SetCompressor /SOLID lzma
 
 !include "MUI2.nsh"
 
 !define MUI_ABORTWARNING
-!define MUI_ICON "..\internal\web\embedded\digwire.ico"
-!define MUI_UNICON "..\internal\web\embedded\digwire.ico"
+!define MUI_ICON "${ICON_PATH}"
+!define MUI_UNICON "${ICON_PATH}"
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
@@ -25,17 +34,24 @@ SetCompressor /SOLID lzma
 !insertmacro MUI_LANGUAGE "English"
 
 Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
-OutFile "..\dist\windows\Digwire-v${PRODUCT_VERSION}-Setup.exe"
+!ifndef OUTFILE
+  !define OUTFILE "..\dist\windows\Digwire-v${PRODUCT_VERSION}-Setup.exe"
+!endif
+OutFile "${OUTFILE}"
 InstallDir "$LOCALAPPDATA\Digwire"
 InstallDirRegKey HKCU "${PRODUCT_DIR_REGKEY}" ""
 ShowInstDetails show
 ShowUnInstDetails show
 
 Section "MainSection" SEC01
+  ; Close any running digwire instance before copying files
+  nsExec::Exec 'taskkill /F /IM digwire.exe'
+  Sleep 500
+
   SetOutPath "$INSTDIR"
   SetOverwrite ifnewer
-  File "..\dist\windows\digwire.exe"
-  File "..\internal\web\embedded\digwire.ico"
+  File "${SOURCE_DIR}\digwire.exe"
+  File "${ICON_PATH}"
   
   CreateDirectory "$SMPROGRAMS\Digwire"
   CreateShortcut "$SMPROGRAMS\Digwire\Digwire.lnk" "$INSTDIR\digwire.exe" "" "$INSTDIR\digwire.ico"

@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -88,10 +89,36 @@ func sendToRunningInstance(port int, arg string) bool {
 }
 
 func registerMimeTypes() {
-	go func() {
-		_ = exec.Command("xdg-mime", "default", "digwire.desktop", "x-scheme-handler/magnet").Run()
-		_ = exec.Command("xdg-mime", "default", "digwire.desktop", "application/x-bittorrent").Run()
-	}()
+	if runtime.GOOS == "linux" {
+		go func() {
+			_ = exec.Command("xdg-mime", "default", "digwire.desktop", "x-scheme-handler/magnet").Run()
+			_ = exec.Command("xdg-mime", "default", "digwire.desktop", "application/x-bittorrent").Run()
+		}()
+	} else if runtime.GOOS == "windows" {
+		go registerWindowsAssociations()
+	}
+}
+
+func registerWindowsAssociations() {
+	exePath, err := os.Executable()
+	if err != nil {
+		return
+	}
+	exeDir := filepath.Dir(exePath)
+	icoPath := filepath.Join(exeDir, "digwire.ico")
+	if _, err := os.Stat(icoPath); err != nil {
+		icoPath = exePath
+	}
+
+	_ = exec.Command("reg", "add", `HKCU\Software\Classes\magnet`, "/ve", "/t", "REG_SZ", "/d", "URL:Magnet Protocol", "/f").Run()
+	_ = exec.Command("reg", "add", `HKCU\Software\Classes\magnet`, "/v", "URL Protocol", "/t", "REG_SZ", "/d", "", "/f").Run()
+	_ = exec.Command("reg", "add", `HKCU\Software\Classes\magnet\DefaultIcon`, "/ve", "/t", "REG_SZ", "/d", icoPath, "/f").Run()
+	_ = exec.Command("reg", "add", `HKCU\Software\Classes\magnet\shell\open\command`, "/ve", "/t", "REG_SZ", "/d", fmt.Sprintf(`"%s" "%%1"`, exePath), "/f").Run()
+
+	_ = exec.Command("reg", "add", `HKCU\Software\Classes\.torrent`, "/ve", "/t", "REG_SZ", "/d", "Digwire.Torrent", "/f").Run()
+	_ = exec.Command("reg", "add", `HKCU\Software\Classes\Digwire.Torrent`, "/ve", "/t", "REG_SZ", "/d", "BitTorrent Seed File", "/f").Run()
+	_ = exec.Command("reg", "add", `HKCU\Software\Classes\Digwire.Torrent\DefaultIcon`, "/ve", "/t", "REG_SZ", "/d", icoPath, "/f").Run()
+	_ = exec.Command("reg", "add", `HKCU\Software\Classes\Digwire.Torrent\shell\open\command`, "/ve", "/t", "REG_SZ", "/d", fmt.Sprintf(`"%s" "%%1"`, exePath), "/f").Run()
 }
 
 var Version = "0.3.2"
@@ -179,8 +206,8 @@ func main() {
 				return
 			}
 			if !*headlessFlag {
-				cmd := launchNativeWindow(fmt.Sprintf("http://127.0.0.1:%d", cfg.WebPort), *noGTKFlag, *browserFlag)
-				if cmd != nil {
+				cmd, isApp := launchNativeWindow(fmt.Sprintf("http://127.0.0.1:%d", cfg.WebPort), *noGTKFlag, *browserFlag)
+				if cmd != nil && isApp {
 					_ = cmd.Wait()
 				}
 			}
@@ -252,8 +279,8 @@ func main() {
 			}
 
 			log.Println("🖥️  Opening application window...")
-			cmd := launchNativeWindow(uiURL, *noGTKFlag, *browserFlag)
-			if cmd != nil {
+			cmd, isApp := launchNativeWindow(uiURL, *noGTKFlag, *browserFlag)
+			if cmd != nil && isApp {
 				_ = cmd.Wait()
 				log.Println("Window closed by user, exiting...")
 				p, _ := os.FindProcess(os.Getpid())
