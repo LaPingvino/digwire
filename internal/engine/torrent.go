@@ -3456,6 +3456,98 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 		}
 	}
 
+	// Check if Folder Task
+	if e.folderManager != nil {
+		if fTask := e.folderManager.GetTask(infoHashHex); fTask != nil {
+			fTask.mu.Lock()
+			defer fTask.mu.Unlock()
+
+			var prog float64 = fTask.Progress
+			if fTask.TotalBytes > 0 && fTask.CompletedBytes > 0 {
+				prog = (float64(fTask.CompletedBytes) / float64(fTask.TotalBytes)) * 100.0
+			}
+
+			var fileDetails []TorrentFileDetail
+			var peerUser string
+			for idx, f := range fTask.Files {
+				fProg := float64(0)
+				if f.TotalBytes > 0 {
+					fProg = (float64(f.CompletedBytes) / float64(f.TotalBytes)) * 100.0
+				} else if f.State == "completed" {
+					fProg = 100.0
+				}
+				if peerUser == "" {
+					peerUser = extractPeerUser(f.URL)
+				}
+				fileDetails = append(fileDetails, TorrentFileDetail{
+					Index:          idx,
+					Path:           f.Path,
+					FullPath:       filepath.Join(fTask.DestPath, f.Path),
+					Length:         f.TotalBytes,
+					BytesCompleted: f.CompletedBytes,
+					Progress:       fProg,
+					Priority:       1,
+					Completed:      f.State == "completed" || (f.TotalBytes > 0 && f.CompletedBytes >= f.TotalBytes),
+					State:          f.State,
+					Status:         f.Status,
+					Error:          f.Error,
+				})
+			}
+
+			var peerDetails []PeerDetail
+			if peerUser != "" {
+				sourceDesc := "Soulseek P2P Peer"
+				if fTask.State == "peer_offline" {
+					sourceDesc = "Soulseek P2P Peer (Offline)"
+				} else if fTask.State == "downloading" {
+					sourceDesc = "Soulseek P2P Peer (Active Transfer)"
+				}
+				peerDetails = append(peerDetails, PeerDetail{
+					Addr:   peerUser,
+					Source: sourceDesc,
+				})
+			}
+
+			qualifier := SwarmQualifier{
+				Class:       "verified",
+				Label:       "FOLDER SWARM",
+				Badge:       "FOLDER SWARM",
+				Description: fmt.Sprintf("Unified Folder Download: %d files organized in subfolders", len(fTask.Files)),
+				UptimeRatio: 1.0,
+			}
+
+			ih := fTask.ID
+			if fTask.InfoHash != "" {
+				ih = fTask.InfoHash
+			}
+			mag := fTask.MagnetURI
+			if mag == "" {
+				mag = fmt.Sprintf("folder://%s", fTask.ID)
+			}
+
+			return &TorrentDetails{
+				InfoHash:        ih,
+				Name:            "📁 " + fTask.Name,
+				MagnetURI:       mag,
+				TotalBytes:      fTask.TotalBytes,
+				CompletedBytes:  fTask.CompletedBytes,
+				Progress:        prog,
+				DownloadDir:     e.cfg.DownloadDir,
+				SavePath:        fTask.DestPath,
+				State:           fTask.State,
+				Files:           fileDetails,
+				Peers:           peerDetails,
+				Seeders:         1,
+				TotalPeers:      1,
+				Platform:        "folder",
+				CreatedBy:       "Unified Folder Engine",
+				Qualifier:       &qualifier,
+				AvailabilityETA: "Folder Download",
+				Comment:         fTask.StatusMessage,
+			}, nil
+		}
+	}
+
 	// Check if HTTP Task
 	e.httpManager.mu.RLock()
 	task, exists := e.httpManager.tasks[infoHashHex]

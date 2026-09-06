@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"digwire/internal/search"
+	"github.com/bh90210/soul/server"
 )
 
 // FolderItemInput is the input payload for each file or subfolder in a folder download request
@@ -79,15 +81,78 @@ type FolderManager struct {
 	client      *http.Client
 }
 
+func extractPeerUser(rawURL string) string {
+	if strings.HasPrefix(rawURL, "slsk://") || strings.HasPrefix(rawURL, "soulseek://") {
+		if u, err := url.Parse(rawURL); err == nil {
+			return u.Host
+		}
+	}
+	return ""
+}
+
 // NewFolderManager initializes a new FolderManager
 func NewFolderManager(downloadDir string, engine *Engine) *FolderManager {
-	return &FolderManager{
+	fm := &FolderManager{
 		tasks:       make(map[string]*FolderTask),
 		downloadDir: downloadDir,
 		engine:      engine,
 		client: &http.Client{
 			Timeout: 60 * time.Second,
 		},
+	}
+	go fm.startAutoReconnectWorker()
+	return fm
+}
+
+func (m *FolderManager) startAutoReconnectWorker() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		m.mu.RLock()
+		var offlineTasks []*FolderTask
+		for _, t := range m.tasks {
+			t.mu.Lock()
+			if t.State == "peer_offline" {
+				offlineTasks = append(offlineTasks, t)
+			}
+			t.mu.Unlock()
+		}
+		m.mu.RUnlock()
+
+		for _, t := range offlineTasks {
+			t.mu.Lock()
+			if t.State != "peer_offline" {
+				t.mu.Unlock()
+				continue
+			}
+			var peerUser string
+			for _, f := range t.Files {
+				if f.State == "peer_offline" || f.State == "pending" {
+					if u := extractPeerUser(f.URL); u != "" {
+						peerUser = u
+						break
+					}
+				}
+			}
+			taskID := t.ID
+			taskName := t.Name
+			t.mu.Unlock()
+
+			if peerUser == "" {
+				continue
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			slsk := search.GetSoulseekClient()
+			st, err := slsk.QueryUserStatus(ctx, peerUser)
+			cancel()
+
+			if err == nil && st == server.StatusOnline {
+				log.Printf("[FolderManager] Peer %s is back online! Auto-resuming folder task %s (%s)", peerUser, taskID, taskName)
+				_ = m.Resume(taskID)
+			}
+		}
 	}
 }
 
@@ -317,6 +382,7 @@ func (t *FolderTask) runDownload(m *FolderManager) {
 		}
 	}()
 
+	peerOfflineUser := ""
 	for _, fileItem := range t.Files {
 		if t.ctx.Err() != nil {
 			break
@@ -330,6 +396,18 @@ func (t *FolderTask) runDownload(m *FolderManager) {
 		}
 
 		if fileItem.State == "completed" {
+			continue
+		}
+
+		fileUser := extractPeerUser(fileItem.URL)
+		if peerOfflineUser != "" && fileUser != "" && strings.EqualFold(fileUser, peerOfflineUser) {
+			t.mu.Lock()
+			if fileItem.State == "pending" {
+				fileItem.State = "peer_offline"
+				fileItem.Status = fmt.Sprintf("Waiting for %s...", peerOfflineUser)
+				fileItem.Error = fmt.Sprintf("Peer %s is offline", peerOfflineUser)
+			}
+			t.mu.Unlock()
 			continue
 		}
 
@@ -348,6 +426,12 @@ func (t *FolderTask) runDownload(m *FolderManager) {
 
 			t.downloadFileItem(m, item)
 		}(fileItem)
+
+		wg.Wait()
+
+		if fileItem.State == "peer_offline" && fileUser != "" {
+			peerOfflineUser = fileUser
+		}
 	}
 
 	wg.Wait()
@@ -379,11 +463,16 @@ func (t *FolderTask) runDownload(m *FolderManager) {
 	t.ETASeconds = 0
 
 	if !allCompleted {
-		t.State = "failed"
-		if failedCount > 0 {
-			t.StatusMessage = fmt.Sprintf("%d of %d files failed to download", failedCount, len(t.Files))
+		if peerOfflineUser != "" {
+			t.State = "peer_offline"
+			t.StatusMessage = fmt.Sprintf("💤 Peer %s is offline • Waiting for user to reconnect", peerOfflineUser)
 		} else {
-			t.StatusMessage = "Incomplete folder download"
+			t.State = "failed"
+			if failedCount > 0 {
+				t.StatusMessage = fmt.Sprintf("%d of %d files failed to download", failedCount, len(t.Files))
+			} else {
+				t.StatusMessage = "Incomplete folder download"
+			}
 		}
 		t.mu.Unlock()
 		if t.eng != nil {
@@ -468,6 +557,7 @@ func (t *FolderTask) downloadFileItem(m *FolderManager, item *FolderFileItem) {
 
 	// Check if this is a Soulseek P2P file transfer
 	if strings.HasPrefix(item.URL, "slsk://") || strings.HasPrefix(item.URL, "soulseek://") {
+		peerUser := extractPeerUser(item.URL)
 		t.mu.Lock()
 		item.State = "downloading"
 		item.Status = "Connecting to peer..."
@@ -476,6 +566,7 @@ func (t *FolderTask) downloadFileItem(m *FolderManager, item *FolderFileItem) {
 		t.mu.Unlock()
 
 		var err error
+		var isOffline bool
 		for attempt := 1; attempt <= 3; attempt++ {
 			if t.ctx.Err() != nil {
 				err = t.ctx.Err()
@@ -522,13 +613,23 @@ func (t *FolderTask) downloadFileItem(m *FolderManager, item *FolderFileItem) {
 			if err == nil {
 				break
 			}
+			if search.IsErrPeerOffline(err) {
+				isOffline = true
+				break
+			}
 		}
 
 		t.mu.Lock()
 		if err != nil {
-			item.State = "failed"
-			item.Error = err.Error()
-			item.Status = "Failed: " + err.Error()
+			if isOffline {
+				item.State = "peer_offline"
+				item.Error = fmt.Sprintf("Peer %s is offline", peerUser)
+				item.Status = fmt.Sprintf("💤 Peer offline (%s)", peerUser)
+			} else {
+				item.State = "failed"
+				item.Error = err.Error()
+				item.Status = "Failed: " + err.Error()
+			}
 			t.mu.Unlock()
 			return
 		}
@@ -730,7 +831,7 @@ func (m *FolderManager) Resume(id string) error {
 	task.State = "downloading"
 	task.StatusMessage = "Resuming download..."
 	for _, f := range task.Files {
-		if f.State == "failed" {
+		if f.State == "failed" || f.State == "peer_offline" {
 			f.State = "pending"
 			f.Status = "Pending"
 			f.Error = ""

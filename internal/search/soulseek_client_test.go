@@ -35,7 +35,7 @@ func TestSoulseekURIParsing(t *testing.T) {
 	res := parseSoulseekFile("ElectroUser", peer.File{
 		Name: "Music\\Caravan Palace\\Panic\\01 - Rock It For Me.mp3",
 		Size: 4096,
-	}, true, 0, 1000)
+	}, true, 0, 1000, "online")
 
 	if !strings.Contains(res.Artist, "Caravan Palace") {
 		t.Errorf("expected artist to be Caravan Palace, got '%s'", res.Artist)
@@ -45,5 +45,23 @@ func TestSoulseekURIParsing(t *testing.T) {
 	}
 	if res.Seeders != 1 {
 		t.Errorf("expected 1 seeder for free slot, got %d", res.Seeders)
+	}
+	if res.PeerStatus != "online" {
+		t.Errorf("expected PeerStatus 'online', got %s", res.PeerStatus)
+	}
+}
+
+func TestSoulseekOfflineTracking(t *testing.T) {
+	client := GetSoulseekClient()
+	if client.IsPeerOffline("test_offline_user") {
+		t.Errorf("expected user not to be offline initially")
+	}
+
+	client.MarkPeerOffline("test_offline_user")
+	if !client.IsPeerOffline("test_offline_user") {
+		t.Errorf("expected user to be detected as offline after MarkPeerOffline")
+	}
+	if !client.IsPeerOffline("TEST_OFFLINE_USER") {
+		t.Errorf("expected case-insensitive match for offline user")
 	}
 }

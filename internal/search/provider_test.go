@@ -27,9 +27,12 @@ func TestSoulseekProviderSanity(t *testing.T) {
 		Name: `@@abcd\Music\Queen\A Night at the Opera\01 - Death on Two Legs.flac`,
 		Size: 25000000,
 	}
-	res := parseSoulseekFile("queen_fan", testFile, true, 0, 500000)
+	res := parseSoulseekFile("queen_fan", testFile, true, 0, 500000, "online")
 	if res.ProviderType != "soulseek" {
 		t.Errorf("expected ProviderType 'soulseek', got %q", res.ProviderType)
+	}
+	if res.PeerStatus != "online" {
+		t.Errorf("expected PeerStatus 'online', got %q", res.PeerStatus)
 	}
 	if res.Artist != "Queen" {
 		t.Errorf("expected Artist 'Queen', got %q", res.Artist)

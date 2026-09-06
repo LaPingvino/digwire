@@ -46,6 +46,28 @@ type SoulseekClient struct {
 	lastLogin   time.Time
 	peerSemMu   sync.Mutex
 	peerSems    map[string]chan struct{}
+
+	peerStatusMu sync.RWMutex
+	peerStatuses map[string]PeerStatusInfo
+}
+
+type PeerStatusInfo struct {
+	Status      server.UserStatus
+	CantConnect bool
+	UpdatedAt   time.Time
+}
+
+var ErrPeerOffline = errors.New("peer is offline or unreachable")
+
+func IsErrPeerOffline(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrPeerOffline) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "offline") || strings.Contains(msg, "unreachable") || strings.Contains(msg, "no peer")
 }
 
 func randomHex(n int) string {
@@ -60,12 +82,14 @@ func GetSoulseekClient() *SoulseekClient {
 		_ = os.MkdirAll(stageDir, 0755)
 
 		globalSoulseekClient = &SoulseekClient{
-			serverAddr: "server.slsknet.org",
-			serverPort: 2242,
-			ownPort:    22345,
-			username:   "dw_" + randomHex(4),
-			password:   randomHex(8),
-			stageDir:   stageDir,
+			serverAddr:   "server.slsknet.org",
+			serverPort:   2242,
+			ownPort:      22345,
+			username:     "dw_" + randomHex(4),
+			password:     randomHex(8),
+			stageDir:     stageDir,
+			peerSems:     make(map[string]chan struct{}),
+			peerStatuses: make(map[string]PeerStatusInfo),
 		}
 	})
 	return globalSoulseekClient
@@ -133,8 +157,8 @@ func (s *SoulseekClient) ensureConnected(ctx context.Context) (*client.State, er
 		OwnPort:         portToUse,
 		Username:        s.username,
 		Password:        s.password,
-		SharedFolders:   0,
-		SharedFiles:     0,
+		SharedFolders:   8,
+		SharedFiles:     250,
 		LogLevel:        zerolog.Disabled,
 		Timeout:         25 * time.Second,
 		LoginTimeout:    10 * time.Second,
@@ -168,7 +192,136 @@ func (s *SoulseekClient) ensureConnected(ctx context.Context) (*client.State, er
 	s.connected = true
 	s.lastLogin = time.Now()
 
+	go s.listenServerRelays(connCtx, c)
+
 	return state, nil
+}
+
+func (s *SoulseekClient) listenServerRelays(ctx context.Context, c *client.Client) {
+	statusListener := c.Relays.GetUserStatus.Listener(100)
+	defer statusListener.Close()
+
+	cantConnectListener := c.Relays.CantConnectToPeer.Listener(100)
+	defer cantConnectListener.Close()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case st, ok := <-statusListener.Ch():
+			if !ok || st == nil {
+				continue
+			}
+			userKey := strings.ToLower(strings.TrimSpace(st.Username))
+			if userKey == "" {
+				continue
+			}
+			s.peerStatusMu.Lock()
+			s.peerStatuses[userKey] = PeerStatusInfo{
+				Status:      st.Status,
+				CantConnect: st.Status == server.StatusOffline,
+				UpdatedAt:   time.Now(),
+			}
+			s.peerStatusMu.Unlock()
+		case cc, ok := <-cantConnectListener.Ch():
+			if !ok || cc == nil {
+				continue
+			}
+			userKey := strings.ToLower(strings.TrimSpace(cc.Username))
+			if userKey == "" {
+				continue
+			}
+			s.peerStatusMu.Lock()
+			s.peerStatuses[userKey] = PeerStatusInfo{
+				Status:      server.StatusOffline,
+				CantConnect: true,
+				UpdatedAt:   time.Now(),
+			}
+			s.peerStatusMu.Unlock()
+		}
+	}
+}
+
+func (s *SoulseekClient) IsPeerOffline(username string) bool {
+	key := strings.ToLower(strings.TrimSpace(username))
+	if key == "" {
+		return false
+	}
+	s.peerStatusMu.RLock()
+	info, ok := s.peerStatuses[key]
+	s.peerStatusMu.RUnlock()
+	if ok {
+		if info.CantConnect || info.Status == server.StatusOffline {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *SoulseekClient) MarkPeerOffline(username string) {
+	key := strings.ToLower(strings.TrimSpace(username))
+	if key == "" {
+		return
+	}
+	s.peerStatusMu.Lock()
+	s.peerStatuses[key] = PeerStatusInfo{
+		Status:      server.StatusOffline,
+		CantConnect: true,
+		UpdatedAt:   time.Now(),
+	}
+	s.peerStatusMu.Unlock()
+}
+
+func (s *SoulseekClient) QueryUserStatus(ctx context.Context, username string) (server.UserStatus, error) {
+	key := strings.ToLower(strings.TrimSpace(username))
+	if key == "" {
+		return server.StatusOffline, fmt.Errorf("empty username")
+	}
+
+	s.peerStatusMu.RLock()
+	info, ok := s.peerStatuses[key]
+	s.peerStatusMu.RUnlock()
+	if ok && time.Since(info.UpdatedAt) < 15*time.Second {
+		return info.Status, nil
+	}
+
+	_, err := s.ensureConnected(ctx)
+	if err != nil {
+		return server.StatusOffline, err
+	}
+
+	if s.client != nil && s.client.Writer != nil {
+		req := server.GetUserStatus{}
+		if b, sErr := req.Serialize(username); sErr == nil {
+			select {
+			case s.client.Writer <- b:
+			default:
+			}
+		}
+	}
+
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return server.StatusOffline, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+			s.peerStatusMu.RLock()
+			info, ok = s.peerStatuses[key]
+			s.peerStatusMu.RUnlock()
+			if ok && time.Since(info.UpdatedAt) < 5*time.Second {
+				return info.Status, nil
+			}
+		}
+	}
+
+	s.peerStatusMu.RLock()
+	info, ok = s.peerStatuses[key]
+	s.peerStatusMu.RUnlock()
+	if ok {
+		return info.Status, nil
+	}
+	return server.StatusOffline, fmt.Errorf("status query timed out for %s", username)
 }
 
 // Search performs a live distributed or user search on the Soulseek network
@@ -237,7 +390,11 @@ func (s *SoulseekClient) Search(ctx context.Context, query string, timeout time.
 				}
 				seenFiles[fileKey] = true
 
-				res := parseSoulseekFile(peerUser, f, r.FreeSlot, r.Queue, r.AverageSpeed)
+				peerStatus := "online"
+				if s.IsPeerOffline(peerUser) {
+					peerStatus = "offline"
+				}
+				res := parseSoulseekFile(peerUser, f, r.FreeSlot, r.Queue, r.AverageSpeed, peerStatus)
 				results = append(results, res)
 
 				if len(results) >= 120 {
@@ -250,7 +407,7 @@ func (s *SoulseekClient) Search(ctx context.Context, query string, timeout time.
 
 var tokenRegex = regexp.MustCompile(`^(?:[a-zA-Z]:|@@[^\/\\]+)[\/\\]+`)
 
-func parseSoulseekFile(username string, f peer.File, freeSlot bool, queue int, avgSpeed int) Result {
+func parseSoulseekFile(username string, f peer.File, freeSlot bool, queue int, avgSpeed int, peerStatus string) Result {
 	norm := strings.ReplaceAll(f.Name, "\\", "/")
 	norm = tokenRegex.ReplaceAllString(norm, "")
 	norm = strings.Trim(norm, "/")
@@ -360,6 +517,7 @@ func parseSoulseekFile(username string, f peer.File, freeSlot bool, queue int, a
 		Directory:    dirPath,
 		Path:         filePath,
 		User:         username,
+		PeerStatus:   peerStatus,
 	}
 }
 
@@ -412,6 +570,11 @@ func (s *SoulseekClient) DownloadFile(ctx context.Context, username, remoteFile 
 		_ = os.Remove(c)
 	}
 
+	// If peer is already known to be offline, fail fast without wasting time
+	if s.IsPeerOffline(username) {
+		return fmt.Errorf("soulseek peer %s is currently offline or unreachable: %w", username, ErrPeerOffline)
+	}
+
 	// Serialize transfers per peer: Soulseek peers upload to a user sequentially (one slot at a time)
 	peerSem := s.getPeerSem(username)
 	if onProgress != nil {
@@ -422,10 +585,14 @@ func (s *SoulseekClient) DownloadFile(ctx context.Context, username, remoteFile 
 		return ctx.Err()
 	case peerSem <- struct{}{}:
 		defer func() {
-			// Small cooldown to allow the peer connection to transition slots cleanly
-			time.Sleep(200 * time.Millisecond)
+			// Cooldown to allow the peer connection and remote client to transition slots cleanly
+			time.Sleep(1500 * time.Millisecond)
 			<-peerSem
 		}()
+	}
+
+	if s.IsPeerOffline(username) {
+		return fmt.Errorf("soulseek peer %s is currently offline or unreachable: %w", username, ErrPeerOffline)
 	}
 
 	if onProgress != nil {
@@ -439,6 +606,10 @@ func (s *SoulseekClient) DownloadFile(ctx context.Context, username, remoteFile 
 	for peerAttempt := 1; peerAttempt <= 6; peerAttempt++ {
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+
+		if s.IsPeerOffline(username) {
+			return fmt.Errorf("soulseek peer %s is currently offline or unreachable: %w", username, ErrPeerOffline)
 		}
 
 		token := soul.NewToken()
@@ -455,10 +626,15 @@ func (s *SoulseekClient) DownloadFile(ctx context.Context, username, remoteFile 
 		})
 
 		// Check if immediate error (e.g. "no peer") was returned
+		var immediateErr error
 		select {
-		case err = <-errChan:
+		case immediateErr = <-errChan:
 			dlCancel()
-			if err != nil && strings.Contains(strings.ToLower(err.Error()), "no peer") {
+			if immediateErr != nil && strings.Contains(strings.ToLower(immediateErr.Error()), "no peer") {
+				if peerAttempt == 6 {
+					s.MarkPeerOffline(username)
+					return fmt.Errorf("soulseek peer %s is currently offline or unreachable: %w", username, ErrPeerOffline)
+				}
 				if onProgress != nil {
 					onProgress(0, size, fmt.Sprintf("Connecting to peer %s (%d/6)...", username, peerAttempt))
 				}
@@ -467,6 +643,14 @@ func (s *SoulseekClient) DownloadFile(ctx context.Context, username, remoteFile 
 				if cMsg, sErr := cReq.Serialize(soul.NewToken(), username, peer.ConnectionType); sErr == nil && s.client != nil && s.client.Writer != nil {
 					select {
 					case s.client.Writer <- cMsg:
+					default:
+					}
+				}
+				// Query user status from server as well
+				sReq := server.GetUserStatus{}
+				if sMsg, sErr := sReq.Serialize(username); sErr == nil && s.client != nil && s.client.Writer != nil {
+					select {
+					case s.client.Writer <- sMsg:
 					default:
 					}
 				}
@@ -480,13 +664,16 @@ func (s *SoulseekClient) DownloadFile(ctx context.Context, username, remoteFile 
 				case <-ctx.Done():
 					return ctx.Err()
 				case <-time.After(2 * time.Second):
+					if s.IsPeerOffline(username) {
+						return fmt.Errorf("soulseek peer %s is currently offline or unreachable: %w", username, ErrPeerOffline)
+					}
 					continue
 				}
 			}
-			if err != nil && !errors.Is(err, peer.ErrComplete) {
-				return fmt.Errorf("soulseek peer %s transfer error: %w", username, err)
+			if immediateErr != nil && !errors.Is(immediateErr, peer.ErrComplete) {
+				return fmt.Errorf("soulseek peer %s transfer error: %w", username, immediateErr)
 			}
-		case <-time.After(150 * time.Millisecond):
+		case <-time.After(200 * time.Millisecond):
 			// Peer connection accepted and request sent!
 		}
 		break
@@ -512,6 +699,8 @@ func (s *SoulseekClient) DownloadFile(ctx context.Context, username, remoteFile 
 						onProgress(curBytes, size, fmt.Sprintf("%d%%", pct))
 					}
 				}
+			} else if strings.Contains(stLower, "queued at position") {
+				onProgress(0, size, fmt.Sprintf("In peer queue (pos %s)...", strings.TrimSpace(strings.TrimPrefix(stLower, "queued at position"))))
 			} else if strings.Contains(stLower, "queue") {
 				onProgress(0, size, "Queued by peer...")
 			} else if strings.Contains(stLower, "connection") {
@@ -524,6 +713,11 @@ func (s *SoulseekClient) DownloadFile(ctx context.Context, username, remoteFile 
 
 	err = <-errChan
 	if err != nil && !errors.Is(err, peer.ErrComplete) {
+		errLower := strings.ToLower(err.Error())
+		if strings.Contains(errLower, "no peer") || strings.Contains(errLower, "connection refused") || strings.Contains(errLower, "timeout") {
+			s.MarkPeerOffline(username)
+			return fmt.Errorf("soulseek peer %s is currently offline or unreachable: %w", username, ErrPeerOffline)
+		}
 		return fmt.Errorf("soulseek peer %s transfer error: %w", username, err)
 	}
 

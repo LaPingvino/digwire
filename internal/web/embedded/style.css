@@ -318,6 +318,13 @@ body {
   color: var(--adw-error);
 }
 
+.badge-peer_offline,
+.badge-offline {
+  background: rgba(246, 211, 45, 0.2);
+  color: #f6d32d;
+  border: 1px solid rgba(246, 211, 45, 0.4);
+}
+
 /* Swarm Archetype Qualifier Badges */
 .badge-qualifier {
   text-transform: none;

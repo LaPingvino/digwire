@@ -22,6 +22,7 @@ import (
 	"digwire/internal/config"
 	"digwire/internal/engine"
 	"digwire/internal/search"
+	"github.com/bh90210/soul/server"
 )
 
 //go:embed embedded/*
@@ -72,6 +73,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/torrents/{hash}/resume", s.handleResumeTorrent)
 	s.mux.HandleFunc("DELETE /api/torrents/{hash}", s.handleDeleteTorrent)
 	s.mux.HandleFunc("GET /api/search", s.handleSearch)
+	s.mux.HandleFunc("GET /api/soulseek/peer-status", s.handleGetSoulseekPeerStatus)
 	s.mux.HandleFunc("GET /api/stats", s.handleStats)
 	s.mux.HandleFunc("GET /api/config", s.handleGetConfig)
 	s.mux.HandleFunc("POST /api/config", s.handleSaveConfig)
@@ -1266,3 +1268,40 @@ func (s *Server) handleExtractSubtitle(w http.ResponseWriter, r *http.Request) {
 		"path":   outPath,
 	})
 }
+
+func (s *Server) handleGetSoulseekPeerStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	username := strings.TrimSpace(r.URL.Query().Get("user"))
+	if username == "" {
+		http.Error(w, `{"error":"missing user parameter"}`, http.StatusBadRequest)
+		return
+	}
+
+	slsk := search.GetSoulseekClient()
+	isOffline := slsk.IsPeerOffline(username)
+	statusStr := "unknown"
+	if isOffline {
+		statusStr = "offline"
+	} else {
+		ctx, cancel := context.WithTimeout(r.Context(), 1200*time.Millisecond)
+		defer cancel()
+		if st, err := slsk.QueryUserStatus(ctx, username); err == nil {
+			switch st {
+			case server.StatusOffline:
+				statusStr = "offline"
+				isOffline = true
+			case server.StatusAway:
+				statusStr = "away"
+			case server.StatusOnline:
+				statusStr = "online"
+			}
+		}
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"user":    username,
+		"status":  statusStr,
+		"offline": isOffline,
+	})
+}
+

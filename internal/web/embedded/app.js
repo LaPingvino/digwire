@@ -359,10 +359,13 @@ function getTorrentMetaString(t) {
       folderMeta = `📁 ${countStr}`;
     }
 
+    const isOffline = t.state === 'peer_offline' || (t.status_message && (t.status_message.toLowerCase().includes('offline') || t.status_message.toLowerCase().includes('unreachable')));
     if (t.state === 'creating_swarm') {
       folderMeta += ` • <span style="color: #33d17a; font-weight: 500;">${ICONS.zap || ''}Packaging BitTorrent swarm for DHT...</span>`;
-    } else if (t.state === 'completed' || t.state === 'seeding' || (t.progress >= 100 && t.state !== 'failed')) {
+    } else if (t.state === 'completed' || t.state === 'seeding' || (t.progress >= 100 && t.state !== 'failed' && t.state !== 'peer_offline')) {
       folderMeta += ` • <span style="color: #57e389; font-weight: 500;">Complete • Seeding swarm</span>`;
+    } else if (isOffline) {
+      folderMeta += ` • <span style="color: #f6d32d; font-weight: 500;" title="${escapeHtml(t.status_message || 'Peer is offline')}">${escapeHtml(t.status_message || '💤 Peer is offline • Will resume when online')}</span>`;
     } else if (isPaused) {
       folderMeta += ` • <span style="color: var(--adw-dim-label);">Paused</span>`;
     } else if (t.state === 'failed') {
@@ -461,9 +464,9 @@ function getCardActionsHtml(t) {
     }
     <button class="btn btn-icon" title="Copy Magnet / URL" aria-label="Copy Magnet link for ${escapeHtml(t.name)}" onclick="copyToClipboard('${encodeURI(t.magnet_uri || '')}', this)">${ICONS.magnet}</button>
     <button class="btn btn-icon" title="Inspect Details & Peers" aria-label="Inspect details and peers for ${escapeHtml(t.name)}" onclick="openDetailsModal('${t.info_hash}')">${ICONS.info}</button>
-    ${(isPaused || t.state === 'failed') ? 
-      `<button class="btn btn-icon" title="Resume" aria-label="Resume download for ${escapeHtml(t.name)}" onclick="resumeTorrent('${t.info_hash}')">${ICONS.play}</button>` :
-      `<button class="btn btn-icon" title="Pause" aria-label="Pause download for ${escapeHtml(t.name)}" onclick="pauseTorrent('${t.info_hash}')">${ICONS.pause}</button>`
+    ${(isPaused || t.state === 'failed' || t.state === 'peer_offline' || (t.status_message && (t.status_message.toLowerCase().includes('offline') || t.status_message.toLowerCase().includes('unreachable')))) ? 
+      `<button class="btn btn-icon" title="Resume download" aria-label="Resume download for ${escapeHtml(t.name)}" onclick="resumeTorrent('${t.info_hash}')">${ICONS.play}</button>` :
+      `<button class="btn btn-icon" title="Pause download" aria-label="Pause download for ${escapeHtml(t.name)}" onclick="pauseTorrent('${t.info_hash}')">${ICONS.pause}</button>`
     }
     <button class="btn btn-icon" style="color: var(--adw-error);" title="Delete" aria-label="Delete ${escapeHtml(t.name)}" onclick="promptDeleteTorrent('${t.info_hash}', '${t.name.replace(/'/g, "\\'")}')">${ICONS.trash}</button>
   `;
@@ -511,7 +514,7 @@ function createTorrentCardElement(t) {
       <div style="display: flex; gap: 6px; align-items: center; flex-shrink: 0;">
         ${platformBadge}
         ${getQualifierBadge(t.qualifier)}
-        <span class="torrent-badge badge-${t.state}" aria-label="Status: ${t.state}">${t.state}</span>
+        <span class="torrent-badge ${t.state === 'peer_offline' || (t.state === 'failed' && t.status_message && (t.status_message.toLowerCase().includes('offline') || t.status_message.toLowerCase().includes('unreachable'))) ? 'badge-peer_offline' : `badge-${t.state}`}" aria-label="Status: ${t.state}">${t.state === 'peer_offline' || (t.state === 'failed' && t.status_message && (t.status_message.toLowerCase().includes('offline') || t.status_message.toLowerCase().includes('unreachable'))) ? '💤 peer offline' : t.state}</span>
       </div>
     </div>
 
@@ -550,8 +553,10 @@ function updateTorrentCardElement(cardEl, t) {
   // Update badges
   const badgeContainer = cardEl.querySelector('.card-header > div:last-child');
   const platformBadge = getPlatformBadge(t.platform);
-  const qualifierHtml = getQualifierBadge(t.qualifier);
-  const stateBadgeHtml = `<span class="torrent-badge badge-${t.state}" aria-label="Status: ${t.state}">${t.state}</span>`;
+  const isCardOffline = t.state === 'peer_offline' || (t.state === 'failed' && t.status_message && (t.status_message.toLowerCase().includes('offline') || t.status_message.toLowerCase().includes('unreachable')));
+  const stateBadgeClass = isCardOffline ? 'badge-peer_offline' : `badge-${t.state}`;
+  const stateBadgeText = isCardOffline ? '💤 peer offline' : t.state;
+  const stateBadgeHtml = `<span class="torrent-badge ${stateBadgeClass}" aria-label="Status: ${stateBadgeText}">${stateBadgeText}</span>`;
   const fullBadgeHtml = platformBadge + qualifierHtml + stateBadgeHtml;
   if (badgeContainer && badgeContainer.innerHTML !== fullBadgeHtml) {
     badgeContainer.innerHTML = fullBadgeHtml;
@@ -1186,7 +1191,10 @@ function switchDetailTab(tab) {
         const isSkipped = f.priority === 0 && !isCompleted;
         const icon = getIconForFile(f.path);
         let progressCell = `${(f.progress || 0).toFixed(0)}%`;
-        if (f.state === 'downloading') {
+        const isFileOffline = f.state === 'peer_offline' || (f.status && f.status.toLowerCase().includes('offline')) || (f.error && f.error.toLowerCase().includes('offline'));
+        if (isFileOffline) {
+          progressCell = `<span style="color: #f6d32d; font-weight: 500; font-size: 11px;" title="${escapeHtml(f.error || f.status || 'Peer offline')}">💤 ${escapeHtml(f.status || 'Peer Offline')}</span>`;
+        } else if (f.state === 'downloading') {
           const prog = f.progress || 0;
           const statusLbl = f.status || 'Downloading';
           progressCell = `
@@ -1202,7 +1210,8 @@ function switchDetailTab(tab) {
         } else if (f.state === 'failed') {
           progressCell = `<span style="color: #ed333b; font-weight: 500; font-size: 11px;" title="${escapeHtml(f.error || 'Download failed')}">✗ Failed</span>`;
         } else if (f.state === 'pending') {
-          progressCell = `<span style="color: var(--adw-dim-label); font-size: 11px;">Pending</span>`;
+          const pendingText = f.status || 'Pending';
+          progressCell = `<span style="color: var(--adw-dim-label); font-size: 11px;">${escapeHtml(pendingText)}</span>`;
         }
 
         rowsHtml += `
@@ -1965,9 +1974,19 @@ function generatePathBreadcrumbsHtml(r, idx) {
   // 1. User / Source Peer
   if (r.user) {
     const userBadge = userCount > 0 ? `<span class="crumb-counter" title="${userCount} files from this user in current search">${userCount}</span>` : '';
+    let userStatusBadge = '';
+    if (r.provider_type === 'soulseek') {
+      if (r.peer_status === 'offline') {
+        userStatusBadge = ` <span style="background: rgba(246, 211, 45, 0.2); color: #f6d32d; font-size: 10px; font-weight: 600; padding: 1px 5px; border-radius: 4px;" title="User is currently offline">💤 Offline</span>`;
+      } else if (r.seeders > 0) {
+        userStatusBadge = ` <span style="background: rgba(46, 194, 126, 0.15); color: #57e389; font-size: 10px; font-weight: 600; padding: 1px 5px; border-radius: 4px;" title="Free upload slot available">⚡ Free Slot</span>`;
+      } else if (r.leechers !== undefined) {
+        userStatusBadge = ` <span style="background: rgba(229, 165, 10, 0.15); color: #f6d32d; font-size: 10px; font-weight: 500; padding: 1px 5px; border-radius: 4px;" title="${r.leechers} queued files by this peer">⏳ Queue: ${r.leechers}</span>`;
+      }
+    }
     crumbs.push(`
       <span class="crumb-folder" title="Source User: ${escapeHtml(r.user)}. Click to view & download all files from this user." onclick="showGroupedDownload('user', '${escapeJs(r.user)}', event)">
-        👤 ${escapeHtml(r.user)}${userBadge}
+        👤 ${escapeHtml(r.user)}${userBadge}${userStatusBadge}
       </span>
     `);
   }
@@ -2581,6 +2600,20 @@ function renderSearchResults() {
         bodyHtml = g.items.map(({ result: item, idx: itemIdx }) => renderFolderTrackRow(item, itemIdx)).join('');
       }
 
+      const isGroupOffline = g.peer_status === 'offline' || g.items.some(it => it.result.peer_status === 'offline');
+      let slotStatHtml = '';
+      if (isGroupOffline) {
+        slotStatHtml = `<span style="background: rgba(246, 211, 45, 0.2); color: #f6d32d; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 6px;">💤 Peer Offline</span>`;
+      } else if (g.provider_type === 'soulseek') {
+        const hasFreeSlot = g.items.some(it => (it.result.seeders || 0) > 0);
+        const queueLen = g.items[0]?.result?.leechers || 0;
+        if (hasFreeSlot) {
+          slotStatHtml = `<span style="color: #57e389; font-weight: 600; font-size: 11px;">⚡ Free Slot</span>`;
+        } else {
+          slotStatHtml = `<span style="color: #f6d32d; font-weight: 500; font-size: 11px;">⏳ In Queue (${queueLen})</span>`;
+        }
+      }
+
       return `
         <div class="folder-group-card" id="folder-group-${groupIdx}">
           <div class="folder-group-header">
@@ -2596,6 +2629,7 @@ function renderSearchResults() {
                 <span>${ICONS.package} ${formatBytes(g.totalBytes)}</span>
                 <span>${ICONS.folder} ${itemsCount} ${itemsCount === 1 ? 'item' : 'tracks/files'}</span>
                 ${albumStatsText}
+                ${slotStatHtml}
                 <span class="provider-badge ${tagClass}">${escapeHtml(g.provider || g.provider_type)}</span>
               </div>
             </div>
@@ -2604,9 +2638,9 @@ function renderSearchResults() {
                 <span class="emoji-face" style="margin-right: 3px;">📦</span>
                 <span>Files</span>
               </button>
-              <button class="btn btn-primary btn-sm" title="Download entire folder as single download with automated swarm creation afterwards" onclick="downloadFolderGroup(${groupIdx}, this)">
+              <button class="btn ${isGroupOffline ? 'btn-warning' : 'btn-primary'} btn-sm" title="${isGroupOffline ? 'Peer is currently offline. Download will start and resume once user reconnects.' : 'Download entire folder as single download with automated swarm creation afterwards'}" onclick="downloadFolderGroup(${groupIdx}, this)">
                 <span class="emoji-face" style="margin-right: 3px;">📥</span>
-                <span>${downloadBtnLabel}</span>
+                <span>${isGroupOffline ? downloadBtnLabel + ' (User Offline)' : downloadBtnLabel}</span>
               </button>
             </div>
           </div>
@@ -2631,10 +2665,15 @@ function renderSearchResults() {
     let leechersHtml = '';
     if (r.seeders !== undefined && r.seeders >= 0) {
       if (r.provider_type === 'soulseek') {
-        const slotColor = r.seeders > 0 ? 'var(--adw-success)' : 'var(--adw-warning)';
-        const slotText = r.seeders > 0 ? 'Free Slot' : 'Queued';
-        seedersHtml = `<span style="color: ${slotColor}; font-weight: 600;">${ICONS.arrowUp}${slotText}</span>`;
-        leechersHtml = `<span>${ICONS.arrowDown}${r.leechers || 0} in queue</span>`;
+        if (r.peer_status === 'offline') {
+          seedersHtml = `<span style="background: rgba(246, 211, 45, 0.2); color: #f6d32d; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 6px;">💤 Peer Offline</span>`;
+          leechersHtml = `<span>User unreachable</span>`;
+        } else {
+          const slotColor = r.seeders > 0 ? 'var(--adw-success)' : 'var(--adw-warning)';
+          const slotText = r.seeders > 0 ? 'Free Slot' : 'Queued';
+          seedersHtml = `<span style="color: ${slotColor}; font-weight: 600;">${ICONS.arrowUp}${slotText}</span>`;
+          leechersHtml = `<span>${ICONS.arrowDown}${r.leechers || 0} in queue</span>`;
+        }
       } else {
         const seedColor = r.seeders > 0 ? 'var(--adw-success)' : 'var(--adw-dim-label)';
         seedersHtml = `<span style="color: ${seedColor}; font-weight: 600;">${ICONS.arrowUp}${r.seeders} seeds</span>`;

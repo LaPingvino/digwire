@@ -32,6 +32,7 @@ type Result struct {
 	Artist       string                     `json:"artist,omitempty"`
 	Album        string                     `json:"album,omitempty"`
 	User         string                     `json:"user,omitempty"`
+	PeerStatus   string                     `json:"peer_status,omitempty"`
 }
 
 // Provider is the interface that all search backends must implement.
