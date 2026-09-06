@@ -33,6 +33,9 @@ type Result struct {
 	Album        string                     `json:"album,omitempty"`
 	User         string                     `json:"user,omitempty"`
 	PeerStatus   string                     `json:"peer_status,omitempty"`
+	FreeSlot     bool                       `json:"free_slot"`
+	Queue        int                        `json:"queue"`
+	UploadSpeed  int                        `json:"upload_speed,omitempty"`
 }
 
 // Provider is the interface that all search backends must implement.

@@ -3280,6 +3280,13 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 				mag = fmt.Sprintf("folder://%s", task.ID)
 			}
 
+			folderPeers := 0
+			folderSeeders := 0
+			if task.State == "downloading" {
+				folderPeers = 1
+				folderSeeders = 1
+			}
+
 			statuses = append(statuses, TorrentStatus{
 				InfoHash:        ih,
 				Name:            "📁 " + task.Name,
@@ -3292,9 +3299,9 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 				ETASeconds:      task.ETASeconds,
 				State:           task.State,
 				SavePath:        task.DestPath,
-				Seeders:         0,
+				Seeders:         folderSeeders,
 				Leechers:        0,
-				Peers:           0,
+				Peers:           folderPeers,
 				Files:           filePaths,
 				AddedAt:         task.AddedAt,
 				Platform:        "folder",
@@ -3324,68 +3331,6 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-
-	// Check if Folder Task
-	if e.folderManager != nil {
-		if fTask := e.folderManager.GetTask(infoHashHex); fTask != nil {
-			fTask.mu.Lock()
-			defer fTask.mu.Unlock()
-			var files []TorrentFileDetail
-			for idx, f := range fTask.Files {
-				var fileProg float64 = 0
-				if f.TotalBytes > 0 {
-					fileProg = (float64(f.CompletedBytes) / float64(f.TotalBytes)) * 100.0
-				} else if f.State == "completed" {
-					fileProg = 100.0
-				}
-				files = append(files, TorrentFileDetail{
-					Index:          idx,
-					Path:           f.Path,
-					FullPath:       filepath.Join(fTask.DestPath, f.Path),
-					Length:         f.TotalBytes,
-					BytesCompleted: f.CompletedBytes,
-					Progress:       fileProg,
-					Priority:       1,
-					Completed:      f.State == "completed",
-					State:          f.State,
-					Status:         f.Status,
-					Error:          f.Error,
-				})
-			}
-			qualifier := SwarmQualifier{
-				Class:       "verified",
-				Label:       "FOLDER SWARM",
-				Badge:       "FOLDER SWARM",
-				Description: fmt.Sprintf("Unified Folder Download: %d files", len(fTask.Files)),
-				UptimeRatio: 1.0,
-			}
-			ih := fTask.ID
-			if fTask.InfoHash != "" {
-				ih = fTask.InfoHash
-			}
-			mag := fTask.MagnetURI
-			if mag == "" {
-				mag = fmt.Sprintf("folder://%s", fTask.ID)
-			}
-			return &TorrentDetails{
-				InfoHash:       ih,
-				Name:           fTask.Name,
-				MagnetURI:      mag,
-				TotalBytes:     fTask.TotalBytes,
-				CompletedBytes: fTask.CompletedBytes,
-				Progress:       fTask.Progress,
-				DownloadDir:    e.cfg.DownloadDir,
-				SavePath:       fTask.DestPath,
-				State:          fTask.State,
-				Files:          files,
-				Seeders:        0,
-				TotalPeers:     0,
-				Platform:       "folder",
-				CreatedBy:      "Digwire Folder Engine",
-				Qualifier:      &qualifier,
-			}, nil
-		}
-	}
 
 	// Check if Media Task
 	if e.mediaManager != nil {
@@ -3532,6 +3477,15 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 				mag = fmt.Sprintf("folder://%s", fTask.ID)
 			}
 
+			folderPeers := 0
+			folderSeeders := 0
+			if fTask.State == "downloading" {
+				folderPeers = 1
+				folderSeeders = 1
+			} else if fTask.State != "peer_offline" && fTask.State != "failed" && peerUser != "" {
+				folderPeers = 1
+			}
+
 			return &TorrentDetails{
 				InfoHash:        ih,
 				Name:            "📁 " + fTask.Name,
@@ -3544,8 +3498,8 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 				State:           fTask.State,
 				Files:           fileDetails,
 				Peers:           peerDetails,
-				Seeders:         1,
-				TotalPeers:      1,
+				Seeders:         folderSeeders,
+				TotalPeers:      folderPeers,
 				Platform:        "folder",
 				CreatedBy:       "Unified Folder Engine",
 				Qualifier:       &qualifier,

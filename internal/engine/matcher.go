@@ -230,7 +230,7 @@ func buildSearchQueries(filename string) []string {
 	return queries
 }
 
-func probeHostTorrent(ctx context.Context, fileURL string, task *HTTPTask) (*SwarmSuggestion, error) {
+func probeHostTorrent(ctx context.Context, e *Engine, fileURL string, task *HTTPTask) (*SwarmSuggestion, error) {
 	torrentURL := fileURL + ".torrent"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, torrentURL, nil)
 	if err != nil {
@@ -270,12 +270,20 @@ func probeHostTorrent(ctx context.Context, fileURL string, task *HTTPTask) (*Swa
 					mag += "&tr=" + url.QueryEscape(tr)
 				}
 			}
+			sCount := -1
+			pCount := -1
+			if e != nil {
+				if sc, lc, err := e.ScrapeSwarm(ctx, mag); err == nil {
+					sCount = sc
+					pCount = lc
+				}
+			}
 			return &SwarmSuggestion{
 				InfoHash:   hash,
 				MagnetURI:  mag,
 				Name:       info.BestName(),
-				Seeders:    25,
-				Peers:      5,
+				Seeders:    sCount,
+				Peers:      pCount,
 				TotalBytes: info.TotalLength(),
 				Provider:   "Source Host (.torrent)",
 				IsPartial:  false,
@@ -326,7 +334,7 @@ func (e *Engine) FindSuggestedSwarm(ctx context.Context, task *HTTPTask, searchM
 	}
 
 	// STAGE 1: Probe host directly for `<URL>.torrent` (e.g. Ubuntu, Debian, Arch, Fedora mirrors)
-	if sugg, err := probeHostTorrent(ctx, task.URL, task); err == nil && sugg != nil {
+	if sugg, err := probeHostTorrent(ctx, e, task.URL, task); err == nil && sugg != nil {
 		return sugg, nil
 	}
 

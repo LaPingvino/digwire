@@ -1028,7 +1028,7 @@ function switchDetailTab(tab) {
     const suggHtml = currentDetailData.suggested_swarm ? `
       <div class="swarm-suggestion-banner" style="grid-column: 1 / -1; margin-bottom: 8px;">
         <div>
-          ${ICONS.zap} <strong>${currentDetailData.suggested_swarm.is_partial ? 'Partial Match in Collection!' : 'Equivalent BitTorrent Swarm Verified!'}</strong> (${currentDetailData.suggested_swarm.seeders} seeds).
+          ${ICONS.zap} <strong>${currentDetailData.suggested_swarm.is_partial ? 'Partial Match in Collection!' : 'Equivalent BitTorrent Swarm Verified!'}</strong>${currentDetailData.suggested_swarm.seeders >= 0 ? ` (${currentDetailData.suggested_swarm.seeders} seeds)` : ''}.
         </div>
         <button class="btn btn-primary" style="padding: 3px 10px; font-size: 11px;" onclick="upgradeToSwarm('${currentDetailData.info_hash}')">
           Upgrade to Swarm
@@ -1079,9 +1079,13 @@ function switchDetailTab(tab) {
 
         <span class="detail-label">Connected Swarm:</span>
         <span class="detail-val">
-          ${currentDetailData.seeders !== undefined ? 
-            `${currentDetailData.seeders} seed${currentDetailData.seeders !== 1 ? 's' : ''}, ${currentDetailData.leechers !== undefined ? currentDetailData.leechers : 0} peer${currentDetailData.leechers !== 1 ? 's' : ''} (${currentDetailData.total_peers || (currentDetailData.peers ? currentDetailData.peers.length : 0)} total connected)` : 
-            `${currentDetailData.peers ? currentDetailData.peers.length : 0} peers connected`}
+          ${currentDetailData.platform === 'folder' || currentDetailData.created_by === 'Unified Folder Engine' ?
+            (currentDetailData.peers && currentDetailData.peers.length > 0 ?
+              `${currentDetailData.peers.length} peer${currentDetailData.peers.length !== 1 ? 's' : ''} (${currentDetailData.peers.map(p => escapeHtml(p.source || p.addr)).join(', ')})` :
+              (currentDetailData.seeders > 0 ? '1 active peer connected' : (currentDetailData.state === 'peer_offline' ? 'Peer currently offline' : '0 peers connected'))) :
+            (currentDetailData.seeders !== undefined ? 
+              `${currentDetailData.seeders} seed${currentDetailData.seeders !== 1 ? 's' : ''}, ${currentDetailData.leechers !== undefined ? currentDetailData.leechers : 0} peer${currentDetailData.leechers !== 1 ? 's' : ''} (${currentDetailData.total_peers || (currentDetailData.peers ? currentDetailData.peers.length : 0)} total connected)` : 
+              `${currentDetailData.peers ? currentDetailData.peers.length : 0} peers connected`)}
         </span>
 
         <span class="detail-label">Swarm Archetype:</span>
@@ -1986,10 +1990,11 @@ function generatePathBreadcrumbsHtml(r, idx) {
     if (r.provider_type === 'soulseek') {
       if (r.peer_status === 'offline') {
         userStatusBadge = ` <span style="background: rgba(246, 211, 45, 0.2); color: #f6d32d; font-size: 10px; font-weight: 600; padding: 1px 5px; border-radius: 4px;" title="User is currently offline">💤 Offline</span>`;
-      } else if (r.seeders > 0) {
+      } else if (r.free_slot === true || (r.free_slot === undefined && r.seeders > 0)) {
         userStatusBadge = ` <span style="background: rgba(46, 194, 126, 0.15); color: #57e389; font-size: 10px; font-weight: 600; padding: 1px 5px; border-radius: 4px;" title="Free upload slot available">⚡ Free Slot</span>`;
-      } else if (r.leechers !== undefined) {
-        userStatusBadge = ` <span style="background: rgba(229, 165, 10, 0.15); color: #f6d32d; font-size: 10px; font-weight: 500; padding: 1px 5px; border-radius: 4px;" title="${r.leechers} queued files by this peer">⏳ Queue: ${r.leechers}</span>`;
+      } else if (r.queue !== undefined || r.leechers !== undefined) {
+        const q = r.queue !== undefined ? r.queue : r.leechers;
+        userStatusBadge = ` <span style="background: rgba(229, 165, 10, 0.15); color: #f6d32d; font-size: 10px; font-weight: 500; padding: 1px 5px; border-radius: 4px;" title="${q} queued files by this peer">⏳ Queue: ${q}</span>`;
       }
     }
     crumbs.push(`
@@ -2613,8 +2618,8 @@ function renderSearchResults() {
       if (isGroupOffline) {
         slotStatHtml = `<span style="background: rgba(246, 211, 45, 0.2); color: #f6d32d; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 6px;">💤 Peer Offline</span>`;
       } else if (g.provider_type === 'soulseek') {
-        const hasFreeSlot = g.items.some(it => (it.result.seeders || 0) > 0);
-        const queueLen = g.items[0]?.result?.leechers || 0;
+        const hasFreeSlot = g.items.some(it => it.result.free_slot === true || (it.result.free_slot === undefined && (it.result.seeders || 0) > 0));
+        const queueLen = g.items[0]?.result?.queue !== undefined ? g.items[0].result.queue : (g.items[0]?.result?.leechers || 0);
         if (hasFreeSlot) {
           slotStatHtml = `<span style="color: #57e389; font-weight: 600; font-size: 11px;">⚡ Free Slot</span>`;
         } else {
@@ -2677,10 +2682,13 @@ function renderSearchResults() {
           seedersHtml = `<span style="background: rgba(246, 211, 45, 0.2); color: #f6d32d; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 6px;">💤 Peer Offline</span>`;
           leechersHtml = `<span>User unreachable</span>`;
         } else {
-          const slotColor = r.seeders > 0 ? 'var(--adw-success)' : 'var(--adw-warning)';
-          const slotText = r.seeders > 0 ? 'Free Slot' : 'Queued';
-          seedersHtml = `<span style="color: ${slotColor}; font-weight: 600;">${ICONS.arrowUp}${slotText}</span>`;
-          leechersHtml = `<span>${ICONS.arrowDown}${r.leechers || 0} in queue</span>`;
+          const isFree = r.free_slot === true || (r.free_slot === undefined && r.seeders > 0);
+          const slotColor = isFree ? 'var(--adw-success)' : 'var(--adw-warning)';
+          const slotText = isFree ? 'Free Slot' : 'Queued';
+          const speedText = r.upload_speed ? ` (${formatBytes(r.upload_speed)}/s)` : '';
+          seedersHtml = `<span style="color: ${slotColor}; font-weight: 600;">${ICONS.arrowUp}${slotText}${speedText}</span>`;
+          const queueCount = r.queue !== undefined ? r.queue : (r.leechers || 0);
+          leechersHtml = `<span>${ICONS.arrowDown}${queueCount} in queue</span>`;
         }
       } else {
         const seedColor = r.seeders > 0 ? 'var(--adw-success)' : 'var(--adw-dim-label)';

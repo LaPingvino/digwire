@@ -676,7 +676,7 @@ func (s *SoulseekClient) Search(ctx context.Context, query string, timeout time.
 				res := parseSoulseekFile(peerUser, f, r.FreeSlot, r.Queue, r.AverageSpeed, peerStatus)
 				results = append(results, res)
 
-				if len(results) >= 120 {
+				if len(results) >= 5000 {
 					return results, nil
 				}
 			}
@@ -761,9 +761,9 @@ func parseSoulseekFile(username string, f peer.File, freeSlot bool, queue int, a
 	fullTitle := title + formatTag
 	slskURI := fmt.Sprintf("slsk://%s?file=%s&size=%d", url.PathEscape(username), url.QueryEscape(f.Name), f.Size)
 
-	seeders := 0
-	if freeSlot {
-		seeders = 1
+	seeders := 1
+	if peerStatus == "offline" {
+		seeders = 0
 	}
 
 	dirPath := directory
@@ -788,6 +788,9 @@ func parseSoulseekFile(username string, f peer.File, freeSlot bool, queue int, a
 		SizeBytes:    int64(f.Size),
 		Seeders:      seeders,
 		Leechers:     queue,
+		FreeSlot:     freeSlot,
+		Queue:        queue,
+		UploadSpeed:  avgSpeed,
 		Provider:     "Soulseek P2P",
 		ProviderType: "soulseek",
 		DetailsURL:   "",
