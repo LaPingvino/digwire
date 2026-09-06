@@ -385,9 +385,42 @@ func (s *State) Download(ctx context.Context, file Download) (status chan string
 		sendStatus(fmt.Sprintf("file created, size: %s", humanize.Bytes(file.File.Size)))
 
 		var readSoFar int64
+		var lastPct int64 = -1
+		totalSize := int64(file.File.Size)
+
 		for {
-			n, err := io.CopyN(localFile, fileConn, 10000)
-			if err != nil && !errors.Is(err, io.EOF) {
+			if totalSize > 0 && readSoFar >= totalSize {
+				// All bytes of the file have been downloaded! Break immediately without waiting for peer socket timeout.
+				break
+			}
+
+			toRead := int64(32768)
+			if totalSize > 0 {
+				rem := totalSize - readSoFar
+				if rem < toRead {
+					toRead = rem
+				}
+			}
+
+			n, err := io.CopyN(localFile, fileConn, toRead)
+			if n > 0 {
+				readSoFar += n
+				if totalSize > 0 {
+					pct := readSoFar * 100 / totalSize
+					if pct > 100 {
+						pct = 100
+					}
+					if pct != lastPct {
+						lastPct = pct
+						sendStatus(fmt.Sprintf("copied %v%%", pct))
+					}
+				}
+			}
+
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					break
+				}
 				if ctx.Err() != nil {
 					e <- ctx.Err()
 				} else {
@@ -395,14 +428,10 @@ func (s *State) Download(ctx context.Context, file Download) (status chan string
 				}
 				return
 			}
+		}
 
-			if errors.Is(err, io.EOF) {
-				break
-			}
-
-			readSoFar += n
-
-			sendStatus(fmt.Sprintf("copied %v%%", readSoFar*100/int64(file.File.Size)))
+		if totalSize > 0 && lastPct < 100 && readSoFar >= totalSize {
+			sendStatus("copied 100%")
 		}
 
 		sl.Debug().Msg("file download")
