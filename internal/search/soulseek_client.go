@@ -13,6 +13,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,24 +32,56 @@ var (
 	soulseekOnce         sync.Once
 )
 
-type SoulseekClient struct {
-	mu          sync.Mutex
-	serverAddr  string
-	serverPort  int
-	ownPort     int
-	username    string
-	password    string
-	stageDir    string
-	client      *client.Client
-	state       *client.State
-	cancel      context.CancelFunc
-	connected   bool
-	lastLogin   time.Time
-	peerSemMu   sync.Mutex
-	peerSems    map[string]chan struct{}
+type ShareStats struct {
+	Mode        string `json:"mode"`
+	Exts        string `json:"exts"`
+	FolderCount int    `json:"folder_count"`
+	FileCount   int    `json:"file_count"`
+	TotalBytes  int64  `json:"total_bytes"`
+}
 
+var DefaultMusicExts = map[string]bool{
+	".mp3":  true,
+	".flac": true,
+	".ogg":  true,
+	".wav":  true,
+	".m4a":  true,
+	".aac":  true,
+	".alac": true,
+	".opus": true,
+	".wma":  true,
+	".aiff": true,
+	".aif":  true,
+	".ape":  true,
+	".mka":  true,
+}
+
+type SoulseekClient struct {
+	mu           sync.Mutex
+	serverAddr   string
+	serverPort   int
+	ownPort      int
+	username     string
+	password     string
+	stageDir     string
+	downloadDir  string
+	shareMode    string
+	shareExts    string
+	client       *client.Client
+	state        *client.State
+	cancel       context.CancelFunc
+	connected    bool
+	lastLogin    time.Time
+	peerSemMu    sync.Mutex
+	peerSems     map[string]chan struct{}
 	peerStatusMu sync.RWMutex
 	peerStatuses map[string]PeerStatusInfo
+
+	shareMu         sync.RWMutex
+	sharedDirs      []peer.Directory
+	sharedStats     ShareStats
+	soulseekDirsMu  sync.RWMutex
+	completedSoulseekDirs map[string]bool
 }
 
 type PeerStatusInfo struct {
@@ -82,14 +115,17 @@ func GetSoulseekClient() *SoulseekClient {
 		_ = os.MkdirAll(stageDir, 0755)
 
 		globalSoulseekClient = &SoulseekClient{
-			serverAddr:   "server.slsknet.org",
-			serverPort:   2242,
-			ownPort:      22345,
-			username:     "dw_" + randomHex(4),
-			password:     randomHex(8),
-			stageDir:     stageDir,
-			peerSems:     make(map[string]chan struct{}),
-			peerStatuses: make(map[string]PeerStatusInfo),
+			serverAddr:            "server.slsknet.org",
+			serverPort:            2242,
+			ownPort:               22345,
+			username:              "dw_" + randomHex(4),
+			password:              randomHex(8),
+			stageDir:              stageDir,
+			shareMode:             "none",
+			shareExts:             ".mp3, .flac",
+			peerSems:              make(map[string]chan struct{}),
+			peerStatuses:          make(map[string]PeerStatusInfo),
+			completedSoulseekDirs: make(map[string]bool),
 		}
 	})
 	return globalSoulseekClient
@@ -127,6 +163,241 @@ func (s *SoulseekClient) Configure(serverAddr string, username, password string,
 	}
 }
 
+func parseExts(raw string) map[string]bool {
+	exts := make(map[string]bool)
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\n'
+	})
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if !strings.HasPrefix(p, ".") {
+			p = "." + p
+		}
+		exts[strings.ToLower(p)] = true
+	}
+	return exts
+}
+
+func (s *SoulseekClient) SetShareConfig(downloadDir string, shareMode string, shareExts string) {
+	s.mu.Lock()
+	if downloadDir != "" {
+		s.downloadDir = downloadDir
+	}
+	if shareMode != "" {
+		s.shareMode = shareMode
+	}
+	if shareExts != "" {
+		s.shareExts = shareExts
+	}
+	s.mu.Unlock()
+
+	s.UpdateShares()
+}
+
+func (s *SoulseekClient) RegisterSoulseekDir(dir string) {
+	if dir == "" {
+		return
+	}
+	clean := filepath.Clean(dir)
+	s.soulseekDirsMu.Lock()
+	if s.completedSoulseekDirs == nil {
+		s.completedSoulseekDirs = make(map[string]bool)
+	}
+	s.completedSoulseekDirs[clean] = true
+	s.soulseekDirsMu.Unlock()
+}
+
+func (s *SoulseekClient) ScanShares() ([]peer.Directory, ShareStats) {
+	s.mu.Lock()
+	dlDir := s.downloadDir
+	mode := strings.ToLower(strings.TrimSpace(s.shareMode))
+	extsRaw := s.shareExts
+	s.mu.Unlock()
+
+	if mode == "" {
+		mode = "none"
+	}
+
+	stats := ShareStats{
+		Mode: mode,
+		Exts: extsRaw,
+	}
+
+	if dlDir == "" {
+		return nil, stats
+	}
+
+	info, err := os.Stat(dlDir)
+	if err != nil || !info.IsDir() {
+		return nil, stats
+	}
+
+	s.soulseekDirsMu.RLock()
+	slskDirs := make(map[string]bool, len(s.completedSoulseekDirs))
+	for k, v := range s.completedSoulseekDirs {
+		slskDirs[k] = v
+	}
+	s.soulseekDirsMu.RUnlock()
+
+	customExts := parseExts(extsRaw)
+	dirMap := make(map[string][]peer.File)
+
+	_ = filepath.Walk(dlDir, func(currentPath string, fi os.FileInfo, wErr error) error {
+		if wErr != nil {
+			return nil
+		}
+
+		name := fi.Name()
+		// Skip hidden directories and files (e.g. .slsk_stage, .git)
+		if strings.HasPrefix(name, ".") && currentPath != dlDir {
+			if fi.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if fi.IsDir() {
+			return nil
+		}
+
+		// Skip temporary or non-complete download files
+		lowerName := strings.ToLower(name)
+		if strings.HasSuffix(lowerName, ".part") ||
+			strings.HasSuffix(lowerName, ".tmp") ||
+			strings.HasSuffix(lowerName, ".crdownload") ||
+			strings.HasSuffix(lowerName, ".downloading") {
+			return nil
+		}
+
+		if fi.Size() <= 0 {
+			return nil
+		}
+
+		ext := strings.ToLower(filepath.Ext(name))
+		extClean := strings.TrimPrefix(ext, ".")
+		if extClean == "" {
+			return nil
+		}
+
+		parentDir := filepath.Clean(filepath.Dir(currentPath))
+		isSoulseek := false
+		for d := range slskDirs {
+			if parentDir == d || strings.HasPrefix(parentDir, d+string(filepath.Separator)) {
+				isSoulseek = true
+				break
+			}
+		}
+
+		accepted := false
+		if isSoulseek {
+			accepted = true
+		} else {
+			switch mode {
+			case "none":
+				accepted = false
+			case "all":
+				accepted = true
+			case "music":
+				accepted = DefaultMusicExts[ext]
+			case "custom":
+				accepted = customExts[ext]
+			default:
+				accepted = false
+			}
+		}
+
+		if !accepted {
+			return nil
+		}
+
+		relDir, rErr := filepath.Rel(dlDir, parentDir)
+		var dirName string
+		if rErr != nil || relDir == "." || relDir == "" {
+			dirName = filepath.Base(dlDir)
+			if dirName == "." || dirName == "/" || dirName == "" {
+				dirName = "Digwire"
+			}
+		} else {
+			dirName = strings.ReplaceAll(relDir, "/", "\\")
+		}
+
+		dirMap[dirName] = append(dirMap[dirName], peer.File{
+			Name:      name,
+			Size:      uint64(fi.Size()),
+			Extension: extClean,
+		})
+
+		stats.FileCount++
+		stats.TotalBytes += fi.Size()
+		return nil
+	})
+
+	if len(dirMap) == 0 {
+		return nil, stats
+	}
+
+	dirs := make([]peer.Directory, 0, len(dirMap))
+	for dName, files := range dirMap {
+		if len(files) == 0 {
+			continue
+		}
+		sort.Slice(files, func(i, j int) bool {
+			return files[i].Name < files[j].Name
+		})
+		dirs = append(dirs, peer.Directory{
+			Name:  dName,
+			Files: files,
+		})
+	}
+
+	sort.Slice(dirs, func(i, j int) bool {
+		return dirs[i].Name < dirs[j].Name
+	})
+
+	stats.FolderCount = len(dirs)
+	return dirs, stats
+}
+
+func (s *SoulseekClient) UpdateShares() {
+	dirs, stats := s.ScanShares()
+
+	s.shareMu.Lock()
+	s.sharedDirs = dirs
+	s.sharedStats = stats
+	s.shareMu.Unlock()
+
+	s.mu.Lock()
+	c := s.client
+	connected := s.connected
+	s.mu.Unlock()
+
+	if connected && c != nil {
+		shared := new(server.SharedFoldersFiles)
+		msg, err := shared.Serialize(stats.FolderCount, stats.FileCount)
+		if err == nil {
+			select {
+			case c.Writer <- msg:
+			default:
+			}
+		}
+	}
+}
+
+func (s *SoulseekClient) GetSharedDirectories() []peer.Directory {
+	s.shareMu.RLock()
+	defer s.shareMu.RUnlock()
+	return s.sharedDirs
+}
+
+func (s *SoulseekClient) GetShareStats() ShareStats {
+	s.shareMu.RLock()
+	defer s.shareMu.RUnlock()
+	return s.sharedStats
+}
+
 func (s *SoulseekClient) ensureConnected(ctx context.Context) (*client.State, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -151,19 +422,27 @@ func (s *SoulseekClient) ensureConnected(ctx context.Context) (*client.State, er
 		_ = ln.Close()
 	}
 
+	dirs, stats := s.ScanShares()
+	s.shareMu.Lock()
+	s.sharedDirs = dirs
+	s.sharedStats = stats
+	s.shareMu.Unlock()
+
 	cfg := &client.Config{
-		SoulSeekAddress: s.serverAddr,
-		SoulSeekPort:    s.serverPort,
-		OwnPort:         portToUse,
-		Username:        s.username,
-		Password:        s.password,
-		SharedFolders:   8,
-		SharedFiles:     250,
-		LogLevel:        zerolog.Disabled,
-		Timeout:         25 * time.Second,
-		LoginTimeout:    10 * time.Second,
-		DownloadFolder:  s.stageDir,
-		MaxPeers:        100,
+		SoulSeekAddress:      s.serverAddr,
+		SoulSeekPort:         s.serverPort,
+		OwnPort:              portToUse,
+		Username:             s.username,
+		Password:             s.password,
+		SharedFolders:        stats.FolderCount,
+		SharedFiles:          stats.FileCount,
+		SharedDirectories:    dirs,
+		GetSharedDirectories: s.GetSharedDirectories,
+		LogLevel:             zerolog.Disabled,
+		Timeout:              25 * time.Second,
+		LoginTimeout:         10 * time.Second,
+		DownloadFolder:       s.stageDir,
+		MaxPeers:             100,
 	}
 
 	log.Logger = log.Level(zerolog.Disabled)
@@ -758,6 +1037,9 @@ func (s *SoulseekClient) DownloadFile(ctx context.Context, username, remoteFile 
 		}
 		_ = os.Remove(stageCandidate)
 	}
+
+	s.RegisterSoulseekDir(filepath.Dir(destPath))
+	go s.UpdateShares()
 
 	if onProgress != nil {
 		finalSize := size

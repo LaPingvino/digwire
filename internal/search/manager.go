@@ -73,7 +73,9 @@ func (m *Manager) UpdateProviders(cfg *config.Config) {
 			if cfg.SoulseekServer != "" {
 				serverURL = cfg.SoulseekServer
 			}
-			GetSoulseekClient().Configure(serverURL, cfg.SoulseekUsername, cfg.SoulseekPassword, cfg.SoulseekPort, filepath.Join(cfg.DownloadDir, ".slsk_stage"))
+			slsk := GetSoulseekClient()
+			slsk.Configure(serverURL, cfg.SoulseekUsername, cfg.SoulseekPassword, cfg.SoulseekPort, filepath.Join(cfg.DownloadDir, ".slsk_stage"))
+			slsk.SetShareConfig(cfg.DownloadDir, cfg.SoulseekShareMode, cfg.SoulseekShareExts)
 			m.providers = append(m.providers, NewSoulseekProvider(pCfg.Name, serverURL, pCfg.Enabled, weight))
 		case "documents":
 			m.providers = append(m.providers, NewDocumentProvider(pCfg.Name, pCfg.URL, pCfg.Enabled, weight))

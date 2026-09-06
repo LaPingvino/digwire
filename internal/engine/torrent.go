@@ -1268,6 +1268,13 @@ func (e *Engine) loadSession() {
 			e.folderManager.tasks[ft.ID] = task
 			e.folderManager.mu.Unlock()
 
+			for _, f := range files {
+				if strings.HasPrefix(f.URL, "slsk://") || strings.HasPrefix(f.URL, "soulseek://") {
+					search.GetSoulseekClient().RegisterSoulseekDir(ft.DestPath)
+					break
+				}
+			}
+
 			// If it was downloading, resume downloading in background with startup grace period
 			if stateStr == "downloading" {
 				task.isRunning.Store(true)

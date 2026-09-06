@@ -485,6 +485,41 @@
           </div>
         </div>
 
+        <!-- Soulseek P2P Sharing Settings -->
+        <div class="card" style="padding: 12px 14px; border: 1px solid var(--adw-border); border-radius: 8px; background: var(--adw-card-bg, rgba(255,255,255,0.03));">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+            <div style="display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13.5px; color: var(--adw-fg-color);">
+              <span class="emoji-face">🐦</span>
+              <span>Soulseek P2P Sharing</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span id="slsk-share-summary" style="font-size: 11px; padding: 2px 8px; border-radius: 12px; background: var(--adw-badge-bg, rgba(255,255,255,0.08)); color: var(--adw-dim-label);">
+                Sharing disabled (0 folders, 0 files)
+              </span>
+              <button class="btn btn-icon" style="padding: 2px 6px; font-size: 11px;" title="Rescan Shared Files" onclick="rescanSoulseekShares()" aria-label="Rescan Soulseek shares">
+                <span class="emoji-face">🔄</span>
+              </button>
+            </div>
+          </div>
+          <div class="form-group" style="margin-bottom: 8px;">
+            <label class="form-label" for="cfg-slsk-share-mode">Provide non-Soulseek downloads over Soulseek</label>
+            <select id="cfg-slsk-share-mode" class="input-text" onchange="onSlskShareModeChange(this.value)">
+              <option value="none">None (default - do not share non-Soulseek downloads)</option>
+              <option value="all">All completed downloads</option>
+              <option value="music">Music only (.mp3, .flac, .ogg, .wav, .m4a...)</option>
+              <option value="custom">Custom file extensions...</option>
+            </select>
+            <div style="font-size: 11px; color: var(--adw-dim-label); margin-top: 4px;">
+              Controls whether non-Soulseek downloads (Torrents, HTTP, Media) from your download directory are shared to Soulseek peers. Soulseek reports truthful folder and file counts.
+            </div>
+          </div>
+          <div class="form-group" id="slsk-custom-exts-group" style="display: none; margin-bottom: 6px;">
+            <label class="form-label" for="cfg-slsk-share-exts">Custom File Extensions</label>
+            <input type="text" id="cfg-slsk-share-exts" class="input-text" placeholder=".mp3, .flac, .ogg, .wav, .m4a, .aac">
+            <div style="font-size: 11px; color: var(--adw-dim-label); margin-top: 4px;">Comma-separated list of file extensions to share on Soulseek.</div>
+          </div>
+        </div>
+
         <div style="display: flex; gap: 20px; margin-top: 4px;">
           <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer;">
             <input type="checkbox" id="cfg-enable-dht"> Enable Mainline DHT

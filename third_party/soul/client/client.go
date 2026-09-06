@@ -62,14 +62,16 @@ type Config struct {
 	OwnPort         int
 	Username        string
 	Password        string
-	SharedFolders   int
-	SharedFiles     int
-	LogLevel        zerolog.Level // TODO: fix logger.
-	MaxUploads      int
-	Timeout         time.Duration
-	LoginTimeout    time.Duration
-	DownloadFolder  string
-	MaxPeers        int64
+	SharedFolders        int
+	SharedFiles          int
+	SharedDirectories    []peer.Directory
+	GetSharedDirectories func() []peer.Directory
+	LogLevel             zerolog.Level // TODO: fix logger.
+	MaxUploads           int
+	Timeout              time.Duration
+	LoginTimeout         time.Duration
+	DownloadFolder       string
+	MaxPeers             int64
 }
 
 func DefaultConfig() *Config {
@@ -79,8 +81,8 @@ func DefaultConfig() *Config {
 		OwnPort:         2234,
 		Username:        gonanoid.MustGenerate("soulseek", 7),
 		Password:        gonanoid.MustGenerate("0123456789qwertyuiop", 10),
-		SharedFolders:   1,
-		SharedFiles:     1,
+		SharedFolders:   0,
+		SharedFiles:     0,
 		LogLevel:        zerolog.Disabled,
 		MaxUploads:      10,
 		Timeout:         2 * time.Second,

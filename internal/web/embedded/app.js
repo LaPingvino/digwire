@@ -3330,6 +3330,17 @@ async function openSettingsModal() {
     const dnsEl = document.getElementById('cfg-fallback-dns');
     if (dnsEl) dnsEl.value = (activeConfig.fallback_dns || ['8.8.8.8:53', '1.1.1.1:53', '8.8.4.4:53', '9.9.9.9:53']).join(', ');
 
+    const slskModeEl = document.getElementById('cfg-slsk-share-mode');
+    if (slskModeEl) {
+      slskModeEl.value = activeConfig.soulseek_share_mode || 'none';
+      onSlskShareModeChange(slskModeEl.value);
+    }
+    const slskExtsEl = document.getElementById('cfg-slsk-share-exts');
+    if (slskExtsEl) {
+      slskExtsEl.value = activeConfig.soulseek_share_exts || '.mp3, .flac';
+    }
+    fetchSoulseekShareStats();
+
     renderProvidersList();
     switchSettingsTab('providers');
     saveFocusAndOpen('modal-settings', '#stab-providers');
@@ -3684,6 +3695,12 @@ async function saveSettings() {
         activeConfig.fallback_dns = rawDNS.split(',').map(s => s.trim()).filter(Boolean);
       }
 
+      const slskModeEl = document.getElementById('cfg-slsk-share-mode');
+      if (slskModeEl) activeConfig.soulseek_share_mode = slskModeEl.value;
+
+      const slskExtsEl = document.getElementById('cfg-slsk-share-exts');
+      if (slskExtsEl) activeConfig.soulseek_share_exts = slskExtsEl.value.trim();
+
       await fetch('/api/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -3697,6 +3714,50 @@ async function saveSettings() {
   } finally {
     btn.textContent = origText;
     btn.disabled = false;
+  }
+}
+
+function onSlskShareModeChange(val) {
+  const grp = document.getElementById('slsk-custom-exts-group');
+  if (grp) {
+    grp.style.display = val === 'custom' ? 'block' : 'none';
+  }
+}
+
+async function fetchSoulseekShareStats() {
+  const summaryEl = document.getElementById('slsk-share-summary');
+  if (!summaryEl) return;
+  try {
+    const res = await fetch('/api/soulseek/shares');
+    if (res.ok) {
+      const stats = await res.json();
+      if (stats.folder_count === 0 && stats.file_count === 0) {
+        summaryEl.textContent = stats.mode === 'none' ? 'Sharing disabled (0 folders, 0 files)' : '0 matching folders / 0 files';
+      } else {
+        summaryEl.textContent = `Sharing ${stats.folder_count} folder${stats.folder_count === 1 ? '' : 's'}, ${stats.file_count} file${stats.file_count === 1 ? '' : 's'}`;
+      }
+    }
+  } catch (e) {
+    console.error('Error fetching soulseek shares:', e);
+  }
+}
+
+async function rescanSoulseekShares() {
+  const summaryEl = document.getElementById('slsk-share-summary');
+  if (summaryEl) summaryEl.textContent = 'Scanning shares...';
+  try {
+    const res = await fetch('/api/soulseek/shares/rescan', { method: 'POST' });
+    if (res.ok) {
+      const stats = await res.json();
+      if (stats.folder_count === 0 && stats.file_count === 0) {
+        summaryEl.textContent = stats.mode === 'none' ? 'Sharing disabled (0 folders, 0 files)' : '0 matching folders / 0 files';
+      } else {
+        summaryEl.textContent = `Sharing ${stats.folder_count} folder${stats.folder_count === 1 ? '' : 's'}, ${stats.file_count} file${stats.file_count === 1 ? '' : 's'}`;
+      }
+      showToast(`Soulseek shares updated: ${stats.folder_count} folders, ${stats.file_count} files`, 'success', 2500);
+    }
+  } catch (err) {
+    showToast('Failed to rescan shares: ' + err.message, 'error', 3000);
   }
 }
 

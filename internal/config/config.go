@@ -48,6 +48,8 @@ type Config struct {
 	SoulseekPassword string                 `yaml:"soulseek_password,omitempty" json:"soulseek_password,omitempty"`
 	SoulseekPort     int                    `yaml:"soulseek_port,omitempty" json:"soulseek_port,omitempty"`
 	SoulseekServer   string                 `yaml:"soulseek_server,omitempty" json:"soulseek_server,omitempty"`
+	SoulseekShareMode string                `yaml:"soulseek_share_mode,omitempty" json:"soulseek_share_mode,omitempty"`
+	SoulseekShareExts string                `yaml:"soulseek_share_exts,omitempty" json:"soulseek_share_exts,omitempty"`
 	SearchProviders []SearchProviderConfig `yaml:"search_providers" json:"search_providers"`
 	configPath      string                 `yaml:"-" json:"-"`
 }
@@ -60,13 +62,15 @@ func DefaultConfig() *Config {
 	defaultDownloadDir := filepath.Join(home, "Downloads", "Digwire")
 
 	return &Config{
-		DownloadDir:     defaultDownloadDir,
-		ListenPort:      50007,
-		WebPort:         9091,
-		DownloadLimitKB: 0, // unlimited
-		UploadLimitKB:   0, // unlimited
-		EnableDHT:       true,
-		EnableUPnP:      true,
+		DownloadDir:       defaultDownloadDir,
+		ListenPort:        50007,
+		WebPort:           9091,
+		DownloadLimitKB:   0, // unlimited
+		UploadLimitKB:     0, // unlimited
+		EnableDHT:         true,
+		EnableUPnP:        true,
+		SoulseekShareMode: "none",
+		SoulseekShareExts: ".mp3, .flac",
 		FallbackDNS: []string{
 			"8.8.8.8:53",
 			"1.1.1.1:53",
@@ -214,6 +218,13 @@ func LoadConfig() (*Config, error) {
 	if cfg.DownloadDir == "" || filepath.IsAbs(cfg.DownloadDir) && (len(cfg.DownloadDir) > 4 && cfg.DownloadDir[:4] == "/tmp") {
 		cfg.DownloadDir = defCfg.DownloadDir
 		changed = true
+	}
+
+	if cfg.SoulseekShareMode == "" {
+		cfg.SoulseekShareMode = defCfg.SoulseekShareMode
+	}
+	if cfg.SoulseekShareExts == "" {
+		cfg.SoulseekShareExts = defCfg.SoulseekShareExts
 	}
 
 	// Ensure fallback DNS is populated

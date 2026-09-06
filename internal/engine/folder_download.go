@@ -292,12 +292,15 @@ func (m *FolderManager) StartFolderDownload(name, folderName string, items []Fol
 		}
 
 		// Ensure extension is preserved for Soulseek downloads if not present
-		if (strings.HasPrefix(rawURL, "slsk://") || strings.HasPrefix(rawURL, "soulseek://")) && filepath.Ext(relPath) == "" {
-			if u, err := url.Parse(rawURL); err == nil {
-				rf := u.Query().Get("file")
-				ext := filepath.Ext(rf)
-				if ext != "" {
-					relPath += ext
+		if (strings.HasPrefix(rawURL, "slsk://") || strings.HasPrefix(rawURL, "soulseek://")) {
+			search.GetSoulseekClient().RegisterSoulseekDir(destPath)
+			if filepath.Ext(relPath) == "" {
+				if u, err := url.Parse(rawURL); err == nil {
+					rf := u.Query().Get("file")
+					ext := filepath.Ext(rf)
+					if ext != "" {
+						relPath += ext
+					}
 				}
 			}
 		}

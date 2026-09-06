@@ -74,6 +74,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/torrents/{hash}", s.handleDeleteTorrent)
 	s.mux.HandleFunc("GET /api/search", s.handleSearch)
 	s.mux.HandleFunc("GET /api/soulseek/peer-status", s.handleGetSoulseekPeerStatus)
+	s.mux.HandleFunc("GET /api/soulseek/shares", s.handleGetSoulseekShares)
+	s.mux.HandleFunc("POST /api/soulseek/shares/rescan", s.handleRescanSoulseekShares)
 	s.mux.HandleFunc("GET /api/stats", s.handleStats)
 	s.mux.HandleFunc("GET /api/config", s.handleGetConfig)
 	s.mux.HandleFunc("POST /api/config", s.handleSaveConfig)
@@ -726,6 +728,7 @@ func (s *Server) handleSaveConfig(w http.ResponseWriter, r *http.Request) {
 	_ = s.cfg.Save()
 	s.search.UpdateProviders(s.cfg)
 	s.engine.SetGermanyMode(s.cfg.GermanyMode)
+	search.GetSoulseekClient().SetShareConfig(s.cfg.DownloadDir, s.cfg.SoulseekShareMode, s.cfg.SoulseekShareExts)
 
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "saved"})
 }
@@ -787,6 +790,7 @@ func (s *Server) handleSaveConfigYAML(w http.ResponseWriter, r *http.Request) {
 	_ = s.cfg.Save()
 	s.search.UpdateProviders(s.cfg)
 	s.engine.SetGermanyMode(s.cfg.GermanyMode)
+	search.GetSoulseekClient().SetShareConfig(s.cfg.DownloadDir, s.cfg.SoulseekShareMode, s.cfg.SoulseekShareExts)
 
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "saved"})
 }
@@ -1304,4 +1308,29 @@ func (s *Server) handleGetSoulseekPeerStatus(w http.ResponseWriter, r *http.Requ
 		"offline": isOffline,
 	})
 }
+
+func (s *Server) handleGetSoulseekShares(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	slsk := search.GetSoulseekClient()
+	stats := slsk.GetShareStats()
+	if stats.Mode == "" {
+		stats.Mode = s.cfg.SoulseekShareMode
+		if stats.Mode == "" {
+			stats.Mode = "none"
+		}
+	}
+	if stats.Exts == "" {
+		stats.Exts = s.cfg.SoulseekShareExts
+	}
+	_ = json.NewEncoder(w).Encode(stats)
+}
+
+func (s *Server) handleRescanSoulseekShares(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	slsk := search.GetSoulseekClient()
+	slsk.SetShareConfig(s.cfg.DownloadDir, s.cfg.SoulseekShareMode, s.cfg.SoulseekShareExts)
+	stats := slsk.GetShareStats()
+	_ = json.NewEncoder(w).Encode(stats)
+}
+
 

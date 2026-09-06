@@ -789,6 +789,32 @@ func (s *State) fileResponse(p *Peer) {
 			case false:
 				s.Debug().Any("message", fileResponse).Msg("search not found")
 			}
+
+		case <-p.initListeners.sharedFileListRequest:
+			var dirs []peer.Directory
+			if s.client.config.GetSharedDirectories != nil {
+				dirs = s.client.config.GetSharedDirectories()
+			} else {
+				dirs = s.client.config.SharedDirectories
+			}
+			resp := new(peer.SharedFileListResponse)
+			data, err := resp.Serialize(dirs, nil)
+			if err == nil {
+				select {
+				case p.Writer <- data:
+				default:
+				}
+			}
+
+		case q := <-p.initListeners.queueUpload:
+			denied := new(peer.UploadDenied)
+			msg, err := denied.Serialize(q.Filename, errors.New("uploads disabled"))
+			if err == nil {
+				select {
+				case p.Writer <- msg:
+				default:
+				}
+			}
 		}
 	}
 }
