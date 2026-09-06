@@ -182,7 +182,7 @@ func parseExts(raw string) map[string]bool {
 }
 
 func (s *SoulseekClient) SetShareConfig(downloadDir string, shareMode string, shareExts string) {
-	s.mu.Lock()
+	s.shareMu.Lock()
 	if downloadDir != "" {
 		s.downloadDir = downloadDir
 	}
@@ -192,7 +192,7 @@ func (s *SoulseekClient) SetShareConfig(downloadDir string, shareMode string, sh
 	if shareExts != "" {
 		s.shareExts = shareExts
 	}
-	s.mu.Unlock()
+	s.shareMu.Unlock()
 
 	s.UpdateShares()
 }
@@ -211,11 +211,11 @@ func (s *SoulseekClient) RegisterSoulseekDir(dir string) {
 }
 
 func (s *SoulseekClient) ScanShares() ([]peer.Directory, ShareStats) {
-	s.mu.Lock()
+	s.shareMu.RLock()
 	dlDir := s.downloadDir
 	mode := strings.ToLower(strings.TrimSpace(s.shareMode))
 	extsRaw := s.shareExts
-	s.mu.Unlock()
+	s.shareMu.RUnlock()
 
 	if mode == "" {
 		mode = "none"

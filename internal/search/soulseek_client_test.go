@@ -1,10 +1,12 @@
 package search
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bh90210/soul/peer"
 )
@@ -131,4 +133,28 @@ func TestSoulseekTruthfulSharesScanning(t *testing.T) {
 		t.Errorf("expected completed Soulseek download to be shared even when non-soulseek sharing is 'none', got %d folders, %d files", stats.FolderCount, stats.FileCount)
 	}
 }
+
+func TestSoulseekEnsureConnectedNoDeadlock(t *testing.T) {
+	client := GetSoulseekClient()
+	client.SetShareConfig(t.TempDir(), "all", "")
+	// Configure with dummy unreachable server to verify it attempts dial without self-deadlock
+	client.Configure("127.0.0.1:59999", "testuser", "testpass", 22346, t.TempDir())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.ensureConnected(ctx)
+		done <- err
+	}()
+
+	select {
+	case <-time.After(2 * time.Second):
+		t.Fatalf("ensureConnected deadlocked on mutexes!")
+	case <-done:
+		// Succeeded in executing without deadlock
+	}
+}
+
 
