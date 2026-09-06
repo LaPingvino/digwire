@@ -396,6 +396,10 @@ body {
   background-color: var(--adw-success);
 }
 
+.progress-bar-fill.peer-offline {
+  background-color: #f6d32d;
+}
+
 /* Card Details & Actions */
 .card-footer {
   display: flex;

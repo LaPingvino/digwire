@@ -365,7 +365,12 @@ function getTorrentMetaString(t) {
     } else if (t.state === 'completed' || t.state === 'seeding' || (t.progress >= 100 && t.state !== 'failed' && t.state !== 'peer_offline')) {
       folderMeta += ` • <span style="color: #57e389; font-weight: 500;">Complete • Seeding swarm</span>`;
     } else if (isOffline) {
-      folderMeta += ` • <span style="color: #f6d32d; font-weight: 500;" title="${escapeHtml(t.status_message || 'Peer is offline')}">${escapeHtml(t.status_message || '💤 Peer is offline • Will resume when online')}</span>`;
+      folderMeta += ` • <span style="background: rgba(246, 211, 45, 0.2); color: #f6d32d; font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 4px;" title="${escapeHtml(t.status_message || 'Peer is offline')}">💤 Peer Offline</span>`;
+      if (t.active_file) {
+        folderMeta += ` • <span style="color: var(--adw-dim-label);" title="Current file waiting: ${escapeHtml(t.active_file)}">Paused on: ${escapeHtml(t.active_file)}</span>`;
+      } else {
+        folderMeta += ` • <span style="color: var(--adw-dim-label);">Waiting for peer to reconnect...</span>`;
+      }
     } else if (isPaused) {
       folderMeta += ` • <span style="color: var(--adw-dim-label);">Paused</span>`;
     } else if (t.state === 'failed') {
@@ -502,6 +507,7 @@ function createTorrentCardElement(t) {
   div.ondblclick = () => openTorrentTarget(t.info_hash);
   div.onkeydown = (e) => handleTorrentCardKeydown(e, t.info_hash, t.name);
 
+  const isCardOffline = t.state === 'peer_offline' || (t.state === 'failed' && t.status_message && (t.status_message.toLowerCase().includes('offline') || t.status_message.toLowerCase().includes('unreachable')));
   const platformBadge = getPlatformBadge(t.platform);
   const thumbHtml = t.thumbnail ? `<img src="${escapeHtml(t.thumbnail)}" class="card-thumbnail" alt="" onerror="this.style.display='none'">` : '';
 
@@ -514,12 +520,12 @@ function createTorrentCardElement(t) {
       <div style="display: flex; gap: 6px; align-items: center; flex-shrink: 0;">
         ${platformBadge}
         ${getQualifierBadge(t.qualifier)}
-        <span class="torrent-badge ${t.state === 'peer_offline' || (t.state === 'failed' && t.status_message && (t.status_message.toLowerCase().includes('offline') || t.status_message.toLowerCase().includes('unreachable'))) ? 'badge-peer_offline' : `badge-${t.state}`}" aria-label="Status: ${t.state}">${t.state === 'peer_offline' || (t.state === 'failed' && t.status_message && (t.status_message.toLowerCase().includes('offline') || t.status_message.toLowerCase().includes('unreachable'))) ? '💤 peer offline' : t.state}</span>
+        <span class="torrent-badge ${isCardOffline ? 'badge-peer_offline' : `badge-${t.state}`}" aria-label="Status: ${t.state}">${isCardOffline ? '💤 peer offline' : t.state}</span>
       </div>
     </div>
 
     <div class="progress-bar-container" role="progressbar" aria-valuenow="${t.progress.toFixed(1)}" aria-valuemin="0" aria-valuemax="100" aria-valuetext="${t.progress.toFixed(1)} percent complete" style="cursor: pointer;" onclick="openDetailsModal('${t.info_hash}')" title="Progress: ${t.progress.toFixed(1)}%">
-      <div class="progress-bar-fill ${isSeeding ? 'seeding' : ''}" style="width: ${Math.min(100, Math.max(0, t.progress))}%;"></div>
+      <div class="progress-bar-fill ${isSeeding ? 'seeding' : (isCardOffline ? 'peer-offline' : '')}" style="width: ${Math.min(100, Math.max(0, t.progress))}%;"></div>
     </div>
 
     ${swarmBanner}
@@ -553,11 +559,12 @@ function updateTorrentCardElement(cardEl, t) {
   // Update badges
   const badgeContainer = cardEl.querySelector('.card-header > div:last-child');
   const platformBadge = getPlatformBadge(t.platform);
+  const qualifierBadge = getQualifierBadge(t.qualifier);
   const isCardOffline = t.state === 'peer_offline' || (t.state === 'failed' && t.status_message && (t.status_message.toLowerCase().includes('offline') || t.status_message.toLowerCase().includes('unreachable')));
   const stateBadgeClass = isCardOffline ? 'badge-peer_offline' : `badge-${t.state}`;
   const stateBadgeText = isCardOffline ? '💤 peer offline' : t.state;
   const stateBadgeHtml = `<span class="torrent-badge ${stateBadgeClass}" aria-label="Status: ${stateBadgeText}">${stateBadgeText}</span>`;
-  const fullBadgeHtml = platformBadge + qualifierHtml + stateBadgeHtml;
+  const fullBadgeHtml = platformBadge + qualifierBadge + stateBadgeHtml;
   if (badgeContainer && badgeContainer.innerHTML !== fullBadgeHtml) {
     badgeContainer.innerHTML = fullBadgeHtml;
   }
@@ -572,7 +579,7 @@ function updateTorrentCardElement(cardEl, t) {
   const progressFill = cardEl.querySelector('.progress-bar-fill');
   if (progressFill) {
     progressFill.style.width = `${Math.min(100, Math.max(0, t.progress))}%`;
-    progressFill.className = `progress-bar-fill ${isSeeding ? 'seeding' : ''}`;
+    progressFill.className = `progress-bar-fill ${isSeeding ? 'seeding' : (isCardOffline ? 'peer-offline' : '')}`;
   }
 
   // Update swarm banner
@@ -638,7 +645,8 @@ function renderTorrents() {
       t.state === 'metadata' || 
       t.state === 'inspecting' || 
       t.state === 'processing' || 
-      t.state === 'creating_swarm'
+      t.state === 'creating_swarm' ||
+      t.state === 'peer_offline'
     );
   } else if (currentFilter === 'completed') {
     filtered = filtered.filter(t => t.state === 'seeding' || t.state === 'completed' || t.progress >= 100);
