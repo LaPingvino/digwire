@@ -24,7 +24,6 @@ var DefaultTier1Trackers = []string{
 	"udp://p4p.arenabg.com:1337/announce",
 	"udp://tracker.bittor.pw:1337/announce",
 	"udp://tracker.altrosky.nl:2710/announce",
-	"http://torrent.ubuntu.com:6969/announce",
 	"https://tracker.tamersunion.org:443/announce",
 	"udp://tracker.dump.cl:6969/announce",
 }

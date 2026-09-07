@@ -518,7 +518,7 @@ func (idx *Indexer) crawlerWorker() {
 				continue
 			}
 
-			mag := fmt.Sprintf("magnet:?xt=urn:btih:%s&tr=udp%%3A%%2F%%2Ftracker.opentrackr.org%%3A1337%%2Fannounce&tr=udp%%3A%%2F%%2Fopen.stealth.si%%3A80%%2Fannounce&tr=http%%3A%%2F%%2Ftorrent.ubuntu.com%%3A6969%%2Fannounce", hashHex)
+			mag := fmt.Sprintf("magnet:?xt=urn:btih:%s&tr=udp%%3A%%2F%%2Ftracker.opentrackr.org%%3A1337%%2Fannounce&tr=udp%%3A%%2F%%2Fopen.stealth.si%%3A80%%2Fannounce&tr=udp%%3A%%2F%%2Ftracker.torrent.eu.org%%3A451%%2Fannounce", hashHex)
 			t, err := idx.client.AddMagnet(mag)
 			if err != nil {
 				continue

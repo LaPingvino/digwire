@@ -444,13 +444,26 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 			}
 			addrs, _ := dht.ResolveHostPorts(custom)
 			defAddrs, _ := dht.GlobalBootstrapAddrs(network)
-			return append(addrs, defAddrs...), nil
+			var filtered []dht.Addr
+			for _, a := range append(addrs, defAddrs...) {
+				ip := a.IP()
+				if ip == nil {
+					continue
+				}
+				if strings.HasPrefix(network, "udp4") && ip.To4() != nil {
+					filtered = append(filtered, a)
+				} else if strings.HasPrefix(network, "udp6") && ip.To4() == nil && ip.To16() != nil {
+					filtered = append(filtered, a)
+				}
+			}
+			return filtered, nil
 		}
 	}
 
-	// Low-overhead DHT configuration (queries peers and responds within swarm, but does not route global foreign traffic)
+	// Active DHT configuration: participate in BEP 5 DHT routing table and peer announcements
 	tConfig.ConfigureAnacrolixDhtServer = func(dhtCfg *dht.ServerConfig) {
-		dhtCfg.Passive = true
+		dhtCfg.Passive = false
+		dhtCfg.WaitToReply = false
 	}
 
 	// 1/1 Gbps High-Throughput & Low-Latency Tuning
@@ -1604,19 +1617,46 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 	var extractedWebSeeds []string
 	var extractedPeers []string
 	var displayName string
+	var infoHashHex string
 	if strings.HasPrefix(uriOrURL, "magnet:?") {
 		if magObj, err := metainfo.ParseMagnetUri(uriOrURL); err == nil {
 			extractedWebSeeds = magObj.Params["ws"]
 			displayName = magObj.DisplayName
+			infoHashHex = magObj.InfoHash.HexString()
 		}
 		extractedPeers = ExtractPeersFromMagnet(uriOrURL)
+	} else if len(uriOrURL) == 40 || len(uriOrURL) == 32 {
+		infoHashHex = strings.ToLower(uriOrURL)
 	}
 
-	uriOrURL = SuperchargeMagnet(uriOrURL)
-	t, err := e.client.AddMagnet(uriOrURL)
-	if err != nil {
-		return nil, err
+	var t *torrent.Torrent
+	var err error
+
+	// 1. If metainfo is already cached on disk, load directly for instantaneous metadata
+	if infoHashHex != "" {
+		cachedPath := e.getTorrentCacheFilePath(infoHashHex)
+		if stat, statErr := os.Stat(cachedPath); statErr == nil && stat.Size() > 100 {
+			if mi, loadErr := metainfo.LoadFromFile(cachedPath); loadErr == nil && mi != nil {
+				spec := torrent.TorrentSpecFromMetaInfo(mi)
+				if addedT, _, specErr := e.client.AddTorrentSpec(spec); specErr == nil {
+					t = addedT
+				}
+			}
+		}
 	}
+
+	// 2. Otherwise add via magnet URI
+	if t == nil {
+		uriOrURL = SuperchargeMagnet(uriOrURL)
+		t, err = e.client.AddMagnet(uriOrURL)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Ensure data download is enabled (in case previously crawled or inspected in read-only mode)
+	t.AllowDataDownload()
+
 	if e.IsGermanyMode() {
 		t.DisallowDataUpload()
 	}
@@ -1645,16 +1685,18 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 		if tor.Info() == nil {
 			ticker := time.NewTicker(3 * time.Second)
 			defer ticker.Stop()
-			stopRetry := time.After(45 * time.Second)
 
-		retryLoop:
+		waitLoop:
 			for {
 				select {
+				case <-tor.Closed():
+					return
 				case <-tor.GotInfo():
-					break retryLoop
-				case <-stopRetry:
-					break retryLoop
+					break waitLoop
 				case <-ticker.C:
+					if tor.Info() != nil {
+						break waitLoop
+					}
 					if len(directPeers) > 0 {
 						tor.AddPeers(directPeers)
 					}
@@ -1663,15 +1705,25 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 			}
 		}
 
-		<-tor.GotInfo()
+		select {
+		case <-tor.Closed():
+			return
+		case <-tor.GotInfo():
+		}
 
-		if len(seeds) > 0 && tor.Info() != nil {
+		if tor.Info() == nil {
+			return
+		}
+
+		e.saveTorrentMetainfo(tor)
+
+		if len(seeds) > 0 {
 			clean := SanitizeWebSeeds(seeds, tor.Info().IsDir())
 			if len(clean) > 0 {
 				tor.AddWebSeeds(clean)
 			}
 		}
-		if e.dhtIndexer != nil && tor.Info() != nil {
+		if e.dhtIndexer != nil {
 			var fileNames []string
 			for _, f := range tor.Info().UpvertedFiles() {
 				fileNames = append(fileNames, f.DisplayPath(tor.Info()))
@@ -1745,7 +1797,14 @@ func (e *Engine) applyFileSelection(t *torrent.Torrent, selectedFiles []int, fil
 	}
 	hash := strings.ToLower(t.InfoHash().HexString())
 	go func() {
-		<-t.GotInfo()
+		select {
+		case <-t.Closed():
+			return
+		case <-t.GotInfo():
+		}
+		if t.Info() == nil {
+			return
+		}
 		e.mu.Lock()
 		defer e.mu.Unlock()
 

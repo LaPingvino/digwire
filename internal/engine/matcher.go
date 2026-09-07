@@ -446,13 +446,7 @@ func (e *Engine) FindSuggestedSwarm(ctx context.Context, task *HTTPTask, searchM
 		}
 
 		// Optimization B: Magnet Link candidate
-		magURI := cand.MagnetURI
-		// Enrich with standard trackers if missing
-		if !strings.Contains(magURI, "tr=") {
-			magURI += "&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce"
-			magURI += "&tr=http%3A%2F%2Ftorrent.ubuntu.com%3A6969%2Fannounce"
-			magURI += "&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce"
-		}
+		magURI := SuperchargeMagnet(cand.MagnetURI)
 
 		candHash := extractInfoHash(magURI)
 		if candHash != "" {

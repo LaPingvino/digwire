@@ -88,7 +88,7 @@ func (p *ApibayProvider) Search(ctx context.Context, query string) ([]Result, er
 		sizeBytes, _ := strconv.ParseInt(item.Size, 10, 64)
 		addedUnix, _ := strconv.ParseInt(item.Added, 10, 64)
 
-		magURI := fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s&tr=udp%%3A%%2F%%2Ftracker.opentrackr.org%%3A1337%%2Fannounce&tr=udp%%3A%%2F%%2Fopen.stealth.si%%3A80%%2Fannounce&tr=http%%3A%%2F%%2Ftorrent.ubuntu.com%%3A6969%%2Fannounce",
+		magURI := fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s&tr=udp%%3A%%2F%%2Ftracker.opentrackr.org%%3A1337%%2Fannounce&tr=udp%%3A%%2F%%2Fopen.stealth.si%%3A80%%2Fannounce&tr=udp%%3A%%2F%%2Ftracker.torrent.eu.org%%3A451%%2Fannounce",
 			strings.ToLower(item.InfoHash), url.QueryEscape(item.Name))
 
 		results = append(results, Result{
