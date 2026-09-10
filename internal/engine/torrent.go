@@ -433,30 +433,41 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 	tConfig.UpnpID = "digwire"
 
 	// High-Availability DHT Bootstrap Routers
+	bootstrapRouters := []string{
+		"router.bittorrent.com:6881",
+		"dht.transmissionbt.com:6881",
+		"dht.libtorrent.org:25401",
+		"router.utorrent.com:6881",
+		"dht.aelitis.com:6881",
+		"router.silotis.us:6881",
+	}
 	tConfig.DhtStartingNodes = func(network string) dht.StartingNodesGetter {
 		return func() ([]dht.Addr, error) {
-			custom := []string{
-				"router.bittorrent.com:6881",
-				"dht.transmissionbt.com:6881",
-				"dht.libtorrent.org:25401",
-				"router.utorrent.com:6881",
-				"dht.aelitis.com:6881",
-			}
-			addrs, _ := dht.ResolveHostPorts(custom)
+			addrs, _ := dht.ResolveHostPorts(bootstrapRouters)
 			defAddrs, _ := dht.GlobalBootstrapAddrs(network)
-			var filtered []dht.Addr
-			for _, a := range append(addrs, defAddrs...) {
-				ip := a.IP()
-				if ip == nil {
-					continue
+			allAddrs := append(addrs, defAddrs...)
+			if strings.Contains(network, "4") {
+				var filtered []dht.Addr
+				for _, a := range allAddrs {
+					if a.IP() != nil && a.IP().To4() != nil {
+						filtered = append(filtered, a)
+					}
 				}
-				if strings.HasPrefix(network, "udp4") && ip.To4() != nil {
-					filtered = append(filtered, a)
-				} else if strings.HasPrefix(network, "udp6") && ip.To4() == nil && ip.To16() != nil {
-					filtered = append(filtered, a)
+				if len(filtered) > 0 {
+					return filtered, nil
+				}
+			} else if strings.Contains(network, "6") {
+				var filtered []dht.Addr
+				for _, a := range allAddrs {
+					if a.IP() != nil && a.IP().To4() == nil && a.IP().To16() != nil {
+						filtered = append(filtered, a)
+					}
+				}
+				if len(filtered) > 0 {
+					return filtered, nil
 				}
 			}
-			return filtered, nil
+			return allAddrs, nil
 		}
 	}
 
@@ -464,6 +475,43 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 	tConfig.ConfigureAnacrolixDhtServer = func(dhtCfg *dht.ServerConfig) {
 		dhtCfg.Passive = false
 		dhtCfg.WaitToReply = false
+
+		// Network-aware starting nodes based on actual socket binding IP
+		if dhtCfg.Conn != nil && dhtCfg.Conn.LocalAddr() != nil {
+			if udpAddr, ok := dhtCfg.Conn.LocalAddr().(*net.UDPAddr); ok && udpAddr.IP != nil {
+				isIPv6 := udpAddr.IP.To4() == nil && udpAddr.IP.To16() != nil
+				origGetter := dhtCfg.StartingNodes
+				dhtCfg.StartingNodes = func() ([]dht.Addr, error) {
+					var nodes []dht.Addr
+					if origGetter != nil {
+						nodes, _ = origGetter()
+					}
+					if len(nodes) == 0 {
+						nodes, _ = dht.GlobalBootstrapAddrs("")
+					}
+					var matched []dht.Addr
+					for _, a := range nodes {
+						ip := a.IP()
+						if ip == nil {
+							continue
+						}
+						if isIPv6 {
+							if ip.To4() == nil && ip.To16() != nil {
+								matched = append(matched, a)
+							}
+						} else {
+							if ip.To4() != nil {
+								matched = append(matched, a)
+							}
+						}
+					}
+					if len(matched) == 0 {
+						return nodes, nil
+					}
+					return matched, nil
+				}
+			}
+		}
 	}
 
 	// 1/1 Gbps High-Throughput & Low-Latency Tuning
