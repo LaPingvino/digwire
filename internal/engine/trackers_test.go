@@ -91,3 +91,72 @@ func TestBEP52InfoHashExtraction(t *testing.T) {
 	}
 }
 
+func TestAddBEP52Magnets(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := config.DefaultConfig()
+	cfg.SetConfigPath(filepath.Join(tmp, "config.yaml"))
+	cfg.DownloadDir = tmp
+	cfg.ListenPort = 0
+	eng, err := NewEngine(cfg)
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+	defer eng.Close()
+
+	// 1. User's pure v2 magnet
+	v2Mag := "magnet:?xt=urn:btmh:1220caf1e1c30e81cb361b9ee167c4aa64228a7fa4fa9f6105232b28ad099f3a302e&dn=bittorrent-v2-test"
+	torV2, errV2 := eng.Add(v2Mag)
+	if errV2 != nil {
+		t.Fatalf("pure v2 add failed: %v", errV2)
+	}
+	if torV2 == nil {
+		t.Fatal("expected non-nil torrent for pure v2")
+	}
+	t.Logf("pure v2 add: tor=%v, err=%v", torV2, errV2)
+
+	// 2. User's hybrid magnet
+	hybridMag := "magnet:?xt=urn:btih:631a31dd0a46257d5078c0dee4e66e26f73e42ac&xt=urn:btmh:1220d8dd32ac93357c368556af3ac1d95c9d76bd0dff6fa9833ecdac3d53134efabb&dn=bittorrent-v1-v2-hybrid-test"
+	torHyb, errHyb := eng.Add(hybridMag)
+	if errHyb != nil {
+		t.Fatalf("hybrid add failed: %v", errHyb)
+	}
+	if torHyb == nil {
+		t.Fatal("expected non-nil torrent for hybrid")
+	}
+	t.Logf("hybrid add: tor=%v, err=%v", torHyb, errHyb)
+
+	stats := eng.GetGlobalStats()
+	if stats.TotalV2 != 1 {
+		t.Fatalf("expected 1 TotalV2, got %d", stats.TotalV2)
+	}
+	if stats.TotalHybrid != 1 {
+		t.Fatalf("expected 1 TotalHybrid, got %d", stats.TotalHybrid)
+	}
+
+	torrents := eng.GetTorrents()
+	if len(torrents) != 2 {
+		t.Fatalf("expected 2 torrents, got %d", len(torrents))
+	}
+	var foundV2, foundHybrid bool
+	for _, tor := range torrents {
+		if tor.ProtocolVersion == "v2" {
+			foundV2 = true
+			if tor.InfoHashV2 != "caf1e1c30e81cb361b9ee167c4aa64228a7fa4fa9f6105232b28ad099f3a302e" {
+				t.Fatalf("unexpected v2 hash: %s", tor.InfoHashV2)
+			}
+		}
+		if tor.ProtocolVersion == "hybrid" {
+			foundHybrid = true
+			if tor.InfoHashV2 != "d8dd32ac93357c368556af3ac1d95c9d76bd0dff6fa9833ecdac3d53134efabb" {
+				t.Fatalf("unexpected hybrid v2 hash: %s", tor.InfoHashV2)
+			}
+		}
+	}
+	if !foundV2 {
+		t.Fatal("expected to find v2 torrent in GetTorrents")
+	}
+	if !foundHybrid {
+		t.Fatal("expected to find hybrid torrent in GetTorrents")
+	}
+}
+

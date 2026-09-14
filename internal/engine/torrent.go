@@ -247,6 +247,7 @@ type rateTracker struct {
 	savedTotalBytes     int64
 	savedCompletedBytes int64
 	skippedFiles        map[int]bool
+	magnetURI           string
 }
 
 func (tr *rateTracker) setVerifyProgress(pct float64) {
@@ -697,7 +698,12 @@ func (e *Engine) saveSessionLocked() {
 		}
 
 		webseeds := e.webSeedsMap[hash]
-		mag := fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", hash, url.QueryEscape(name))
+		mag := ""
+		if tr.magnetURI != "" {
+			mag = tr.magnetURI
+		} else {
+			mag = fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", hash, url.QueryEscape(name))
+		}
 		mag = AppendWebSeedsToMagnet(SuperchargeMagnet(mag), webseeds)
 
 		isSeeding := totalBytes > 0 && completedBytes >= totalBytes
@@ -853,7 +859,7 @@ func (e *Engine) markTorrentPiecesComplete(tor *torrent.Torrent) {
 			_ = e.pieceComp.Set(metainfo.PieceKey{
 				InfoHash: ih,
 				Index:    metainfo.PieceIndex(i),
-			}, true)
+			}, g.Some(true))
 		}
 		p := tor.Piece(i)
 		p.UpdateCompletion()
@@ -1766,6 +1772,9 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 	}
 	wsList := e.webSeedsMap[hash]
 	e.initTracker(hash, displayName)
+	if tr := e.rateMap[hash]; tr != nil && strings.HasPrefix(uriOrURL, "magnet:?") {
+		tr.magnetURI = uriOrURL
+	}
 	e.saveSessionLocked()
 	e.mu.Unlock()
 
@@ -3207,6 +3216,27 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 			} else if info.HasV2() {
 				protocolVersion = "v2"
 			}
+		} else {
+			magToCheck := magURI
+			if tracker != nil && tracker.magnetURI != "" {
+				magToCheck = tracker.magnetURI
+			} else if st, ok := e.savedTorrentsMap[hash]; ok && st.MagnetURI != "" {
+				magToCheck = st.MagnetURI
+			}
+			if magToCheck != "" {
+				if parsedMag, err := metainfo.ParseMagnetV2Uri(magToCheck); err == nil {
+					if parsedMag.V2InfoHash.Ok {
+						infoHashV2 = parsedMag.V2InfoHash.Value.HexString()
+						if parsedMag.InfoHash.Ok {
+							protocolVersion = "hybrid"
+							isHybrid = true
+						} else {
+							protocolVersion = "v2"
+						}
+					}
+					magURI = magToCheck
+				}
+			}
 		}
 		magURI = AppendWebSeedsToMagnet(SuperchargeMagnet(magURI), webseeds)
 		webConns := t.WebseedPeerConns()
@@ -3851,6 +3881,27 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 				} else if info.HasV2() {
 					protocolVersion = "v2"
 				}
+			} else {
+				magToCheck := magURI
+				if tr != nil && tr.magnetURI != "" {
+					magToCheck = tr.magnetURI
+				} else if st, ok := e.savedTorrentsMap[hashHex]; ok && st.MagnetURI != "" {
+					magToCheck = st.MagnetURI
+				}
+				if magToCheck != "" {
+					if parsedMag, err := metainfo.ParseMagnetV2Uri(magToCheck); err == nil {
+						if parsedMag.V2InfoHash.Ok {
+							infoHashV2 = parsedMag.V2InfoHash.Value.HexString()
+							if parsedMag.InfoHash.Ok {
+								protocolVersion = "hybrid"
+								isHybrid = true
+							} else {
+								protocolVersion = "v2"
+							}
+						}
+						magURI = magToCheck
+					}
+				}
 			}
 
 			var files []TorrentFileDetail
@@ -4409,6 +4460,22 @@ func (e *Engine) GetGlobalStats() GlobalStats {
 					isHybrid = true
 				} else if info.HasV2() {
 					isV2 = true
+				}
+			} else {
+				mag := ""
+				if tr != nil && tr.magnetURI != "" {
+					mag = strings.ToLower(tr.magnetURI)
+				} else if st, ok := e.savedTorrentsMap[h]; ok && st.MagnetURI != "" {
+					mag = strings.ToLower(st.MagnetURI)
+				}
+				if mag != "" {
+					hasV1 := strings.Contains(mag, "xt=urn:btih:")
+					hasV2 := strings.Contains(mag, "xt=urn:btmh:")
+					if hasV1 && hasV2 {
+						isHybrid = true
+					} else if hasV2 {
+						isV2 = true
+					}
 				}
 			}
 			if isHybrid {
