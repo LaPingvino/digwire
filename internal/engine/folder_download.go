@@ -657,7 +657,7 @@ func (t *FolderTask) downloadFileItem(m *FolderManager, item *FolderFileItem) {
 		t.mu.Unlock()
 		return
 	}
-	req.Header.Set("User-Agent", "Digwire/0.3.3 (Unified Folder Downloader)")
+	req.Header.Set("User-Agent", "Digwire/0.4.0 (Unified Folder Downloader)")
 
 	if existingBytes > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", existingBytes))

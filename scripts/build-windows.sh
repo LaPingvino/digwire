@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-VERSION="${1:-0.3.3}"
+VERSION="${1:-0.4.0}"
 OUTPUT_DIR="dist/windows"
 mkdir -p "$OUTPUT_DIR"
 

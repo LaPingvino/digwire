@@ -109,31 +109,41 @@ func BuildBEP52MetaInfo(sourcePath string, isHybrid bool, comment string, tracke
 				return nil, fmt.Errorf("failed to open file %s: %w", rec.absPath, openErr)
 			}
 
-			buf := make([]byte, merkle.BlockSize)
+			chunkBufSize := 1024 * 1024
+			buf := make([]byte, chunkBufSize)
 			var currentPieceBlocks [][32]byte
 
 			for {
-				n, rErr := io.ReadFull(f, buf)
+				n, rErr := f.Read(buf)
 				if n > 0 {
-					blockHash := sha256.Sum256(buf[:n])
-					currentPieceBlocks = append(currentPieceBlocks, blockHash)
-				}
-				if len(currentPieceBlocks) == blocksPerPiece || (rErr != nil && len(currentPieceBlocks) > 0) {
-					// Compute piece root padded to blocksPerPiece
-					paddedBlocks := make([][32]byte, blocksPerPiece)
-					copy(paddedBlocks, currentPieceBlocks)
-					// Leaves not present are zero-hashes
-					pRoot := merkle.RootWithPadHash(paddedBlocks, [32]byte{})
-					layerHashes = append(layerHashes, pRoot)
-					currentPieceBlocks = nil
+					for offset := 0; offset < n; offset += merkle.BlockSize {
+						end := offset + merkle.BlockSize
+						if end > n {
+							end = n
+						}
+						blockHash := sha256.Sum256(buf[offset:end])
+						currentPieceBlocks = append(currentPieceBlocks, blockHash)
+						if len(currentPieceBlocks) == blocksPerPiece {
+							pRoot := merkle.RootWithPadHash(currentPieceBlocks, [32]byte{})
+							layerHashes = append(layerHashes, pRoot)
+							currentPieceBlocks = nil
+						}
+					}
 				}
 				if rErr != nil {
-					if rErr == io.EOF || rErr == io.ErrUnexpectedEOF {
+					if rErr == io.EOF {
 						break
 					}
 					f.Close()
 					return nil, fmt.Errorf("error reading %s: %w", rec.absPath, rErr)
 				}
+			}
+			if len(currentPieceBlocks) > 0 {
+				paddedBlocks := make([][32]byte, blocksPerPiece)
+				copy(paddedBlocks, currentPieceBlocks)
+				pRoot := merkle.RootWithPadHash(paddedBlocks, [32]byte{})
+				layerHashes = append(layerHashes, pRoot)
+				currentPieceBlocks = nil
 			}
 			f.Close()
 
@@ -184,7 +194,7 @@ func BuildBEP52MetaInfo(sourcePath string, isHybrid bool, comment string, tracke
 			if openErr != nil {
 				return nil, fmt.Errorf("failed to open %s for v1 hashing: %w", rec.absPath, openErr)
 			}
-			chunk := make([]byte, 64*1024)
+			chunk := make([]byte, 1024*1024)
 			for {
 				n, rErr := f.Read(chunk)
 				if n > 0 {
