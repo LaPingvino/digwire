@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -20,14 +21,24 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+type DHTFileEntry struct {
+	Path       string `json:"path"`
+	SizeBytes  int64  `json:"size_bytes,omitempty"`
+	PiecesRoot string `json:"pieces_root,omitempty"`
+}
+
 type DHTRecord struct {
-	InfoHash     string         `json:"info_hash"`
-	Name         string         `json:"name"`
-	SizeBytes    int64          `json:"size_bytes"`
-	NumFiles     int            `json:"num_files"`
-	DiscoveredAt int64          `json:"discovered_at"`
-	Files        []string       `json:"files,omitempty"`
-	Activity     *SwarmActivity `json:"activity,omitempty"`
+	InfoHash        string         `json:"info_hash"`
+	InfoHashV2      string         `json:"info_hash_v2,omitempty"`
+	ProtocolVersion string         `json:"protocol_version,omitempty"` // "v1", "v2", "hybrid"
+	Name            string         `json:"name"`
+	SizeBytes       int64          `json:"size_bytes"`
+	NumFiles        int            `json:"num_files"`
+	DiscoveredAt    int64          `json:"discovered_at"`
+	Files           []string       `json:"files,omitempty"`
+	PiecesRoots     []string       `json:"pieces_roots,omitempty"`
+	FileEntries     []DHTFileEntry `json:"file_entries,omitempty"`
+	Activity        *SwarmActivity `json:"activity,omitempty"`
 }
 
 const (
@@ -64,6 +75,48 @@ func tokenize(s string) []string {
 	return tokens
 }
 
+func initSchema(db *sql.DB) error {
+	schema := `
+	CREATE TABLE IF NOT EXISTS dht_records (
+		info_hash TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		size_bytes INTEGER DEFAULT 0,
+		num_files INTEGER DEFAULT 0,
+		discovered_at INTEGER NOT NULL,
+		files_json TEXT DEFAULT '[]',
+		activity_json TEXT DEFAULT '{}',
+		last_seeders INTEGER DEFAULT 0,
+		last_peers INTEGER DEFAULT 0,
+		last_seen_healthy INTEGER DEFAULT 0,
+		info_hash_v2 TEXT DEFAULT '',
+		protocol_version TEXT DEFAULT 'v1',
+		pieces_roots_json TEXT DEFAULT '[]'
+	);
+	CREATE INDEX IF NOT EXISTS idx_dht_name ON dht_records(name);
+	CREATE INDEX IF NOT EXISTS idx_dht_discovered ON dht_records(discovered_at DESC);
+	CREATE INDEX IF NOT EXISTS idx_dht_v2 ON dht_records(info_hash_v2);
+
+	CREATE TABLE IF NOT EXISTS dht_files (
+		info_hash TEXT NOT NULL,
+		file_path TEXT NOT NULL,
+		size_bytes INTEGER DEFAULT 0,
+		pieces_root TEXT DEFAULT '',
+		PRIMARY KEY(info_hash, file_path)
+	);
+	CREATE INDEX IF NOT EXISTS idx_dht_files_root ON dht_files(pieces_root);
+	CREATE INDEX IF NOT EXISTS idx_dht_files_path ON dht_files(file_path);
+	`
+	if _, err := db.Exec(schema); err != nil {
+		return err
+	}
+
+	// Safely ensure new columns exist for upgraded schemas
+	_, _ = db.Exec("ALTER TABLE dht_records ADD COLUMN info_hash_v2 TEXT DEFAULT '';")
+	_, _ = db.Exec("ALTER TABLE dht_records ADD COLUMN protocol_version TEXT DEFAULT 'v1';")
+	_, _ = db.Exec("ALTER TABLE dht_records ADD COLUMN pieces_roots_json TEXT DEFAULT '[]';")
+	return nil
+}
+
 func NewIndexer(client *torrent.Client) (*Indexer, error) {
 	configDir, err := os.UserConfigDir()
 	if err != nil {
@@ -83,23 +136,7 @@ func NewIndexer(client *torrent.Client) (*Indexer, error) {
 	_, _ = db.Exec("PRAGMA busy_timeout = 5000;")
 	_, _ = db.Exec("PRAGMA synchronous = NORMAL;")
 
-	schema := `
-	CREATE TABLE IF NOT EXISTS dht_records (
-		info_hash TEXT PRIMARY KEY,
-		name TEXT NOT NULL,
-		size_bytes INTEGER DEFAULT 0,
-		num_files INTEGER DEFAULT 0,
-		discovered_at INTEGER NOT NULL,
-		files_json TEXT DEFAULT '[]',
-		activity_json TEXT DEFAULT '{}',
-		last_seeders INTEGER DEFAULT 0,
-		last_peers INTEGER DEFAULT 0,
-		last_seen_healthy INTEGER DEFAULT 0
-	);
-	CREATE INDEX IF NOT EXISTS idx_dht_name ON dht_records(name);
-	CREATE INDEX IF NOT EXISTS idx_dht_discovered ON dht_records(discovered_at DESC);
-	`
-	if _, err := db.Exec(schema); err != nil {
+	if err := initSchema(db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("failed to initialize sqlite schema: %w", err)
 	}
@@ -215,7 +252,8 @@ func (idx *Indexer) loadRecentFromSQLite() {
 		return
 	}
 	rows, err := idx.db.Query(`
-		SELECT info_hash, name, size_bytes, num_files, discovered_at, files_json, activity_json
+		SELECT info_hash, name, size_bytes, num_files, discovered_at, files_json, activity_json,
+		       COALESCE(info_hash_v2, ''), COALESCE(protocol_version, 'v1'), COALESCE(pieces_roots_json, '[]')
 		FROM dht_records
 		ORDER BY discovered_at DESC
 		LIMIT 200
@@ -230,8 +268,9 @@ func (idx *Indexer) loadRecentFromSQLite() {
 
 	for rows.Next() {
 		var rec DHTRecord
-		var filesStr, actStr string
-		if err := rows.Scan(&rec.InfoHash, &rec.Name, &rec.SizeBytes, &rec.NumFiles, &rec.DiscoveredAt, &filesStr, &actStr); err != nil {
+		var filesStr, actStr, rootsStr string
+		if err := rows.Scan(&rec.InfoHash, &rec.Name, &rec.SizeBytes, &rec.NumFiles, &rec.DiscoveredAt, &filesStr, &actStr,
+			&rec.InfoHashV2, &rec.ProtocolVersion, &rootsStr); err != nil {
 			continue
 		}
 		if filesStr != "" && filesStr != "null" {
@@ -239,6 +278,9 @@ func (idx *Indexer) loadRecentFromSQLite() {
 		}
 		if actStr != "" && actStr != "null" && actStr != "{}" {
 			_ = json.Unmarshal([]byte(actStr), &rec.Activity)
+		}
+		if rootsStr != "" && rootsStr != "null" && rootsStr != "[]" {
+			_ = json.Unmarshal([]byte(rootsStr), &rec.PiecesRoots)
 		}
 		rec.InfoHash = strings.ToLower(rec.InfoHash)
 		idx.cache[rec.InfoHash] = &rec
@@ -270,7 +312,7 @@ func (idx *Indexer) GetRecord(infoHashHex string) *DHTRecord {
 		return nil
 	}
 	hash := strings.ToLower(strings.TrimSpace(infoHashHex))
-	if len(hash) != 40 {
+	if len(hash) != 40 && len(hash) != 64 {
 		return nil
 	}
 
@@ -279,6 +321,12 @@ func (idx *Indexer) GetRecord(infoHashHex string) *DHTRecord {
 		idx.mu.RUnlock()
 		return rec
 	}
+	for _, rec := range idx.cache {
+		if strings.EqualFold(rec.InfoHashV2, hash) {
+			idx.mu.RUnlock()
+			return rec
+		}
+	}
 	idx.mu.RUnlock()
 
 	if idx.db == nil {
@@ -286,11 +334,13 @@ func (idx *Indexer) GetRecord(infoHashHex string) *DHTRecord {
 	}
 
 	var rec DHTRecord
-	var filesStr, actStr string
+	var filesStr, actStr, rootsStr string
 	err := idx.db.QueryRow(`
-		SELECT info_hash, name, size_bytes, num_files, discovered_at, files_json, activity_json
-		FROM dht_records WHERE info_hash = ?
-	`, hash).Scan(&rec.InfoHash, &rec.Name, &rec.SizeBytes, &rec.NumFiles, &rec.DiscoveredAt, &filesStr, &actStr)
+		SELECT info_hash, name, size_bytes, num_files, discovered_at, files_json, activity_json,
+		       COALESCE(info_hash_v2, ''), COALESCE(protocol_version, 'v1'), COALESCE(pieces_roots_json, '[]')
+		FROM dht_records WHERE info_hash = ? OR info_hash_v2 = ?
+	`, hash, hash).Scan(&rec.InfoHash, &rec.Name, &rec.SizeBytes, &rec.NumFiles, &rec.DiscoveredAt, &filesStr, &actStr,
+		&rec.InfoHashV2, &rec.ProtocolVersion, &rootsStr)
 	if err != nil {
 		return nil
 	}
@@ -300,6 +350,9 @@ func (idx *Indexer) GetRecord(infoHashHex string) *DHTRecord {
 	}
 	if actStr != "" && actStr != "null" && actStr != "{}" {
 		_ = json.Unmarshal([]byte(actStr), &rec.Activity)
+	}
+	if rootsStr != "" && rootsStr != "null" && rootsStr != "[]" {
+		_ = json.Unmarshal([]byte(rootsStr), &rec.PiecesRoots)
 	}
 	rec.InfoHash = strings.ToLower(rec.InfoHash)
 
@@ -328,7 +381,7 @@ func (idx *Indexer) RecordSwarmActivity(infoHashHex string, name string, seeders
 		return
 	}
 	infoHashHex = strings.ToLower(strings.TrimSpace(infoHashHex))
-	if len(infoHashHex) != 40 {
+	if len(infoHashHex) != 40 && len(infoHashHex) != 64 {
 		return
 	}
 
@@ -375,6 +428,18 @@ func (idx *Indexer) AddRecord(rec *DHTRecord) {
 			existing.Files = rec.Files
 			existing.NumFiles = rec.NumFiles
 		}
+		if len(rec.PiecesRoots) > 0 && len(existing.PiecesRoots) == 0 {
+			existing.PiecesRoots = rec.PiecesRoots
+		}
+		if rec.InfoHashV2 != "" && existing.InfoHashV2 == "" {
+			existing.InfoHashV2 = rec.InfoHashV2
+		}
+		if rec.ProtocolVersion != "" && existing.ProtocolVersion == "" {
+			existing.ProtocolVersion = rec.ProtocolVersion
+		}
+		if len(rec.FileEntries) > 0 && len(existing.FileEntries) == 0 {
+			existing.FileEntries = rec.FileEntries
+		}
 		idx.mu.Unlock()
 		idx.saveRecordToSQLite(existing)
 		return
@@ -391,6 +456,7 @@ func (idx *Indexer) saveRecordToSQLite(rec *DHTRecord) {
 	}
 	filesJSON, _ := json.Marshal(rec.Files)
 	activityJSON, _ := json.Marshal(rec.Activity)
+	rootsJSON, _ := json.Marshal(rec.PiecesRoots)
 
 	var lastSeeders, lastPeers int
 	var lastSeenHealthy int64
@@ -403,8 +469,8 @@ func (idx *Indexer) saveRecordToSQLite(rec *DHTRecord) {
 	query := `
 	INSERT INTO dht_records (
 		info_hash, name, size_bytes, num_files, discovered_at, files_json, activity_json,
-		last_seeders, last_peers, last_seen_healthy
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		last_seeders, last_peers, last_seen_healthy, info_hash_v2, protocol_version, pieces_roots_json
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(info_hash) DO UPDATE SET
 		name = CASE WHEN excluded.name != '' THEN excluded.name ELSE dht_records.name END,
 		size_bytes = CASE WHEN excluded.size_bytes > 0 THEN excluded.size_bytes ELSE dht_records.size_bytes END,
@@ -413,18 +479,38 @@ func (idx *Indexer) saveRecordToSQLite(rec *DHTRecord) {
 		activity_json = excluded.activity_json,
 		last_seeders = excluded.last_seeders,
 		last_peers = excluded.last_peers,
-		last_seen_healthy = CASE WHEN excluded.last_seen_healthy > 0 THEN excluded.last_seen_healthy ELSE dht_records.last_seen_healthy END;
+		last_seen_healthy = CASE WHEN excluded.last_seen_healthy > 0 THEN excluded.last_seen_healthy ELSE dht_records.last_seen_healthy END,
+		info_hash_v2 = CASE WHEN excluded.info_hash_v2 != '' THEN excluded.info_hash_v2 ELSE dht_records.info_hash_v2 END,
+		protocol_version = CASE WHEN excluded.protocol_version != '' THEN excluded.protocol_version ELSE dht_records.protocol_version END,
+		pieces_roots_json = CASE WHEN excluded.pieces_roots_json != '[]' THEN excluded.pieces_roots_json ELSE dht_records.pieces_roots_json END;
 	`
 	_, _ = idx.db.Exec(query,
 		rec.InfoHash, rec.Name, rec.SizeBytes, rec.NumFiles, rec.DiscoveredAt,
 		string(filesJSON), string(activityJSON), lastSeeders, lastPeers, lastSeenHealthy,
+		rec.InfoHashV2, rec.ProtocolVersion, string(rootsJSON),
 	)
+
+	if len(rec.FileEntries) > 0 {
+		fileStmt, err := idx.db.Prepare(`
+			INSERT INTO dht_files (info_hash, file_path, size_bytes, pieces_root)
+			VALUES (?, ?, ?, ?)
+			ON CONFLICT(info_hash, file_path) DO UPDATE SET
+				size_bytes = excluded.size_bytes,
+				pieces_root = CASE WHEN excluded.pieces_root != '' THEN excluded.pieces_root ELSE dht_files.pieces_root END;
+		`)
+		if err == nil {
+			for _, fe := range rec.FileEntries {
+				_, _ = fileStmt.Exec(rec.InfoHash, fe.Path, fe.SizeBytes, fe.PiecesRoot)
+			}
+			fileStmt.Close()
+		}
+	}
 }
 
 // QueueCrawl adds an infohash to the crawler worker queue
 func (idx *Indexer) QueueCrawl(infoHashHex string) {
 	infoHashHex = strings.ToLower(strings.TrimSpace(infoHashHex))
-	if len(infoHashHex) != 40 {
+	if len(infoHashHex) != 40 && len(infoHashHex) != 64 {
 		return
 	}
 
@@ -494,17 +580,48 @@ func (idx *Indexer) crawlerWorker() {
 			// NEVER touch it, disallow data download, or drop it!
 			if existingT, ok := idx.client.Torrent(ih); ok {
 				if info := existingT.Info(); info != nil {
+					mi := existingT.Metainfo()
+					var v2Hash string
+					var proto = "v1"
+					if len(mi.InfoBytes) > 0 {
+						if magV2, err := mi.MagnetV2(); err == nil && magV2.V2InfoHash.Ok {
+							v2Hash = hex.EncodeToString(magV2.V2InfoHash.Value[:])
+						}
+					}
+					if info.HasV1() && info.HasV2() {
+						proto = "hybrid"
+					} else if info.HasV2() {
+						proto = "v2"
+					}
+
 					var fileNames []string
+					var piecesRoots []string
+					var fileEntries []DHTFileEntry
 					for _, f := range info.UpvertedFiles() {
-						fileNames = append(fileNames, f.DisplayPath(info))
+						dispPath := f.DisplayPath(info)
+						fileNames = append(fileNames, dispPath)
+						var pRoot string
+						if f.PiecesRoot.Ok {
+							pRoot = hex.EncodeToString(f.PiecesRoot.Value[:])
+							piecesRoots = append(piecesRoots, pRoot)
+						}
+						fileEntries = append(fileEntries, DHTFileEntry{
+							Path:       dispPath,
+							SizeBytes:  f.Length,
+							PiecesRoot: pRoot,
+						})
 					}
 					idx.AddRecord(&DHTRecord{
-						InfoHash:     hashHex,
-						Name:         info.BestName(),
-						SizeBytes:    existingT.Length(),
-						NumFiles:     len(fileNames),
-						DiscoveredAt: time.Now().Unix(),
-						Files:        fileNames,
+						InfoHash:        hashHex,
+						InfoHashV2:      v2Hash,
+						ProtocolVersion: proto,
+						Name:            info.BestName(),
+						SizeBytes:       existingT.Length(),
+						NumFiles:        len(fileNames),
+						DiscoveredAt:    time.Now().Unix(),
+						Files:           fileNames,
+						PiecesRoots:     piecesRoots,
+						FileEntries:     fileEntries,
 					})
 				}
 				continue
@@ -535,6 +652,7 @@ func (idx *Indexer) crawlerWorker() {
 			case <-t.GotInfo():
 				info := t.Info()
 				if info != nil {
+					mi := t.Metainfo()
 					// Cache .torrent file to disk for instant zero-latency retrieval
 					configDir, _ := os.UserConfigDir()
 					if configDir != "" {
@@ -542,23 +660,52 @@ func (idx *Indexer) crawlerWorker() {
 						_ = os.MkdirAll(tDir, 0755)
 						tPath := filepath.Join(tDir, strings.ToLower(hashHex)+".torrent")
 						if f, err := os.Create(tPath); err == nil {
-							mi := t.Metainfo()
 							_ = mi.Write(f)
 							f.Close()
 						}
 					}
 
+					var v2Hash string
+					var proto = "v1"
+					if len(mi.InfoBytes) > 0 {
+						if magV2, err := mi.MagnetV2(); err == nil && magV2.V2InfoHash.Ok {
+							v2Hash = hex.EncodeToString(magV2.V2InfoHash.Value[:])
+						}
+					}
+					if info.HasV1() && info.HasV2() {
+						proto = "hybrid"
+					} else if info.HasV2() {
+						proto = "v2"
+					}
+
 					var fileNames []string
+					var piecesRoots []string
+					var fileEntries []DHTFileEntry
 					for _, f := range info.UpvertedFiles() {
-						fileNames = append(fileNames, f.DisplayPath(info))
+						dispPath := f.DisplayPath(info)
+						fileNames = append(fileNames, dispPath)
+						var pRoot string
+						if f.PiecesRoot.Ok {
+							pRoot = hex.EncodeToString(f.PiecesRoot.Value[:])
+							piecesRoots = append(piecesRoots, pRoot)
+						}
+						fileEntries = append(fileEntries, DHTFileEntry{
+							Path:       dispPath,
+							SizeBytes:  f.Length,
+							PiecesRoot: pRoot,
+						})
 					}
 					idx.AddRecord(&DHTRecord{
-						InfoHash:     hashHex,
-						Name:         info.BestName(),
-						SizeBytes:    t.Length(),
-						NumFiles:     len(fileNames),
-						DiscoveredAt: time.Now().Unix(),
-						Files:        fileNames,
+						InfoHash:        hashHex,
+						InfoHashV2:      v2Hash,
+						ProtocolVersion: proto,
+						Name:            info.BestName(),
+						SizeBytes:       t.Length(),
+						NumFiles:        len(fileNames),
+						DiscoveredAt:    time.Now().Unix(),
+						Files:           fileNames,
+						PiecesRoots:     piecesRoots,
+						FileEntries:     fileEntries,
 					})
 				}
 				idx.safeDrop(t, hashHex)
@@ -655,6 +802,14 @@ func (idx *Indexer) Search(query string) []*DHTRecord {
 		return nil
 	}
 
+	cleanQuery := strings.ToLower(strings.TrimSpace(query))
+	// If the query is a 64-character hex (potential BEP 52 pieces_root or v2 infohash), check by root directly
+	if len(cleanQuery) == 64 {
+		if rootMatches := idx.SearchByPiecesRoot(cleanQuery); len(rootMatches) > 0 {
+			return rootMatches
+		}
+	}
+
 	qTokens := tokenize(query)
 	if len(qTokens) == 0 {
 		return nil
@@ -664,13 +819,14 @@ func (idx *Indexer) Search(query string) []*DHTRecord {
 	var args []interface{}
 
 	for _, tok := range qTokens {
-		whereClauses = append(whereClauses, "(name LIKE ? OR files_json LIKE ?)")
+		whereClauses = append(whereClauses, "(name LIKE ? OR files_json LIKE ? OR pieces_roots_json LIKE ? OR info_hash = ? OR info_hash_v2 = ?)")
 		pattern := "%" + tok + "%"
-		args = append(args, pattern, pattern)
+		args = append(args, pattern, pattern, pattern, tok, tok)
 	}
 
 	sqlQuery := fmt.Sprintf(`
-		SELECT info_hash, name, size_bytes, num_files, discovered_at, files_json, activity_json
+		SELECT info_hash, name, size_bytes, num_files, discovered_at, files_json, activity_json,
+		       COALESCE(info_hash_v2, ''), COALESCE(protocol_version, 'v1'), COALESCE(pieces_roots_json, '[]')
 		FROM dht_records
 		WHERE %s
 		ORDER BY discovered_at DESC
@@ -686,8 +842,9 @@ func (idx *Indexer) Search(query string) []*DHTRecord {
 	var results []*DHTRecord
 	for rows.Next() {
 		var rec DHTRecord
-		var filesStr, actStr string
-		if err := rows.Scan(&rec.InfoHash, &rec.Name, &rec.SizeBytes, &rec.NumFiles, &rec.DiscoveredAt, &filesStr, &actStr); err != nil {
+		var filesStr, actStr, rootsStr string
+		if err := rows.Scan(&rec.InfoHash, &rec.Name, &rec.SizeBytes, &rec.NumFiles, &rec.DiscoveredAt, &filesStr, &actStr,
+			&rec.InfoHashV2, &rec.ProtocolVersion, &rootsStr); err != nil {
 			continue
 		}
 		if filesStr != "" && filesStr != "null" {
@@ -696,10 +853,55 @@ func (idx *Indexer) Search(query string) []*DHTRecord {
 		if actStr != "" && actStr != "null" && actStr != "{}" {
 			_ = json.Unmarshal([]byte(actStr), &rec.Activity)
 		}
+		if rootsStr != "" && rootsStr != "null" && rootsStr != "[]" {
+			_ = json.Unmarshal([]byte(rootsStr), &rec.PiecesRoots)
+		}
 		rec.InfoHash = strings.ToLower(rec.InfoHash)
 		results = append(results, &rec)
 	}
 
+	return results
+}
+
+// SearchByPiecesRoot finds torrent records that contain the exact file Merkle root
+func (idx *Indexer) SearchByPiecesRoot(rootHex string) []*DHTRecord {
+	if idx == nil || idx.db == nil || rootHex == "" {
+		return nil
+	}
+	rootHex = strings.ToLower(strings.TrimSpace(rootHex))
+	rows, err := idx.db.Query(`
+		SELECT DISTINCT r.info_hash, r.name, r.size_bytes, r.num_files, r.discovered_at, r.files_json, r.activity_json,
+		       COALESCE(r.info_hash_v2, ''), COALESCE(r.protocol_version, 'v1'), COALESCE(r.pieces_roots_json, '[]')
+		FROM dht_records r
+		JOIN dht_files f ON r.info_hash = f.info_hash
+		WHERE f.pieces_root = ?
+		LIMIT 50
+	`, rootHex)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var results []*DHTRecord
+	for rows.Next() {
+		var rec DHTRecord
+		var filesStr, actStr, rootsStr string
+		if err := rows.Scan(&rec.InfoHash, &rec.Name, &rec.SizeBytes, &rec.NumFiles, &rec.DiscoveredAt, &filesStr, &actStr,
+			&rec.InfoHashV2, &rec.ProtocolVersion, &rootsStr); err != nil {
+			continue
+		}
+		if filesStr != "" && filesStr != "null" {
+			_ = json.Unmarshal([]byte(filesStr), &rec.Files)
+		}
+		if actStr != "" && actStr != "null" && actStr != "{}" {
+			_ = json.Unmarshal([]byte(actStr), &rec.Activity)
+		}
+		if rootsStr != "" && rootsStr != "null" && rootsStr != "[]" {
+			_ = json.Unmarshal([]byte(rootsStr), &rec.PiecesRoots)
+		}
+		rec.InfoHash = strings.ToLower(rec.InfoHash)
+		results = append(results, &rec)
+	}
 	return results
 }
 

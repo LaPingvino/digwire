@@ -8,16 +8,19 @@ import (
 
 // FileEntry represents a file inside a torrent search result
 type FileEntry struct {
-	Path      string `json:"path"`
-	SizeBytes int64  `json:"size_bytes,omitempty"`
+	Path       string `json:"path"`
+	SizeBytes  int64  `json:"size_bytes,omitempty"`
+	PiecesRoot string `json:"pieces_root,omitempty"`
 }
 
 // Result represents a unified torrent search result from any backend.
 type Result struct {
-	Title        string                     `json:"title"`
-	InfoHash     string                     `json:"info_hash"`
-	MagnetURI    string                     `json:"magnet_uri"`
-	SizeBytes    int64                      `json:"size_bytes"`
+	Title           string                     `json:"title"`
+	InfoHash        string                     `json:"info_hash"`
+	InfoHashV2      string                     `json:"info_hash_v2,omitempty"`
+	ProtocolVersion string                     `json:"protocol_version,omitempty"` // "v1", "v2", "hybrid"
+	MagnetURI       string                     `json:"magnet_uri"`
+	SizeBytes       int64                      `json:"size_bytes"`
 	Seeders      int                        `json:"seeders"`
 	Leechers     int                        `json:"leechers"`
 	Provider     string                     `json:"provider"`

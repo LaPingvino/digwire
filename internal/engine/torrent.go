@@ -2006,6 +2006,9 @@ func (e *Engine) CreateTorrent(sourcePath, comment string) (string, string, erro
 	}
 	magnetObj := mi.Magnet(&h, &info)
 	magnetURI := magnetObj.String()
+	if magV2, err := mi.MagnetV2(); err == nil {
+		magnetURI = magV2.String()
+	}
 	if magnetURI == "" {
 		magnetURI = fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", hash, url.QueryEscape(torrentName))
 	}
@@ -2013,16 +2016,43 @@ func (e *Engine) CreateTorrent(sourcePath, comment string) (string, string, erro
 
 	if e.dhtIndexer != nil {
 		var fileNames []string
+		var piecesRoots []string
+		var fileEntries []dhtindex.DHTFileEntry
 		for _, f := range info.UpvertedFiles() {
-			fileNames = append(fileNames, f.DisplayPath(&info))
+			dispPath := f.DisplayPath(&info)
+			fileNames = append(fileNames, dispPath)
+			var pRoot string
+			if f.PiecesRoot.Ok {
+				pRoot = hex.EncodeToString(f.PiecesRoot.Value[:])
+				piecesRoots = append(piecesRoots, pRoot)
+			}
+			fileEntries = append(fileEntries, dhtindex.DHTFileEntry{
+				Path:       dispPath,
+				SizeBytes:  f.Length,
+				PiecesRoot: pRoot,
+			})
+		}
+		var v2Hash string
+		var proto = "v1"
+		if magV2, err := mi.MagnetV2(); err == nil && magV2.V2InfoHash.Ok {
+			v2Hash = hex.EncodeToString(magV2.V2InfoHash.Value[:])
+		}
+		if info.HasV1() && info.HasV2() {
+			proto = "hybrid"
+		} else if info.HasV2() {
+			proto = "v2"
 		}
 		e.dhtIndexer.AddRecord(&dhtindex.DHTRecord{
-			InfoHash:     hash,
-			Name:         torrentName,
-			SizeBytes:    info.TotalLength(),
-			NumFiles:     len(fileNames),
-			DiscoveredAt: time.Now().Unix(),
-			Files:        fileNames,
+			InfoHash:        hash,
+			InfoHashV2:      v2Hash,
+			ProtocolVersion: proto,
+			Name:            torrentName,
+			SizeBytes:       info.TotalLength(),
+			NumFiles:        len(fileNames),
+			DiscoveredAt:    time.Now().Unix(),
+			Files:           fileNames,
+			PiecesRoots:     piecesRoots,
+			FileEntries:     fileEntries,
 		})
 	}
 

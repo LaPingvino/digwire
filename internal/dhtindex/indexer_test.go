@@ -21,24 +21,8 @@ func createTestIndexer(t *testing.T) (*Indexer, string) {
 		t.Fatalf("failed to open sqlite: %v", err)
 	}
 
-	schema := `
-	CREATE TABLE IF NOT EXISTS dht_records (
-		info_hash TEXT PRIMARY KEY,
-		name TEXT NOT NULL,
-		size_bytes INTEGER DEFAULT 0,
-		num_files INTEGER DEFAULT 0,
-		discovered_at INTEGER NOT NULL,
-		files_json TEXT DEFAULT '[]',
-		activity_json TEXT DEFAULT '{}',
-		last_seeders INTEGER DEFAULT 0,
-		last_peers INTEGER DEFAULT 0,
-		last_seen_healthy INTEGER DEFAULT 0
-	);
-	CREATE INDEX IF NOT EXISTS idx_dht_name ON dht_records(name);
-	CREATE INDEX IF NOT EXISTS idx_dht_discovered ON dht_records(discovered_at DESC);
-	`
-	if _, err := db.Exec(schema); err != nil {
-		t.Fatalf("failed to create schema: %v", err)
+	if err := initSchema(db); err != nil {
+		t.Fatalf("failed to initialize schema: %v", err)
 	}
 
 	idx := &Indexer{
@@ -170,3 +154,59 @@ func TestUserTorrentDropProtection(t *testing.T) {
 		t.Fatalf("expected user torrent not to be queued for crawling")
 	}
 }
+
+func TestBEP52StorageAndPiecesRootSearch(t *testing.T) {
+	idx, tmp := createTestIndexer(t)
+	defer os.RemoveAll(tmp)
+	defer idx.Close()
+
+	v1Hash := strings.Repeat("c", 40)
+	v2Hash := strings.Repeat("d", 64)
+	piecesRoot := strings.Repeat("e", 64)
+
+	rec := &DHTRecord{
+		InfoHash:        v1Hash,
+		InfoHashV2:      v2Hash,
+		ProtocolVersion: "hybrid",
+		Name:            "BEP52 Hybrid Album",
+		SizeBytes:       250000000,
+		NumFiles:        1,
+		DiscoveredAt:    time.Now().Unix(),
+		Files:           []string{"01 - Title Track.flac"},
+		PiecesRoots:     []string{piecesRoot},
+		FileEntries: []DHTFileEntry{
+			{
+				Path:       "01 - Title Track.flac",
+				SizeBytes:  250000000,
+				PiecesRoot: piecesRoot,
+			},
+		},
+	}
+
+	idx.AddRecord(rec)
+
+	// Fetch via v1 hash
+	byV1 := idx.GetRecord(v1Hash)
+	if byV1 == nil || byV1.InfoHashV2 != v2Hash || byV1.ProtocolVersion != "hybrid" {
+		t.Fatalf("expected hybrid record by v1 hash, got %+v", byV1)
+	}
+
+	// Fetch via v2 hash
+	byV2 := idx.GetRecord(v2Hash)
+	if byV2 == nil || byV2.InfoHash != v1Hash {
+		t.Fatalf("expected hybrid record by v2 hash, got %+v", byV2)
+	}
+
+	// Search by pieces_root directly
+	rootMatches := idx.SearchByPiecesRoot(piecesRoot)
+	if len(rootMatches) != 1 || rootMatches[0].InfoHash != v1Hash {
+		t.Fatalf("expected 1 match for pieces_root, got %d", len(rootMatches))
+	}
+
+	// General search with 64-char pieces root
+	genMatches := idx.Search(piecesRoot)
+	if len(genMatches) != 1 || genMatches[0].InfoHash != v1Hash {
+		t.Fatalf("expected 1 match for search(piecesRoot), got %d", len(genMatches))
+	}
+}
+
