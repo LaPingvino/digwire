@@ -1133,6 +1133,13 @@ function switchDetailTab(tab) {
   const content = document.getElementById('detail-tab-content');
   if (!currentDetailData) return;
 
+  const vars = splitMagnetURI(currentDetailData.magnet_uri);
+  const isHybrid = currentDetailData.protocol_version === 'hybrid' || (vars.v1 && vars.v2);
+  const btnV1 = document.getElementById('btn-detail-copy-v1');
+  const btnV2 = document.getElementById('btn-detail-copy-v2');
+  if (btnV1) btnV1.style.display = isHybrid ? 'inline-flex' : 'none';
+  if (btnV2) btnV2.style.display = isHybrid ? 'inline-flex' : 'none';
+
   if (tab === 'overview') {
     const suggHtml = currentDetailData.suggested_swarm ? `
       <div class="swarm-suggestion-banner" style="grid-column: 1 / -1; margin-bottom: 8px;">
@@ -1145,9 +1152,58 @@ function switchDetailTab(tab) {
       </div>
     ` : '';
 
+    const isCompletedV1 = currentDetailData.protocol_version === 'v1' && 
+      ((currentDetailData.completed_bytes >= currentDetailData.total_bytes && currentDetailData.total_bytes > 0) || 
+       currentDetailData.state === 'seeding' || currentDetailData.state === 'completed');
+
+    const bep52UpgradeBanner = isCompletedV1 ? `
+      <div class="swarm-suggestion-banner" style="grid-column: 1 / -1; margin-bottom: 8px; background: linear-gradient(135deg, rgba(53, 132, 228, 0.15), rgba(154, 71, 237, 0.15)); border: 1px solid rgba(154, 71, 237, 0.4);">
+        <div>
+          ⚡ <strong>Upgrade to BitTorrent v2 (BEP 52) Hybrid Seeding!</strong>
+          <div style="font-size: 11.5px; color: var(--adw-dim-label); margin-top: 2px;">
+            Generate SHA-256 Merkle trees from your local files and seed to both v1 and modern v2 swarms simultaneously without re-downloading.
+          </div>
+        </div>
+        <button class="btn btn-primary" style="padding: 4px 12px; font-size: 11.5px; white-space: nowrap;" id="btn-upgrade-bep52" onclick="upgradeToBEP52('${currentDetailData.info_hash}')">
+          🚀 Start v2 Hybrid Seeding
+        </button>
+      </div>
+    ` : '';
+
+    const vars = splitMagnetURI(currentDetailData.magnet_uri);
+    const isHybridMagnet = currentDetailData.protocol_version === 'hybrid' || (vars.v1 && vars.v2);
+
+    const magnetHtml = isHybridMagnet ? `
+      <span class="detail-label">Source / Magnet:</span>
+      <div style="display: flex; flex-direction: column; gap: 6px;">
+        <div class="detail-code-box" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+          <span style="overflow: hidden; text-overflow: ellipsis;">${escapeHtml(vars.full)}</span>
+          <button class="btn" style="padding: 2px 8px; font-size: 11px;" onclick="copyCurrentMagnet('full')">Copy Full</button>
+        </div>
+        <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+          <button class="btn" style="padding: 3px 10px; font-size: 11px;" title="Copy Hybrid magnet with both v1 and v2 hashes" onclick="copyCurrentMagnet('full')">
+            🧲 Copy Hybrid
+          </button>
+          <button class="btn" style="padding: 3px 10px; font-size: 11px;" title="Copy v1-only magnet for legacy client compatibility" onclick="copyCurrentMagnet('v1')">
+            📋 Copy v1 (Legacy)
+          </button>
+          <button class="btn" style="padding: 3px 10px; font-size: 11px;" title="Copy pure BEP 52 v2 SHA-256 multihash magnet" onclick="copyCurrentMagnet('v2')">
+            ⚡ Copy v2 (BEP 52)
+          </button>
+        </div>
+      </div>
+    ` : `
+      <span class="detail-label">Source / Magnet:</span>
+      <div class="detail-code-box" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+        <span style="overflow: hidden; text-overflow: ellipsis;">${escapeHtml(currentDetailData.magnet_uri)}</span>
+        <button class="btn" style="padding: 2px 8px; font-size: 11px;" onclick="copyCurrentMagnet('full')">Copy</button>
+      </div>
+    `;
+
     content.innerHTML = `
       <div class="detail-grid">
         ${suggHtml}
+        ${bep52UpgradeBanner}
 
         <span class="detail-label">Name:</span>
         <span class="detail-val" style="font-weight: 600;">${currentDetailData.name}</span>
@@ -1177,11 +1233,7 @@ function switchDetailTab(tab) {
           </div>
         ` : ''}
 
-        <span class="detail-label">Source / Magnet:</span>
-        <div class="detail-code-box" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-          <span style="overflow: hidden; text-overflow: ellipsis;">${currentDetailData.magnet_uri}</span>
-          <button class="btn" style="padding: 2px 8px; font-size: 11px;" onclick="copyToClipboard('${encodeURI(currentDetailData.magnet_uri)}', this)">Copy</button>
-        </div>
+        ${magnetHtml}
 
         <span class="detail-label">Total Size:</span>
         <span class="detail-val">${formatBytes(currentDetailData.total_bytes)}</span>
@@ -1730,9 +1782,119 @@ async function extractSubtitleStream(hash, streamIndex, lang, btn) {
   }
 }
 
-function copyCurrentMagnet() {
-  if (currentDetailData && currentDetailData.magnet_uri) {
-    copyToClipboard(currentDetailData.magnet_uri);
+function splitMagnetURI(uri) {
+  if (!uri) return { full: '', v1: '', v2: '' };
+  let v1 = '';
+  let v2 = '';
+  const xts = [];
+  const others = [];
+
+  const qIdx = uri.indexOf('?');
+  if (qIdx === -1) return { full: uri, v1: uri, v2: uri };
+  const base = uri.substring(0, qIdx);
+  const qs = uri.substring(qIdx + 1);
+  const parts = qs.split('&');
+
+  for (const p of parts) {
+    if (!p) continue;
+    const eq = p.indexOf('=');
+    const key = eq !== -1 ? p.substring(0, eq) : p;
+    const val = eq !== -1 ? p.substring(eq + 1) : '';
+
+    if (key === 'xt') {
+      const decodedVal = decodeURIComponent(val);
+      if (decodedVal.startsWith('urn:btih:')) {
+        v1 = decodedVal;
+      } else if (decodedVal.startsWith('urn:btmh:1220')) {
+        v2 = decodedVal;
+      }
+      xts.push(p);
+    } else {
+      others.push(p);
+    }
+  }
+
+  const otherStr = others.length > 0 ? '&' + others.join('&') : '';
+  const v1Magnet = v1 ? `${base}?xt=${encodeURIComponent(v1)}${otherStr}` : '';
+  const v2Magnet = v2 ? `${base}?xt=${encodeURIComponent(v2)}${otherStr}` : '';
+
+  return {
+    full: uri,
+    v1: v1Magnet || (currentDetailData && currentDetailData.magnet_uri_v1) || '',
+    v2: v2Magnet || (currentDetailData && currentDetailData.magnet_uri_v2) || ''
+  };
+}
+
+function copyCurrentMagnet(variant = 'full') {
+  if (!currentDetailData || !currentDetailData.magnet_uri) return;
+  const vars = splitMagnetURI(currentDetailData.magnet_uri);
+  let target = vars.full;
+  let label = "Magnet link";
+
+  if (variant === 'v1') {
+    target = vars.v1 || currentDetailData.magnet_uri_v1 || vars.full;
+    label = "v1 (Legacy) magnet link";
+  } else if (variant === 'v2') {
+    target = vars.v2 || currentDetailData.magnet_uri_v2 || vars.full;
+    label = "v2 (BEP 52) magnet link";
+  }
+
+  if (target) {
+    copyToClipboard(target);
+    showToast(`Copied ${label} to clipboard!`, "info", 2000);
+  }
+}
+
+let createdMagnetVariants = { full: '', v1: '', v2: '' };
+
+function copyCreatedSplitMagnet(type) {
+  let target = '';
+  let label = 'Magnet link';
+  if (type === 'v1') {
+    target = createdMagnetVariants.v1 || document.getElementById('created-magnet-val').value;
+    label = 'v1 (Legacy) magnet link';
+  } else if (type === 'v2') {
+    target = createdMagnetVariants.v2 || document.getElementById('created-magnet-val').value;
+    label = 'v2 (BEP 52) magnet link';
+  } else {
+    target = createdMagnetVariants.full || document.getElementById('created-magnet-val').value;
+  }
+  if (target) {
+    copyToClipboard(target);
+    showToast(`Copied ${label} to clipboard!`, "info", 2000);
+  }
+}
+
+async function upgradeToBEP52(hash) {
+  const btn = document.getElementById('btn-upgrade-bep52');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Hashing Merkle Trees...";
+  }
+  showToast("Calculating SHA-256 Merkle trees and building BEP 52 Hybrid torrent...", "info", 4000);
+
+  try {
+    const res = await fetch(`/api/torrents/${hash}/upgrade-v2`, {
+      method: 'POST'
+    });
+    const data = await res.json();
+    if (res.ok && data.status === 'ok') {
+      showToast("Successfully upgraded to BEP 52 Hybrid seeding! Seeding to both v1 & v2 swarms.", "accent", 5000);
+      await openDetailsModal(hash);
+      loadTorrents();
+    } else {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "🚀 Start v2 Hybrid Seeding";
+      }
+      showToast(`BEP 52 Upgrade failed: ${data.error || 'Unknown error'}`, "error", 4000);
+    }
+  } catch (err) {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "🚀 Start v2 Hybrid Seeding";
+    }
+    showToast(`BEP 52 Upgrade error: ${err.message}`, "error", 4000);
   }
 }
 
@@ -1770,6 +1932,9 @@ function openSendModal() {
   document.getElementById('send-path-input').value = '';
   document.getElementById('send-url-input').value = '';
   document.getElementById('send-comment-input').value = '';
+  const splitBtns = document.getElementById('created-magnet-split-btns');
+  if (splitBtns) splitBtns.style.display = 'none';
+  createdMagnetVariants = { full: '', v1: '', v2: '' };
   switchSendTab('local');
   saveFocusAndOpen('modal-send', '#send-path-input');
 }
@@ -1780,6 +1945,8 @@ function closeSendModal() {
 
 async function submitCreateTorrent() {
   const comment = document.getElementById('send-comment-input').value.trim();
+  const formatEl = document.getElementById('send-format-select');
+  const format = formatEl ? formatEl.value : 'hybrid';
   const btn = document.getElementById('btn-create-torrent');
 
   if (currentSendTab === 'local') {
@@ -1796,7 +1963,7 @@ async function submitCreateTorrent() {
       const res = await fetch('/api/torrents/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path, comment })
+        body: JSON.stringify({ path, comment, format })
       });
       const data = await res.json();
       btn.disabled = false;
@@ -1807,7 +1974,21 @@ async function submitCreateTorrent() {
         document.getElementById('send-result-view').style.display = 'flex';
         document.getElementById('created-magnet-val').value = data.magnet_uri;
         document.getElementById('created-hash-val').value = data.info_hash;
-        showToast("Torrent created and now seeding to DHT network!", "accent");
+
+        createdMagnetVariants = {
+          full: data.magnet_uri,
+          v1: data.magnet_uri_v1 || '',
+          v2: data.magnet_uri_v2 || ''
+        };
+
+        const splitBtns = document.getElementById('created-magnet-split-btns');
+        if (splitBtns) {
+          splitBtns.style.display = (data.magnet_uri_v1 && data.magnet_uri_v2) ? 'flex' : 'none';
+        }
+
+        const toastMsg = format === 'hybrid' ? "BEP 52 Hybrid torrent created with SHA-256 Merkle trees & seeding!" :
+          (format === 'v2' ? "Pure BitTorrent v2 (BEP 52) torrent created & seeding!" : "BitTorrent v1 torrent created & seeding!");
+        showToast(toastMsg, "accent");
       } else {
         showToast("Failed to create torrent: " + (data.error || 'Unknown error'), "error");
       }

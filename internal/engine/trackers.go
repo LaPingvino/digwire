@@ -158,3 +158,64 @@ func SanitizeWebSeeds(urls []string, isDir bool) []string {
 	}
 	return clean
 }
+
+// MagnetVariants holds split magnet URL representations for different client compatibility levels.
+type MagnetVariants struct {
+	Full   string `json:"full"`
+	V1Only string `json:"v1_only,omitempty"`
+	V2Only string `json:"v2_only,omitempty"`
+}
+
+// SplitMagnet splits a magnet URI into full, v1-only, and v2-only variants.
+func SplitMagnet(magnetURI string) MagnetVariants {
+	if !strings.HasPrefix(magnetURI, "magnet:?") {
+		return MagnetVariants{Full: magnetURI}
+	}
+
+	query := strings.TrimPrefix(magnetURI, "magnet:?")
+	parts := strings.Split(query, "&")
+
+	var v1Parts []string
+	var v2Parts []string
+	var fullParts []string
+
+	hasV1 := false
+	hasV2 := false
+
+	for _, p := range parts {
+		if p == "" {
+			continue
+		}
+		fullParts = append(fullParts, p)
+		if strings.HasPrefix(p, "xt=") {
+			lower := strings.ToLower(p)
+			if strings.Contains(lower, "urn:btih:") {
+				hasV1 = true
+				v1Parts = append(v1Parts, p)
+			} else if strings.Contains(lower, "urn:btmh:") {
+				hasV2 = true
+				v2Parts = append(v2Parts, p)
+			} else {
+				v1Parts = append(v1Parts, p)
+			}
+		} else {
+			v1Parts = append(v1Parts, p)
+			v2Parts = append(v2Parts, p)
+		}
+	}
+
+	full := "magnet:?" + strings.Join(fullParts, "&")
+	var v1Only, v2Only string
+	if hasV1 {
+		v1Only = "magnet:?" + strings.Join(v1Parts, "&")
+	}
+	if hasV2 {
+		v2Only = "magnet:?" + strings.Join(v2Parts, "&")
+	}
+
+	return MagnetVariants{
+		Full:   full,
+		V1Only: v1Only,
+		V2Only: v2Only,
+	}
+}

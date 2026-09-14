@@ -67,6 +67,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/torrents/{hash}/files/{index}/view", s.handleStreamFile)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/webseeds", s.handleAddWebSeed)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/upgrade-to-swarm", s.handleUpgradeToSwarm)
+	s.mux.HandleFunc("POST /api/torrents/{hash}/upgrade-v2", s.handleUpgradeToBEP52)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/find-swarm", s.handleTriggerFindSwarm)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/verify", s.handleVerifyTorrent)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/pause", s.handlePauseTorrent)
@@ -296,6 +297,7 @@ func (s *Server) handleAddFolderGroup(w http.ResponseWriter, r *http.Request) {
 type createTorrentRequest struct {
 	Path    string `json:"path"`
 	Comment string `json:"comment"`
+	Format  string `json:"format"` // "hybrid" (default), "v2", "v1"
 }
 
 func (s *Server) handleCreateTorrent(w http.ResponseWriter, r *http.Request) {
@@ -311,17 +313,20 @@ func (s *Server) handleCreateTorrent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hash, magnet, err := s.engine.CreateTorrent(req.Path, req.Comment)
+	hash, magnet, err := s.engine.CreateTorrent(req.Path, req.Comment, req.Format)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 
+	variants := engine.SplitMagnet(magnet)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status":     "ok",
-		"info_hash":  hash,
-		"magnet_uri": magnet,
+		"status":        "ok",
+		"info_hash":     hash,
+		"magnet_uri":    variants.Full,
+		"magnet_uri_v1": variants.V1Only,
+		"magnet_uri_v2": variants.V2Only,
 	})
 }
 
@@ -571,6 +576,31 @@ func (s *Server) handleUpgradeToSwarm(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"status":    "ok",
 		"info_hash": t.InfoHash().HexString(),
+	})
+}
+
+func (s *Server) handleUpgradeToBEP52(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	hash := r.PathValue("hash")
+	if hash == "" {
+		http.Error(w, `{"error":"info hash is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	newHash, magnet, err := s.engine.UpgradeToBEP52(hash)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	variants := engine.SplitMagnet(magnet)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status":        "ok",
+		"info_hash":     newHash,
+		"magnet_uri":    variants.Full,
+		"magnet_uri_v1": variants.V1Only,
+		"magnet_uri_v2": variants.V2Only,
 	})
 }
 

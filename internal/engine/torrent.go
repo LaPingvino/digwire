@@ -124,6 +124,8 @@ type TorrentStatus struct {
 	IsHybrid        bool            `json:"is_hybrid,omitempty"`
 	Name            string          `json:"name"`
 	MagnetURI       string          `json:"magnet_uri"`
+	MagnetURIV1     string          `json:"magnet_uri_v1,omitempty"`
+	MagnetURIV2     string          `json:"magnet_uri_v2,omitempty"`
 	TotalBytes      int64           `json:"total_bytes"`
 	CompletedBytes  int64           `json:"completed_bytes"`
 	Progress        float64         `json:"progress"` // 0.0 to 100.0
@@ -181,6 +183,8 @@ type TorrentDetails struct {
 	IsHybrid        bool                `json:"is_hybrid,omitempty"`
 	Name            string              `json:"name"`
 	MagnetURI       string              `json:"magnet_uri"`
+	MagnetURIV1     string              `json:"magnet_uri_v1,omitempty"`
+	MagnetURIV2     string              `json:"magnet_uri_v2,omitempty"`
 	TotalBytes      int64               `json:"total_bytes"`
 	CompletedBytes  int64               `json:"completed_bytes"`
 	Progress        float64             `json:"progress"`
@@ -1947,7 +1951,100 @@ func (e *Engine) applyFileSelection(t *torrent.Torrent, selectedFiles []int, fil
 	}()
 }
 
-func (e *Engine) CreateTorrent(sourcePath, comment string) (string, string, error) {
+func (e *Engine) CreateTorrent(sourcePath, comment string, format ...string) (string, string, error) {
+	chosenFormat := "hybrid"
+	if len(format) > 0 && format[0] != "" {
+		chosenFormat = strings.ToLower(format[0])
+	}
+
+	if chosenFormat != "v1" {
+		isHybrid := chosenFormat != "v2"
+		mi, err := BuildBEP52MetaInfo(sourcePath, isHybrid, comment, nil)
+		if err == nil {
+			info, _ := mi.UnmarshalInfo()
+			torrentName := info.BestName()
+			if torrentName == "" {
+				torrentName = "share"
+			}
+			suffix := ".torrent"
+			if isHybrid {
+				suffix = ".hybrid.torrent"
+			} else {
+				suffix = ".v2.torrent"
+			}
+			torrentFilePath := filepath.Join(e.cfg.DownloadDir, torrentName+suffix)
+			if f, fErr := os.Create(torrentFilePath); fErr == nil {
+				_ = mi.Write(f)
+				_ = f.Close()
+			}
+
+			storageDir := filepath.Dir(sourcePath)
+			seededTor, seedErr := e.SeedMetaInfo(mi, storageDir)
+			if seedErr != nil {
+				return "", "", fmt.Errorf("failed to seed created torrent: %w", seedErr)
+			}
+
+			hashHex := mi.HashInfoBytes().HexString()
+			if seededTor != nil {
+				hashHex = seededTor.InfoHash().HexString()
+			}
+
+			magURI := ""
+			if magV2, mErr := mi.MagnetV2(); mErr == nil {
+				magURI = magV2.String()
+			} else {
+				magURI = fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", hashHex, url.QueryEscape(torrentName))
+			}
+			magURI = AppendWebSeedsToMagnet(SuperchargeMagnet(magURI), nil)
+
+			if e.dhtIndexer != nil {
+				if info, iErr := mi.UnmarshalInfo(); iErr == nil {
+					var fileNames []string
+					var piecesRoots []string
+					var fileEntries []dhtindex.DHTFileEntry
+					for _, f := range info.UpvertedFiles() {
+						dispPath := f.DisplayPath(&info)
+						fileNames = append(fileNames, dispPath)
+						var pRoot string
+						if f.PiecesRoot.Ok {
+							pRoot = hex.EncodeToString(f.PiecesRoot.Value[:])
+							piecesRoots = append(piecesRoots, pRoot)
+						}
+						fileEntries = append(fileEntries, dhtindex.DHTFileEntry{
+							Path:       dispPath,
+							SizeBytes:  f.Length,
+							PiecesRoot: pRoot,
+						})
+					}
+					var v2Hash string
+					var proto = "v1"
+					if magV2, err := mi.MagnetV2(); err == nil && magV2.V2InfoHash.Ok {
+						v2Hash = hex.EncodeToString(magV2.V2InfoHash.Value[:])
+					}
+					if isHybrid {
+						proto = "hybrid"
+					} else {
+						proto = "v2"
+					}
+					e.dhtIndexer.AddRecord(&dhtindex.DHTRecord{
+						InfoHash:        hashHex,
+						InfoHashV2:      v2Hash,
+						ProtocolVersion: proto,
+						Name:            torrentName,
+						SizeBytes:       info.TotalLength(),
+						NumFiles:        len(fileNames),
+						DiscoveredAt:    time.Now().Unix(),
+						Files:           fileNames,
+						PiecesRoots:     piecesRoots,
+						FileEntries:     fileEntries,
+					})
+				}
+			}
+
+			return hashHex, magURI, nil
+		}
+	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -2092,6 +2189,124 @@ func (e *Engine) CreateTorrent(sourcePath, comment string) (string, string, erro
 	}
 	e.saveSessionLocked()
 	return hash, magnetURI, nil
+}
+
+// SeedMetaInfo seeds an existing MetaInfo with storage pointing to storageDir.
+func (e *Engine) SeedMetaInfo(mi *metainfo.MetaInfo, storageDir string) (*torrent.Torrent, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.client == nil {
+		return nil, nil
+	}
+
+	spec := torrent.TorrentSpecFromMetaInfo(mi)
+	spec.Storage = storage.NewFile(storageDir)
+
+	tor, _, err := e.client.AddTorrentSpec(spec)
+	if err != nil {
+		return nil, fmt.Errorf("failed to add torrent spec: %w", err)
+	}
+
+	hash := tor.InfoHash().HexString()
+	e.initTracker(hash, tor.Name())
+	if tr := e.rateMap[hash]; tr != nil {
+		if magV2, err := mi.MagnetV2(); err == nil {
+			tr.magnetURI = magV2.String()
+		}
+		tr.isSeeding = true
+		info, err := mi.UnmarshalInfo()
+		if err == nil {
+			tr.savedTotalBytes = info.TotalLength()
+			tr.savedCompletedBytes = info.TotalLength()
+		}
+	}
+
+	e.markTorrentPiecesComplete(tor)
+	tor.DisallowDataDownload()
+	if e.cfg != nil && e.cfg.GermanyMode {
+		tor.DisallowDataUpload()
+	} else {
+		tor.AllowDataUpload()
+	}
+
+	e.saveSessionLocked()
+	return tor, nil
+}
+
+// UpgradeToBEP52 upgrades an existing completed v1 torrent to BEP 52 Hybrid seeding directly from local files.
+func (e *Engine) UpgradeToBEP52(infoHashHex string) (string, string, error) {
+	e.mu.Lock()
+	if e.client == nil {
+		e.mu.Unlock()
+		return "", "", fmt.Errorf("engine client not initialized")
+	}
+
+	var targetTor *torrent.Torrent
+	for _, t := range e.client.Torrents() {
+		if strings.EqualFold(t.InfoHash().HexString(), infoHashHex) {
+			targetTor = t
+			break
+		}
+	}
+	if targetTor == nil {
+		e.mu.Unlock()
+		return "", "", fmt.Errorf("torrent with hash %s not found", infoHashHex)
+	}
+
+	info := targetTor.Info()
+	if info == nil {
+		e.mu.Unlock()
+		return "", "", fmt.Errorf("metadata not available for torrent %s", infoHashHex)
+	}
+
+	savePath := e.getTorrentSavePath(targetTor)
+	if savePath == "" {
+		e.mu.Unlock()
+		return "", "", fmt.Errorf("save path not found for torrent %s", infoHashHex)
+	}
+	if _, err := os.Stat(savePath); err != nil {
+		e.mu.Unlock()
+		return "", "", fmt.Errorf("local files for torrent %s not found on disk: %w", infoHashHex, err)
+	}
+
+	var trackers [][]string
+	for _, tier := range targetTor.Metainfo().AnnounceList {
+		trackers = append(trackers, tier)
+	}
+
+	e.mu.Unlock()
+
+	mi, err := BuildBEP52MetaInfo(savePath, true, "Upgraded to BEP 52 Hybrid by Digwire", trackers)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to build BEP 52 metainfo: %w", err)
+	}
+
+	torrentName := info.BestName()
+	if torrentName == "" {
+		torrentName = targetTor.Name()
+	}
+	torrentFilePath := filepath.Join(e.cfg.DownloadDir, torrentName+".hybrid.torrent")
+	if f, err := os.Create(torrentFilePath); err == nil {
+		_ = mi.Write(f)
+		_ = f.Close()
+	}
+
+	storageDir := filepath.Dir(savePath)
+	seededTor, err := e.SeedMetaInfo(mi, storageDir)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to seed hybrid torrent: %w", err)
+	}
+
+	magURI := ""
+	if magObj, err := mi.MagnetV2(); err == nil {
+		magURI = magObj.String()
+	} else {
+		magURI = fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", seededTor.InfoHash().HexString(), url.QueryEscape(torrentName))
+	}
+	magURI = AppendWebSeedsToMagnet(SuperchargeMagnet(magURI), nil)
+
+	return seededTor.InfoHash().HexString(), magURI, nil
 }
 
 func (e *Engine) CreateWebBridgeTorrent(ctx context.Context, fileURL string, mirrors []string, comment string) (string, string, error) {
@@ -3307,13 +3522,16 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 			savePath = mediaSavePath
 		}
 
+		magVariants := SplitMagnet(magURI)
 		statuses = append(statuses, TorrentStatus{
 			InfoHash:        hash,
 			InfoHashV2:      infoHashV2,
 			ProtocolVersion: protocolVersion,
 			IsHybrid:        isHybrid,
 			Name:            name,
-			MagnetURI:       magURI,
+			MagnetURI:       magVariants.Full,
+			MagnetURIV1:     magVariants.V1Only,
+			MagnetURIV2:     magVariants.V2Only,
 			TotalBytes:      totalBytes,
 			CompletedBytes:  completedBytes,
 			Progress:        progress,
@@ -4075,13 +4293,16 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 				}
 			}
 
+			magVariants := SplitMagnet(magURI)
 			return &TorrentDetails{
 				InfoHash:        hashHex,
 				InfoHashV2:      infoHashV2,
 				ProtocolVersion: protocolVersion,
 				IsHybrid:        isHybrid,
 				Name:            name,
-				MagnetURI:       magURI,
+				MagnetURI:       magVariants.Full,
+				MagnetURIV1:     magVariants.V1Only,
+				MagnetURIV2:     magVariants.V2Only,
 				TotalBytes:      totalBytes,
 				CompletedBytes:  completedBytes,
 				Progress:        progress,

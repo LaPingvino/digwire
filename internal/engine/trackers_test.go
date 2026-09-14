@@ -160,3 +160,36 @@ func TestAddBEP52Magnets(t *testing.T) {
 	}
 }
 
+func TestSplitMagnet(t *testing.T) {
+	hybrid := "magnet:?xt=urn:btih:631a31dd0a46257d5078c0dee4e66e26f73e42ac&xt=urn:btmh:1220d8dd32ac93357c368556af3ac1d95c9d76bd0dff6fa9833ecdac3d53134efabb&dn=test&tr=http%3A%2F%2Ftracker.com"
+	variants := SplitMagnet(hybrid)
+
+	if !strings.Contains(variants.Full, "urn:btih:") || !strings.Contains(variants.Full, "urn:btmh:") {
+		t.Fatalf("Full magnet should contain both hashes: %s", variants.Full)
+	}
+
+	if !strings.Contains(variants.V1Only, "urn:btih:") || strings.Contains(variants.V1Only, "urn:btmh:") {
+		t.Fatalf("V1Only should only contain btih: %s", variants.V1Only)
+	}
+	if !strings.Contains(variants.V1Only, "dn=test") || !strings.Contains(variants.V1Only, "tr=http") {
+		t.Fatalf("V1Only missing common params: %s", variants.V1Only)
+	}
+
+	if !strings.Contains(variants.V2Only, "urn:btmh:") || strings.Contains(variants.V2Only, "urn:btih:") {
+		t.Fatalf("V2Only should only contain btmh: %s", variants.V2Only)
+	}
+	if !strings.Contains(variants.V2Only, "dn=test") || !strings.Contains(variants.V2Only, "tr=http") {
+		t.Fatalf("V2Only missing common params: %s", variants.V2Only)
+	}
+
+	// Pure v2
+	pureV2 := "magnet:?xt=urn:btmh:1220caf1e1c30e81cb361b9ee167c4aa64228a7fa4fa9f6105232b28ad099f3a302e&dn=v2only"
+	v2Variants := SplitMagnet(pureV2)
+	if v2Variants.V1Only != "" {
+		t.Fatalf("pure v2 should not have V1Only: %s", v2Variants.V1Only)
+	}
+	if !strings.Contains(v2Variants.V2Only, "urn:btmh:") {
+		t.Fatalf("pure v2 should have V2Only: %s", v2Variants.V2Only)
+	}
+}
+
