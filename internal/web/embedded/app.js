@@ -316,6 +316,89 @@ function renderGlobalStats(stats) {
   if (germanyBadge) {
     germanyBadge.style.display = stats.germany_mode ? 'inline-flex' : 'none';
   }
+
+  updateSwarmBreakdown(stats);
+}
+
+function updateSwarmBreakdown(stats) {
+  const breakdownEl = document.getElementById('stat-swarms-pill');
+  if (!breakdownEl) return;
+
+  let v1 = stats && stats.active_v1 !== undefined ? stats.active_v1 : 0;
+  let v2 = stats && stats.active_v2 !== undefined ? stats.active_v2 : 0;
+  let hybrid = stats && stats.active_hybrid !== undefined ? stats.active_hybrid : 0;
+  let slsk = stats && stats.active_soulseek !== undefined ? stats.active_soulseek : 0;
+
+  // Compute live active breakdown from torrentsData
+  if (torrentsData && torrentsData.length > 0) {
+    let cv1 = 0, cv2 = 0, chybrid = 0, cslsk = 0;
+    torrentsData.forEach(t => {
+      const isActive = t.state === 'downloading' || t.state === 'seeding' || (t.download_rate > 0) || (t.upload_rate > 0);
+      if (isActive) {
+        const isSlsk = t.is_soulseek || t.platform === 'soulseek' || (t.magnet_uri && (t.magnet_uri.startsWith('slsk://') || t.magnet_uri.startsWith('soulseek://')));
+        const isHyb = t.is_hybrid || t.protocol_version === 'hybrid';
+        const isV2Only = !isHyb && (t.protocol_version === 'v2' || !!t.info_hash_v2);
+        if (isSlsk) {
+          cslsk++;
+        } else if (isHyb) {
+          chybrid++;
+        } else if (isV2Only) {
+          cv2++;
+        } else {
+          cv1++;
+        }
+      }
+    });
+    v1 = cv1;
+    v2 = cv2;
+    hybrid = chybrid;
+    slsk = cslsk;
+  }
+
+  const totalActive = v1 + v2 + hybrid + slsk;
+  if (totalActive === 0) {
+    let totalItems = torrentsData ? torrentsData.length : (stats ? stats.total_count : 0);
+    if (totalItems > 0 && torrentsData && torrentsData.length > 0) {
+      let tv1 = 0, tv2 = 0, thybrid = 0, tslsk = 0;
+      torrentsData.forEach(t => {
+        const isSlsk = t.is_soulseek || t.platform === 'soulseek' || (t.magnet_uri && (t.magnet_uri.startsWith('slsk://') || t.magnet_uri.startsWith('soulseek://')));
+        const isHyb = t.is_hybrid || t.protocol_version === 'hybrid';
+        const isV2Only = !isHyb && (t.protocol_version === 'v2' || !!t.info_hash_v2);
+        if (isSlsk) tslsk++;
+        else if (isHyb) thybrid++;
+        else if (isV2Only) tv2++;
+        else tv1++;
+      });
+      let html = `<span style="color: var(--adw-dim-label); font-size: 11px; margin-right: 2px;">Swarms (idle):</span>`;
+      if (tv1 > 0) html += `<span class="swarm-stat-pill swarm-stat-v1" title="${tv1} total BitTorrent v1 swarm(s)">v1: ${tv1}</span>`;
+      if (thybrid > 0) html += `<span class="swarm-stat-pill swarm-stat-hybrid" title="${thybrid} total Hybrid (v1+v2) swarm(s)">Hybrid: ${thybrid}</span>`;
+      if (tv2 > 0) html += `<span class="swarm-stat-pill swarm-stat-v2" title="${tv2} total BitTorrent v2 swarm(s)">v2: ${tv2}</span>`;
+      if (tslsk > 0) html += `<span class="swarm-stat-pill swarm-stat-soulseek" title="${tslsk} total Soulseek P2P swarm(s)">Soulseek: ${tslsk}</span>`;
+      breakdownEl.innerHTML = html;
+    } else {
+      breakdownEl.innerHTML = `<span style="color: var(--adw-dim-label); font-size: 11px;">Active swarms: 0</span>`;
+    }
+    return;
+  }
+
+  let html = `<span style="color: var(--adw-dim-label); font-size: 11px; margin-right: 2px;">Active:</span>`;
+  if (v1 > 0) {
+    const pct = Math.round((v1 / totalActive) * 100);
+    html += `<span class="swarm-stat-pill swarm-stat-v1" title="${v1} active BitTorrent v1 swarm(s) (${pct}%)">v1: ${v1} <span style="opacity: 0.7; font-size: 10px;">(${pct}%)</span></span>`;
+  }
+  if (hybrid > 0) {
+    const pct = Math.round((hybrid / totalActive) * 100);
+    html += `<span class="swarm-stat-pill swarm-stat-hybrid" title="${hybrid} active BitTorrent Hybrid (v1+v2) swarm(s) (${pct}%)">Hybrid: ${hybrid} <span style="opacity: 0.7; font-size: 10px;">(${pct}%)</span></span>`;
+  }
+  if (v2 > 0) {
+    const pct = Math.round((v2 / totalActive) * 100);
+    html += `<span class="swarm-stat-pill swarm-stat-v2" title="${v2} active BitTorrent v2 BEP 52 swarm(s) (${pct}%)">v2: ${v2} <span style="opacity: 0.7; font-size: 10px;">(${pct}%)</span></span>`;
+  }
+  if (slsk > 0) {
+    const pct = Math.round((slsk / totalActive) * 100);
+    html += `<span class="swarm-stat-pill swarm-stat-soulseek" title="${slsk} active Soulseek P2P swarm(s) (${pct}%)">Soulseek: ${slsk} <span style="opacity: 0.7; font-size: 10px;">(${pct}%)</span></span>`;
+  }
+  breakdownEl.innerHTML = html;
 }
 
 // Torrent Keyboard Navigation
@@ -686,6 +769,7 @@ function renderTorrents() {
   if (filtered.length === 0) {
     container.innerHTML = '';
     emptyState.style.display = 'block';
+    updateSwarmBreakdown();
     return;
   }
 
@@ -750,6 +834,8 @@ function renderTorrents() {
       }
     }
   }
+
+  updateSwarmBreakdown();
 }
 
 async function verifyTorrent(hash, btn) {

@@ -151,6 +151,7 @@ type TorrentStatus struct {
 	FilesCompleted  int             `json:"files_completed,omitempty"`
 	FilesTotal      int             `json:"files_total,omitempty"`
 	StatusMessage   string          `json:"status_message,omitempty"`
+	IsSoulseek      bool            `json:"is_soulseek,omitempty"`
 }
 
 type TorrentFileDetail struct {
@@ -216,6 +217,14 @@ type GlobalStats struct {
 	DHTNodes        int   `json:"dht_nodes"`
 	DHTIndexedCount int   `json:"dht_indexed_count"`
 	GermanyMode     bool  `json:"germany_mode"`
+	ActiveV1        int   `json:"active_v1"`
+	ActiveV2        int   `json:"active_v2"`
+	ActiveHybrid    int   `json:"active_hybrid"`
+	ActiveSoulseek  int   `json:"active_soulseek"`
+	TotalV1         int   `json:"total_v1"`
+	TotalV2         int   `json:"total_v2"`
+	TotalHybrid     int   `json:"total_hybrid"`
+	TotalSoulseek   int   `json:"total_soulseek"`
 }
 
 type rateTracker struct {
@@ -3455,11 +3464,26 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 				}
 			}
 
+			folderPlatform := "folder"
+			for _, f := range task.Files {
+				if extractPeerUser(f.URL) != "" || strings.HasPrefix(f.URL, "slsk://") || strings.HasPrefix(f.URL, "soulseek://") {
+					folderPlatform = "soulseek"
+					break
+				}
+			}
+
+			badgeLabel := "FOLDER SWARM"
+			desc := fmt.Sprintf("Unified Folder Download: %d files organized in subfolders", len(task.Files))
+			if folderPlatform == "soulseek" {
+				badgeLabel = "SOULSEEK P2P"
+				desc = fmt.Sprintf("Soulseek P2P Album Download: %d files", len(task.Files))
+			}
+
 			qualifier := SwarmQualifier{
 				Class:       "verified",
-				Label:       "FOLDER SWARM",
-				Badge:       "FOLDER SWARM",
-				Description: fmt.Sprintf("Unified Folder Download: %d files organized in subfolders", len(task.Files)),
+				Label:       badgeLabel,
+				Badge:       badgeLabel,
+				Description: desc,
 				UptimeRatio: 1.0,
 			}
 
@@ -3497,6 +3521,7 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 				Files:           filePaths,
 				AddedAt:         task.AddedAt,
 				Platform:        "folder",
+				IsSoulseek:      folderPlatform == "soulseek",
 				Qualifier:       &qualifier,
 				AvailabilityETA: "Folder Download",
 				ActiveFile:      activeFile,
@@ -4357,12 +4382,51 @@ func (e *Engine) GetGlobalStats() GlobalStats {
 
 	var totalDL, totalUL int64
 	var activeCount int
+	var activeV1, activeV2, activeHybrid, activeSoulseek int
+	var totalV1, totalV2, totalHybrid, totalSoulseek int
 
 	for _, tr := range e.rateMap {
 		totalDL += tr.downloadRate
 		totalUL += tr.uploadRate
 		if tr.downloadRate > 0 || tr.uploadRate > 0 {
 			activeCount++
+		}
+	}
+
+	if e.client != nil {
+		for _, t := range e.client.Torrents() {
+			h := strings.ToLower(t.InfoHash().HexString())
+			tr := e.rateMap[h]
+			isActive := false
+			if tr != nil && (tr.downloadRate > 0 || tr.uploadRate > 0 || tr.isSeeding) {
+				isActive = true
+			}
+			info := t.Info()
+			isHybrid := false
+			isV2 := false
+			if info != nil {
+				if info.HasV1() && info.HasV2() {
+					isHybrid = true
+				} else if info.HasV2() {
+					isV2 = true
+				}
+			}
+			if isHybrid {
+				totalHybrid++
+				if isActive {
+					activeHybrid++
+				}
+			} else if isV2 {
+				totalV2++
+				if isActive {
+					activeV2++
+				}
+			} else {
+				totalV1++
+				if isActive {
+					activeV1++
+				}
+			}
 		}
 	}
 
@@ -4375,6 +4439,28 @@ func (e *Engine) GetGlobalStats() GlobalStats {
 		}
 	}
 	e.httpManager.mu.RUnlock()
+
+	if e.folderManager != nil {
+		e.folderManager.mu.RLock()
+		for _, ft := range e.folderManager.tasks {
+			ft.mu.RLock()
+			isSlsk := false
+			for _, f := range ft.Files {
+				if extractPeerUser(f.URL) != "" || strings.HasPrefix(f.URL, "slsk://") || strings.HasPrefix(f.URL, "soulseek://") {
+					isSlsk = true
+					break
+				}
+			}
+			if isSlsk {
+				totalSoulseek++
+				if ft.State == "downloading" || ft.DownloadRate > 0 {
+					activeSoulseek++
+				}
+			}
+			ft.mu.RUnlock()
+		}
+		e.folderManager.mu.RUnlock()
+	}
 
 	dhtNodes := 0
 	for _, dhtInstance := range e.client.DhtServers() {
@@ -4404,6 +4490,14 @@ func (e *Engine) GetGlobalStats() GlobalStats {
 		DHTNodes:        dhtNodes,
 		DHTIndexedCount: indexedCount,
 		GermanyMode:     germanyMode,
+		ActiveV1:        activeV1,
+		ActiveV2:        activeV2,
+		ActiveHybrid:    activeHybrid,
+		ActiveSoulseek:  activeSoulseek,
+		TotalV1:         totalV1,
+		TotalV2:         totalV2,
+		TotalHybrid:     totalHybrid,
+		TotalSoulseek:   totalSoulseek,
 	}
 }
 
