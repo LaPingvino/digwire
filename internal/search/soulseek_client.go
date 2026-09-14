@@ -398,6 +398,40 @@ func (s *SoulseekClient) GetShareStats() ShareStats {
 	return s.sharedStats
 }
 
+// CountSharedFilesForPath returns the number of files shared on Soulseek that reside within the given torrent name or directory name.
+func (s *SoulseekClient) CountSharedFilesForPath(torrentName string) int {
+	s.shareMu.RLock()
+	defer s.shareMu.RUnlock()
+
+	cleanName := strings.TrimSpace(strings.ToLower(torrentName))
+	if cleanName == "" {
+		return 0
+	}
+
+	count := 0
+	for _, dir := range s.sharedDirs {
+		dirLower := strings.ToLower(dir.Name)
+		// Match directory name exactly or as prefix/suffix/path segment
+		if dirLower == cleanName ||
+			strings.HasPrefix(dirLower, cleanName+"\\") ||
+			strings.HasPrefix(dirLower, cleanName+"/") ||
+			strings.Contains(dirLower, "\\"+cleanName+"\\") ||
+			strings.Contains(dirLower, "/"+cleanName+"/") ||
+			strings.HasSuffix(dirLower, "\\"+cleanName) ||
+			strings.HasSuffix(dirLower, "/"+cleanName) {
+			count += len(dir.Files)
+		} else {
+			// Single-file download where dir is parent (e.g. "Digwire") and file name matches
+			for _, f := range dir.Files {
+				if strings.EqualFold(f.Name, torrentName) {
+					count++
+				}
+			}
+		}
+	}
+	return count
+}
+
 func (s *SoulseekClient) ensureConnected(ctx context.Context) (*client.State, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

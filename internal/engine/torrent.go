@@ -153,7 +153,8 @@ type TorrentStatus struct {
 	FilesCompleted  int             `json:"files_completed,omitempty"`
 	FilesTotal      int             `json:"files_total,omitempty"`
 	StatusMessage   string          `json:"status_message,omitempty"`
-	IsSoulseek      bool            `json:"is_soulseek,omitempty"`
+	IsSoulseek          bool `json:"is_soulseek,omitempty"`
+	SoulseekSharedCount int  `json:"soulseek_shared_count,omitempty"`
 }
 
 type TorrentFileDetail struct {
@@ -211,24 +212,28 @@ type TorrentDetails struct {
 	Thumbnail       string              `json:"thumbnail,omitempty"`
 	IsMedia         bool                `json:"is_media,omitempty"`
 	Subtitles       []SubtitleTrack     `json:"subtitles,omitempty"`
+	SoulseekSharedCount int             `json:"soulseek_shared_count,omitempty"`
 }
 
 type GlobalStats struct {
-	DownloadRate    int64 `json:"download_rate"`
-	UploadRate      int64 `json:"upload_rate"`
-	ActiveCount     int   `json:"active_count"`
-	TotalCount      int   `json:"total_count"`
-	DHTNodes        int   `json:"dht_nodes"`
-	DHTIndexedCount int   `json:"dht_indexed_count"`
-	GermanyMode     bool  `json:"germany_mode"`
-	ActiveV1        int   `json:"active_v1"`
-	ActiveV2        int   `json:"active_v2"`
-	ActiveHybrid    int   `json:"active_hybrid"`
-	ActiveSoulseek  int   `json:"active_soulseek"`
-	TotalV1         int   `json:"total_v1"`
-	TotalV2         int   `json:"total_v2"`
-	TotalHybrid     int   `json:"total_hybrid"`
-	TotalSoulseek   int   `json:"total_soulseek"`
+	DownloadRate       int64 `json:"download_rate"`
+	UploadRate         int64 `json:"upload_rate"`
+	ActiveCount        int   `json:"active_count"`
+	TotalCount         int   `json:"total_count"`
+	DHTNodes           int   `json:"dht_nodes"`
+	DHTIndexedCount    int   `json:"dht_indexed_count"`
+	GermanyMode        bool  `json:"germany_mode"`
+	ActiveV1           int   `json:"active_v1"`
+	ActiveV2           int   `json:"active_v2"`
+	ActiveHybrid       int   `json:"active_hybrid"`
+	ActiveSoulseek     int   `json:"active_soulseek"`
+	TotalV1            int   `json:"total_v1"`
+	TotalV2            int   `json:"total_v2"`
+	TotalHybrid        int   `json:"total_hybrid"`
+	TotalSoulseek      int   `json:"total_soulseek"`
+	SoulseekFiles      int   `json:"soulseek_files"`
+	SoulseekFolders    int   `json:"soulseek_folders"`
+	SoulseekTotalBytes int64 `json:"soulseek_total_bytes"`
 }
 
 type rateTracker struct {
@@ -3583,37 +3588,43 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 			savePath = mediaSavePath
 		}
 
+		slskShared := 0
+		if slskClient := search.GetSoulseekClient(); slskClient != nil {
+			slskShared = slskClient.CountSharedFilesForPath(name)
+		}
+
 		magVariants := SplitMagnet(magURI)
 		statuses = append(statuses, TorrentStatus{
-			InfoHash:        hash,
-			InfoHashV2:      infoHashV2,
-			ProtocolVersion: protocolVersion,
-			IsHybrid:        isHybrid,
-			Name:            name,
-			MagnetURI:       magVariants.Full,
-			MagnetURIV1:     magVariants.V1Only,
-			MagnetURIV2:     magVariants.V2Only,
-			TotalBytes:      totalBytes,
-			CompletedBytes:  completedBytes,
-			Progress:        progress,
-			DownloadRate:    dlRate,
-			UploadRate:      ulRate,
-			ETASeconds:      eta,
-			State:           state,
-			SavePath:        savePath,
-			Seeders:         seeders,
-			Leechers:        leechers,
-			Peers:           totalPeers,
-			Files:           files,
-			AddedAt:         addedAt,
-			WebSeeds:        webseeds,
-			Qualifier:       &qualifier,
-			AvailabilityETA: qualifier.AvailabilityETA,
-			IsVerifying:     tracker.isVerifying.Load(),
-			VerifyProgress:  verifyProg,
-			IsMedia:         isMedia,
-			Platform:        platform,
-			Thumbnail:       thumbnail,
+			InfoHash:            hash,
+			InfoHashV2:          infoHashV2,
+			ProtocolVersion:     protocolVersion,
+			IsHybrid:            isHybrid,
+			Name:                name,
+			MagnetURI:           magVariants.Full,
+			MagnetURIV1:         magVariants.V1Only,
+			MagnetURIV2:         magVariants.V2Only,
+			TotalBytes:          totalBytes,
+			CompletedBytes:      completedBytes,
+			Progress:            progress,
+			DownloadRate:        dlRate,
+			UploadRate:          ulRate,
+			ETASeconds:          eta,
+			State:               state,
+			SavePath:            savePath,
+			Seeders:             seeders,
+			Leechers:            leechers,
+			Peers:               totalPeers,
+			Files:               files,
+			AddedAt:             addedAt,
+			WebSeeds:            webseeds,
+			Qualifier:           &qualifier,
+			AvailabilityETA:     qualifier.AvailabilityETA,
+			IsVerifying:         tracker.isVerifying.Load(),
+			VerifyProgress:      verifyProg,
+			IsMedia:             isMedia,
+			Platform:            platform,
+			Thumbnail:           thumbnail,
+			SoulseekSharedCount: slskShared,
 		})
 	}
 
@@ -3812,31 +3823,37 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 				folderSeeders = 1
 			}
 
+			slskFolderShared := 0
+			if slskClient := search.GetSoulseekClient(); slskClient != nil {
+				slskFolderShared = slskClient.CountSharedFilesForPath(task.Name)
+			}
+
 			statuses = append(statuses, TorrentStatus{
-				InfoHash:        ih,
-				Name:            "📁 " + task.Name,
-				MagnetURI:       mag,
-				TotalBytes:      task.TotalBytes,
-				CompletedBytes:  task.CompletedBytes,
-				Progress:        task.Progress,
-				DownloadRate:    task.DownloadRate,
-				UploadRate:      0,
-				ETASeconds:      task.ETASeconds,
-				State:           task.State,
-				SavePath:        task.DestPath,
-				Seeders:         folderSeeders,
-				Leechers:        0,
-				Peers:           folderPeers,
-				Files:           filePaths,
-				AddedAt:         task.AddedAt,
-				Platform:        "folder",
-				IsSoulseek:      folderPlatform == "soulseek",
-				Qualifier:       &qualifier,
-				AvailabilityETA: "Folder Download",
-				ActiveFile:      activeFile,
-				FilesCompleted:  filesCompleted,
-				FilesTotal:      len(task.Files),
-				StatusMessage:   statusMsg,
+				InfoHash:            ih,
+				Name:                "📁 " + task.Name,
+				MagnetURI:           mag,
+				TotalBytes:          task.TotalBytes,
+				CompletedBytes:      task.CompletedBytes,
+				Progress:            task.Progress,
+				DownloadRate:        task.DownloadRate,
+				UploadRate:          0,
+				ETASeconds:          task.ETASeconds,
+				State:               task.State,
+				SavePath:            task.DestPath,
+				Seeders:             folderSeeders,
+				Leechers:            0,
+				Peers:               folderPeers,
+				Files:               filePaths,
+				AddedAt:             task.AddedAt,
+				Platform:            "folder",
+				IsSoulseek:          folderPlatform == "soulseek",
+				SoulseekSharedCount: slskFolderShared,
+				Qualifier:           &qualifier,
+				AvailabilityETA:     "Folder Download",
+				ActiveFile:          activeFile,
+				FilesCompleted:      filesCompleted,
+				FilesTotal:          len(task.Files),
+				StatusMessage:       statusMsg,
 			})
 			task.mu.Unlock()
 		}
@@ -4012,25 +4029,31 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 				folderPeers = 1
 			}
 
+			slskShared := 0
+			if slskClient := search.GetSoulseekClient(); slskClient != nil {
+				slskShared = slskClient.CountSharedFilesForPath(fTask.Name)
+			}
+
 			return &TorrentDetails{
-				InfoHash:        ih,
-				Name:            "📁 " + fTask.Name,
-				MagnetURI:       mag,
-				TotalBytes:      fTask.TotalBytes,
-				CompletedBytes:  fTask.CompletedBytes,
-				Progress:        prog,
-				DownloadDir:     e.cfg.DownloadDir,
-				SavePath:        fTask.DestPath,
-				State:           fTask.State,
-				Files:           fileDetails,
-				Peers:           peerDetails,
-				Seeders:         folderSeeders,
-				TotalPeers:      folderPeers,
-				Platform:        "folder",
-				CreatedBy:       "Unified Folder Engine",
-				Qualifier:       &qualifier,
-				AvailabilityETA: "Folder Download",
-				Comment:         fTask.StatusMessage,
+				InfoHash:            ih,
+				Name:                "📁 " + fTask.Name,
+				MagnetURI:           mag,
+				TotalBytes:          fTask.TotalBytes,
+				CompletedBytes:      fTask.CompletedBytes,
+				Progress:            prog,
+				DownloadDir:         e.cfg.DownloadDir,
+				SavePath:            fTask.DestPath,
+				State:               fTask.State,
+				Files:               fileDetails,
+				Peers:               peerDetails,
+				Seeders:             folderSeeders,
+				TotalPeers:          folderPeers,
+				Platform:            "folder",
+				CreatedBy:           "Unified Folder Engine",
+				Qualifier:           &qualifier,
+				AvailabilityETA:     "Folder Download",
+				Comment:             fTask.StatusMessage,
+				SoulseekSharedCount: slskShared,
 			}, nil
 		}
 	}
@@ -4354,37 +4377,43 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 				}
 			}
 
+			slskShared := 0
+			if slskClient := search.GetSoulseekClient(); slskClient != nil {
+				slskShared = slskClient.CountSharedFilesForPath(name)
+			}
+
 			magVariants := SplitMagnet(magURI)
 			return &TorrentDetails{
-				InfoHash:        hashHex,
-				InfoHashV2:      infoHashV2,
-				ProtocolVersion: protocolVersion,
-				IsHybrid:        isHybrid,
-				Name:            name,
-				MagnetURI:       magVariants.Full,
-				MagnetURIV1:     magVariants.V1Only,
-				MagnetURIV2:     magVariants.V2Only,
-				TotalBytes:      totalBytes,
-				CompletedBytes:  completedBytes,
-				Progress:        progress,
-				PieceLength:     pieceLength,
-				NumPieces:       numPieces,
-				DownloadDir:     e.cfg.DownloadDir,
-				SavePath:        savePath,
-				State:           displayState,
-				Seeders:         sCount,
-				Leechers:        lCount,
-				TotalPeers:      totPeers,
-				Files:           files,
-				Peers:           peerDetails,
-				Trackers:        trackers,
-				WebSeeds:        webseeds,
-				CreatedBy:       "Digwire P2P",
-				Qualifier:       &qualifier,
-				AvailabilityETA: qualifier.AvailabilityETA,
-				IsVerifying:     tr != nil && tr.isVerifying.Load(),
-				VerifyProgress:  verifyProg,
-				Subtitles:       subTracks,
+				InfoHash:            hashHex,
+				InfoHashV2:          infoHashV2,
+				ProtocolVersion:     protocolVersion,
+				IsHybrid:            isHybrid,
+				Name:                name,
+				MagnetURI:           magVariants.Full,
+				MagnetURIV1:         magVariants.V1Only,
+				MagnetURIV2:         magVariants.V2Only,
+				TotalBytes:          totalBytes,
+				CompletedBytes:      completedBytes,
+				Progress:            progress,
+				PieceLength:         pieceLength,
+				NumPieces:           numPieces,
+				DownloadDir:         e.cfg.DownloadDir,
+				SavePath:            savePath,
+				State:               displayState,
+				Seeders:             sCount,
+				Leechers:            lCount,
+				TotalPeers:          totPeers,
+				Files:               files,
+				Peers:               peerDetails,
+				Trackers:            trackers,
+				WebSeeds:            webseeds,
+				CreatedBy:           "Digwire P2P",
+				Qualifier:           &qualifier,
+				AvailabilityETA:     qualifier.AvailabilityETA,
+				IsVerifying:         tr != nil && tr.isVerifying.Load(),
+				VerifyProgress:      verifyProg,
+				Subtitles:           subTracks,
+				SoulseekSharedCount: slskShared,
 			}, nil
 		}
 	}
@@ -4726,6 +4755,12 @@ func (e *Engine) GetGlobalStats() GlobalStats {
 		}
 	}
 
+	slskClient := search.GetSoulseekClient()
+	var slskShareStats search.ShareStats
+	if slskClient != nil {
+		slskShareStats = slskClient.GetShareStats()
+	}
+
 	if e.client != nil {
 		for _, t := range e.client.Torrents() {
 			h := strings.ToLower(t.InfoHash().HexString())
@@ -4776,6 +4811,14 @@ func (e *Engine) GetGlobalStats() GlobalStats {
 					activeV1++
 				}
 			}
+
+			// Soulseek shared files tracking for BitTorrent swarms
+			if slskClient != nil && slskClient.CountSharedFilesForPath(t.Name()) > 0 {
+				totalSoulseek++
+				if isActive {
+					activeSoulseek++
+				}
+			}
 		}
 	}
 
@@ -4799,6 +4842,9 @@ func (e *Engine) GetGlobalStats() GlobalStats {
 					isSlsk = true
 					break
 				}
+			}
+			if !isSlsk && slskClient != nil && slskClient.CountSharedFilesForPath(ft.Name) > 0 {
+				isSlsk = true
 			}
 			if isSlsk {
 				totalSoulseek++
@@ -4832,21 +4878,24 @@ func (e *Engine) GetGlobalStats() GlobalStats {
 	}
 
 	return GlobalStats{
-		DownloadRate:    totalDL,
-		UploadRate:      totalUL,
-		ActiveCount:     activeCount,
-		TotalCount:      len(e.rateMap) + len(e.httpManager.tasks),
-		DHTNodes:        dhtNodes,
-		DHTIndexedCount: indexedCount,
-		GermanyMode:     germanyMode,
-		ActiveV1:        activeV1,
-		ActiveV2:        activeV2,
-		ActiveHybrid:    activeHybrid,
-		ActiveSoulseek:  activeSoulseek,
-		TotalV1:         totalV1,
-		TotalV2:         totalV2,
-		TotalHybrid:     totalHybrid,
-		TotalSoulseek:   totalSoulseek,
+		DownloadRate:       totalDL,
+		UploadRate:         totalUL,
+		ActiveCount:        activeCount,
+		TotalCount:         len(e.rateMap) + len(e.httpManager.tasks),
+		DHTNodes:           dhtNodes,
+		DHTIndexedCount:    indexedCount,
+		GermanyMode:        germanyMode,
+		ActiveV1:           activeV1,
+		ActiveV2:           activeV2,
+		ActiveHybrid:       activeHybrid,
+		ActiveSoulseek:     activeSoulseek,
+		TotalV1:            totalV1,
+		TotalV2:            totalV2,
+		TotalHybrid:        totalHybrid,
+		TotalSoulseek:      totalSoulseek,
+		SoulseekFiles:      slskShareStats.FileCount,
+		SoulseekFolders:    slskShareStats.FolderCount,
+		SoulseekTotalBytes: slskShareStats.TotalBytes,
 	}
 }
 

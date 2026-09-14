@@ -131,13 +131,17 @@ function getPlatformBadge(p) {
 function getProtocolBadge(t) {
   if (!t) return '';
   const proto = (t.protocol_version || (t.is_hybrid ? 'hybrid' : (t.info_hash_v2 ? 'v2' : ''))).toLowerCase();
+  let badges = '';
   if (proto === 'hybrid') {
-    return `<span class="badge-protocol badge-hybrid" title="BitTorrent Hybrid Swarm (v1 + v2 BEP 52)">Hybrid</span>`;
+    badges = `<span class="badge-protocol badge-hybrid" title="BitTorrent Hybrid Swarm (v1 + v2 BEP 52)">Hybrid</span>`;
+  } else if (proto === 'v2') {
+    badges = `<span class="badge-protocol badge-v2" title="BitTorrent v2 Swarm (BEP 52 Merkle Trees)">v2</span>`;
   }
-  if (proto === 'v2') {
-    return `<span class="badge-protocol badge-v2" title="BitTorrent v2 Swarm (BEP 52 Merkle Trees)">v2</span>`;
+  if (t.soulseek_shared_count && t.soulseek_shared_count > 0) {
+    const slsk = `<span class="badge-protocol badge-soulseek" title="Actively shared on Soulseek network (${t.soulseek_shared_count} audio file${t.soulseek_shared_count !== 1 ? 's' : ''} indexed for Soulseek P2P)">🎵 Soulseek (${t.soulseek_shared_count})</span>`;
+    badges = badges ? `${badges} ${slsk}` : slsk;
   }
-  return '';
+  return badges;
 }
 
 function getBEP52UpgradeBadgeHtml(t) {
@@ -346,18 +350,19 @@ function updateSwarmBreakdown(stats) {
     let cv1 = 0, cv2 = 0, chybrid = 0, cslsk = 0;
     torrentsData.forEach(t => {
       const isActive = t.state === 'downloading' || t.state === 'seeding' || (t.download_rate > 0) || (t.upload_rate > 0);
+      const isSlsk = t.is_soulseek || t.platform === 'soulseek' || (t.magnet_uri && (t.magnet_uri.startsWith('slsk://') || t.magnet_uri.startsWith('soulseek://'))) || (t.soulseek_shared_count && t.soulseek_shared_count > 0);
+      const isHyb = t.is_hybrid || t.protocol_version === 'hybrid';
+      const isV2Only = !isHyb && (t.protocol_version === 'v2' || !!t.info_hash_v2);
       if (isActive) {
-        const isSlsk = t.is_soulseek || t.platform === 'soulseek' || (t.magnet_uri && (t.magnet_uri.startsWith('slsk://') || t.magnet_uri.startsWith('soulseek://')));
-        const isHyb = t.is_hybrid || t.protocol_version === 'hybrid';
-        const isV2Only = !isHyb && (t.protocol_version === 'v2' || !!t.info_hash_v2);
-        if (isSlsk) {
-          cslsk++;
-        } else if (isHyb) {
+        if (isHyb) {
           chybrid++;
         } else if (isV2Only) {
           cv2++;
-        } else {
+        } else if (!t.is_soulseek && t.platform !== 'soulseek') {
           cv1++;
+        }
+        if (isSlsk) {
+          cslsk++;
         }
       }
     });
@@ -373,19 +378,23 @@ function updateSwarmBreakdown(stats) {
     if (totalItems > 0 && torrentsData && torrentsData.length > 0) {
       let tv1 = 0, tv2 = 0, thybrid = 0, tslsk = 0;
       torrentsData.forEach(t => {
-        const isSlsk = t.is_soulseek || t.platform === 'soulseek' || (t.magnet_uri && (t.magnet_uri.startsWith('slsk://') || t.magnet_uri.startsWith('soulseek://')));
+        const isSlsk = t.is_soulseek || t.platform === 'soulseek' || (t.magnet_uri && (t.magnet_uri.startsWith('slsk://') || t.magnet_uri.startsWith('soulseek://'))) || (t.soulseek_shared_count && t.soulseek_shared_count > 0);
         const isHyb = t.is_hybrid || t.protocol_version === 'hybrid';
         const isV2Only = !isHyb && (t.protocol_version === 'v2' || !!t.info_hash_v2);
-        if (isSlsk) tslsk++;
-        else if (isHyb) thybrid++;
+        if (isHyb) thybrid++;
         else if (isV2Only) tv2++;
-        else tv1++;
+        else if (!t.is_soulseek && t.platform !== 'soulseek') tv1++;
+        if (isSlsk) tslsk++;
       });
       let html = `<span style="color: var(--adw-dim-label); font-size: 11px; margin-right: 2px;">Swarms (idle):</span>`;
       if (tv1 > 0) html += `<span class="swarm-stat-pill swarm-stat-v1" title="${tv1} total BitTorrent v1 swarm(s)">v1: ${tv1}</span>`;
       if (thybrid > 0) html += `<span class="swarm-stat-pill swarm-stat-hybrid" title="${thybrid} total Hybrid (v1+v2) swarm(s)">Hybrid: ${thybrid}</span>`;
       if (tv2 > 0) html += `<span class="swarm-stat-pill swarm-stat-v2" title="${tv2} total BitTorrent v2 swarm(s)">v2: ${tv2}</span>`;
-      if (tslsk > 0) html += `<span class="swarm-stat-pill swarm-stat-soulseek" title="${tslsk} total Soulseek P2P swarm(s)">Soulseek: ${tslsk}</span>`;
+      const slskTracksCount = stats && stats.soulseek_files ? stats.soulseek_files : 0;
+      if (tslsk > 0 || slskTracksCount > 0) {
+        const trackLabel = slskTracksCount > 0 ? ` (${slskTracksCount} tracks)` : '';
+        html += `<span class="swarm-stat-pill swarm-stat-soulseek" title="${tslsk} swarm(s) shared on Soulseek (${slskTracksCount} audio tracks indexed)">Soulseek: ${tslsk}${trackLabel}</span>`;
+      }
       breakdownEl.innerHTML = html;
     } else {
       breakdownEl.innerHTML = `<span style="color: var(--adw-dim-label); font-size: 11px;">Active swarms: 0</span>`;
@@ -393,22 +402,24 @@ function updateSwarmBreakdown(stats) {
     return;
   }
 
+  const btActive = v1 + v2 + hybrid;
   let html = `<span style="color: var(--adw-dim-label); font-size: 11px; margin-right: 2px;">Active:</span>`;
   if (v1 > 0) {
-    const pct = Math.round((v1 / totalActive) * 100);
+    const pct = btActive > 0 ? Math.round((v1 / btActive) * 100) : 0;
     html += `<span class="swarm-stat-pill swarm-stat-v1" title="${v1} active BitTorrent v1 swarm(s) (${pct}%)">v1: ${v1} <span style="opacity: 0.7; font-size: 10px;">(${pct}%)</span></span>`;
   }
   if (hybrid > 0) {
-    const pct = Math.round((hybrid / totalActive) * 100);
+    const pct = btActive > 0 ? Math.round((hybrid / btActive) * 100) : 0;
     html += `<span class="swarm-stat-pill swarm-stat-hybrid" title="${hybrid} active BitTorrent Hybrid (v1+v2) swarm(s) (${pct}%)">Hybrid: ${hybrid} <span style="opacity: 0.7; font-size: 10px;">(${pct}%)</span></span>`;
   }
   if (v2 > 0) {
-    const pct = Math.round((v2 / totalActive) * 100);
+    const pct = btActive > 0 ? Math.round((v2 / btActive) * 100) : 0;
     html += `<span class="swarm-stat-pill swarm-stat-v2" title="${v2} active BitTorrent v2 BEP 52 swarm(s) (${pct}%)">v2: ${v2} <span style="opacity: 0.7; font-size: 10px;">(${pct}%)</span></span>`;
   }
-  if (slsk > 0) {
-    const pct = Math.round((slsk / totalActive) * 100);
-    html += `<span class="swarm-stat-pill swarm-stat-soulseek" title="${slsk} active Soulseek P2P swarm(s) (${pct}%)">Soulseek: ${slsk} <span style="opacity: 0.7; font-size: 10px;">(${pct}%)</span></span>`;
+  const slskTracksCount = stats && stats.soulseek_files ? stats.soulseek_files : 0;
+  if (slsk > 0 || slskTracksCount > 0) {
+    const trackLabel = slskTracksCount > 0 ? ` (${slskTracksCount} tracks)` : '';
+    html += `<span class="swarm-stat-pill swarm-stat-soulseek" title="${slsk} active Soulseek shared swarm(s) (${slskTracksCount} audio tracks indexed)">Soulseek: ${slsk}${trackLabel}</span>`;
   }
   breakdownEl.innerHTML = html;
 }
@@ -1314,6 +1325,13 @@ function switchDetailTab(tab) {
             <span style="font-weight: normal; color: var(--adw-dim-label); font-size: 11.5px; margin-left: 6px;">
               (estimated seeder duty cycle: ${(currentDetailData.qualifier.uptime_ratio * 100).toFixed(0)}%)
             </span>
+          </div>
+        ` : ''}
+        ${currentDetailData.soulseek_shared_count && currentDetailData.soulseek_shared_count > 0 ? `
+          <span class="detail-label">Soulseek Network:</span>
+          <div class="detail-val" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+            <span class="badge-protocol badge-soulseek" style="font-size: 11px; padding: 3px 8px;">🎵 Soulseek Shared</span>
+            <span style="font-size: 12px; color: #c061cb; font-weight: 500;">${currentDetailData.soulseek_shared_count} audio file${currentDetailData.soulseek_shared_count !== 1 ? 's' : ''} actively shared & indexed for Soulseek P2P</span>
           </div>
         ` : ''}
 
