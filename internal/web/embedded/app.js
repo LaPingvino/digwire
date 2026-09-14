@@ -140,6 +140,18 @@ function getProtocolBadge(t) {
   return '';
 }
 
+function getBEP52UpgradeBadgeHtml(t) {
+  if (!t) return '';
+  const proto = (t.protocol_version || (t.is_hybrid ? 'hybrid' : (t.info_hash_v2 ? 'v2' : 'v1'))).toLowerCase();
+  const isCompletedV1 = proto === 'v1' && 
+    ((t.progress >= 100 || t.state === 'seeding' || t.state === 'completed') || 
+     (t.completed_bytes >= t.total_bytes && t.total_bytes > 0));
+
+  if (!isCompletedV1) return '';
+
+  return `<button class="btn btn-primary" style="padding: 2px 7px; font-size: 10.5px; border-radius: 9999px; display: inline-flex; align-items: center; gap: 3px; background: linear-gradient(135deg, #1c71d8, #9141ac); font-weight: 500; cursor: pointer; border: none; box-shadow: 0 1px 3px rgba(0,0,0,0.2);" title="Upgrade completed v1 download to BitTorrent v2 (BEP 52) Hybrid Seeding" onclick="event.stopPropagation(); upgradeToBEP52('${t.info_hash}', this)">⚡ Upgrade v2</button>`;
+}
+
 function copyFileMagnet(parentName, piecesRoot, filePath, btn) {
   if (!piecesRoot) return;
   const decodedPath = decodeURIComponent(filePath || '');
@@ -563,6 +575,11 @@ function getTorrentMetaString(t) {
 function getCardActionsHtml(t) {
   const isPaused = t.state === 'paused';
   const isWebDownload = t.magnet_uri && (t.magnet_uri.startsWith('http://') || t.magnet_uri.startsWith('https://'));
+  const proto = (t.protocol_version || (t.is_hybrid ? 'hybrid' : (t.info_hash_v2 ? 'v2' : 'v1'))).toLowerCase();
+  const isCompletedV1 = proto === 'v1' && 
+    ((t.progress >= 100 || t.state === 'seeding' || t.state === 'completed') || 
+     (t.completed_bytes >= t.total_bytes && t.total_bytes > 0));
+
   return `
     ${(t.progress >= 100 || t.state === 'seeding' || t.state === 'completed') ? 
       `<button class="btn btn-icon" title="Open Downloaded File or Folder" aria-label="Open downloaded file for ${escapeHtml(t.name)}" onclick="openTorrentTarget('${t.info_hash}')">${ICONS.play}</button>` : ''
@@ -570,6 +587,9 @@ function getCardActionsHtml(t) {
     <button class="btn btn-icon" title="Show in File Manager" aria-label="Show ${escapeHtml(t.name)} in file manager" onclick="showTorrentInFolder('${t.info_hash}')">${ICONS.folder}</button>
     ${!isWebDownload ? 
       `<button class="btn btn-icon" title="Verify Local Data (Recheck)" aria-label="Verify local data for ${escapeHtml(t.name)}" onclick="verifyTorrent('${t.info_hash}', this)">${ICONS.verify}</button>` : ''
+    }
+    ${isCompletedV1 ?
+      `<button class="btn btn-icon" style="color: #c061cb;" title="Upgrade to BEP 52 Hybrid Seeding" aria-label="Upgrade ${escapeHtml(t.name)} to BitTorrent v2 Hybrid" onclick="event.stopPropagation(); upgradeToBEP52('${t.info_hash}', this)">⚡</button>` : ''
     }
     <button class="btn btn-icon" title="Copy Magnet / URL" aria-label="Copy Magnet link for ${escapeHtml(t.name)}" onclick="copyToClipboard('${encodeURI(t.magnet_uri || '')}', this)">${ICONS.magnet}</button>
     <button class="btn btn-icon" title="Inspect Details & Peers" aria-label="Inspect details and peers for ${escapeHtml(t.name)}" onclick="openDetailsModal('${t.info_hash}')">${ICONS.info}</button>
@@ -624,6 +644,7 @@ function createTorrentCardElement(t) {
       <div style="display: flex; gap: 6px; align-items: center; flex-shrink: 0;">
         ${platformBadge}
         ${getProtocolBadge(t)}
+        ${getBEP52UpgradeBadgeHtml(t)}
         ${getQualifierBadge(t.qualifier)}
         <span class="torrent-badge ${isCardOffline ? 'badge-peer_offline' : `badge-${t.state}`}" aria-label="Status: ${t.state}">${isCardOffline ? '💤 peer offline' : t.state}</span>
       </div>
@@ -665,12 +686,13 @@ function updateTorrentCardElement(cardEl, t) {
   const badgeContainer = cardEl.querySelector('.card-header > div:last-child');
   const platformBadge = getPlatformBadge(t.platform);
   const protocolBadge = getProtocolBadge(t);
+  const upgradeBadge = getBEP52UpgradeBadgeHtml(t);
   const qualifierBadge = getQualifierBadge(t.qualifier);
   const isCardOffline = t.state === 'peer_offline' || (t.state === 'failed' && t.status_message && (t.status_message.toLowerCase().includes('offline') || t.status_message.toLowerCase().includes('unreachable')));
   const stateBadgeClass = isCardOffline ? 'badge-peer_offline' : `badge-${t.state}`;
   const stateBadgeText = isCardOffline ? '💤 peer offline' : t.state;
   const stateBadgeHtml = `<span class="torrent-badge ${stateBadgeClass}" aria-label="Status: ${stateBadgeText}">${stateBadgeText}</span>`;
-  const fullBadgeHtml = platformBadge + protocolBadge + qualifierBadge + stateBadgeHtml;
+  const fullBadgeHtml = platformBadge + protocolBadge + upgradeBadge + qualifierBadge + stateBadgeHtml;
   if (badgeContainer && badgeContainer.innerHTML !== fullBadgeHtml) {
     badgeContainer.innerHTML = fullBadgeHtml;
   }
@@ -1865,13 +1887,16 @@ function copyCreatedSplitMagnet(type) {
   }
 }
 
-async function upgradeToBEP52(hash) {
-  const btn = document.getElementById('btn-upgrade-bep52');
+async function upgradeToBEP52(hash, triggerBtn) {
+  const modalBtn = document.getElementById('btn-upgrade-bep52');
+  const btn = triggerBtn || modalBtn;
+  let originalHtml = '';
   if (btn) {
     btn.disabled = true;
-    btn.textContent = "Hashing Merkle Trees...";
+    originalHtml = btn.innerHTML;
+    btn.textContent = "Hashing...";
   }
-  showToast("Calculating SHA-256 Merkle trees and building BEP 52 Hybrid torrent...", "info", 4000);
+  showToast("Calculating SHA-256 Merkle trees & upgrading to BEP 52 Hybrid...", "info", 4000);
 
   try {
     const res = await fetch(`/api/torrents/${hash}/upgrade-v2`, {
@@ -1880,19 +1905,23 @@ async function upgradeToBEP52(hash) {
     const data = await res.json();
     if (res.ok && data.status === 'ok') {
       showToast("Successfully upgraded to BEP 52 Hybrid seeding! Seeding to both v1 & v2 swarms.", "accent", 5000);
-      await openDetailsModal(hash);
-      loadTorrents();
+      const newHash = data.info_hash || hash;
+      const modal = document.getElementById('modal-details');
+      if (modal && modal.style.display !== 'none' && currentDetailData && (currentDetailData.info_hash === hash || currentDetailData.info_hash === newHash)) {
+        await openDetailsModal(newHash);
+      }
+      fetchTorrents();
     } else {
       if (btn) {
         btn.disabled = false;
-        btn.textContent = "🚀 Start v2 Hybrid Seeding";
+        btn.innerHTML = originalHtml || "🚀 Start v2 Hybrid Seeding";
       }
       showToast(`BEP 52 Upgrade failed: ${data.error || 'Unknown error'}`, "error", 4000);
     }
   } catch (err) {
     if (btn) {
       btn.disabled = false;
-      btn.textContent = "🚀 Start v2 Hybrid Seeding";
+      btn.innerHTML = originalHtml || "🚀 Start v2 Hybrid Seeding";
     }
     showToast(`BEP 52 Upgrade error: ${err.message}`, "error", 4000);
   }

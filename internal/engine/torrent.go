@@ -2298,6 +2298,67 @@ func (e *Engine) UpgradeToBEP52(infoHashHex string) (string, string, error) {
 		return "", "", fmt.Errorf("failed to seed hybrid torrent: %w", err)
 	}
 
+	// Drop old pure-v1 torrent to prevent duplicate entries
+	e.mu.Lock()
+	targetTor.Drop()
+	oldHex := targetTor.InfoHash().HexString()
+	for k := range e.rateMap {
+		if strings.EqualFold(k, oldHex) {
+			delete(e.rateMap, k)
+		}
+	}
+	for k := range e.webSeedsMap {
+		if strings.EqualFold(k, oldHex) {
+			delete(e.webSeedsMap, k)
+		}
+	}
+	for k := range e.savedTorrentsMap {
+		if strings.EqualFold(k, oldHex) {
+			delete(e.savedTorrentsMap, k)
+		}
+	}
+	_ = os.Remove(e.getTorrentCacheFilePath(oldHex))
+	e.saveSessionLocked()
+	e.mu.Unlock()
+
+	if e.dhtIndexer != nil {
+		if info, iErr := mi.UnmarshalInfo(); iErr == nil {
+			var fileNames []string
+			var piecesRoots []string
+			var fileEntries []dhtindex.DHTFileEntry
+			for _, f := range info.UpvertedFiles() {
+				dispPath := f.DisplayPath(&info)
+				fileNames = append(fileNames, dispPath)
+				var pRoot string
+				if f.PiecesRoot.Ok {
+					pRoot = hex.EncodeToString(f.PiecesRoot.Value[:])
+					piecesRoots = append(piecesRoots, pRoot)
+				}
+				fileEntries = append(fileEntries, dhtindex.DHTFileEntry{
+					Path:       dispPath,
+					SizeBytes:  f.Length,
+					PiecesRoot: pRoot,
+				})
+			}
+			var v2Hash string
+			if magV2, err := mi.MagnetV2(); err == nil && magV2.V2InfoHash.Ok {
+				v2Hash = hex.EncodeToString(magV2.V2InfoHash.Value[:])
+			}
+			e.dhtIndexer.AddRecord(&dhtindex.DHTRecord{
+				InfoHash:        seededTor.InfoHash().HexString(),
+				InfoHashV2:      v2Hash,
+				ProtocolVersion: "hybrid",
+				Name:            torrentName,
+				SizeBytes:       info.TotalLength(),
+				NumFiles:        len(fileNames),
+				DiscoveredAt:    time.Now().Unix(),
+				Files:           fileNames,
+				PiecesRoots:     piecesRoots,
+				FileEntries:     fileEntries,
+			})
+		}
+	}
+
 	magURI := ""
 	if magObj, err := mi.MagnetV2(); err == nil {
 		magURI = magObj.String()
