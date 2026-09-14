@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -117,24 +118,27 @@ type SessionState struct {
 }
 
 type TorrentStatus struct {
-	InfoHash       string          `json:"info_hash"`
-	Name           string          `json:"name"`
-	MagnetURI      string          `json:"magnet_uri"`
-	TotalBytes     int64           `json:"total_bytes"`
-	CompletedBytes int64           `json:"completed_bytes"`
-	Progress       float64         `json:"progress"` // 0.0 to 100.0
-	DownloadRate   int64           `json:"download_rate"` // bytes/sec
-	UploadRate     int64           `json:"upload_rate"`   // bytes/sec
-	ETASeconds     int64           `json:"eta_seconds"`
-	State          string          `json:"state"` // "downloading", "seeding", "paused", "metadata", "completed"
-	SavePath       string          `json:"save_path,omitempty"` // absolute path to downloaded file or folder
-	Seeders        int             `json:"seeders"`
-	Leechers       int             `json:"leechers"`
-	Peers          int             `json:"peers"`
-	Files          []string        `json:"files,omitempty"`
-	AddedAt        int64           `json:"added_at"`
-	SuggestedSwarm *SwarmSuggestion `json:"suggested_swarm,omitempty"`
-	WebSeeds       []string        `json:"webseeds,omitempty"`
+	InfoHash        string          `json:"info_hash"`
+	InfoHashV2      string          `json:"info_hash_v2,omitempty"`
+	ProtocolVersion string          `json:"protocol_version,omitempty"` // "v1", "v2", "hybrid"
+	IsHybrid        bool            `json:"is_hybrid,omitempty"`
+	Name            string          `json:"name"`
+	MagnetURI       string          `json:"magnet_uri"`
+	TotalBytes      int64           `json:"total_bytes"`
+	CompletedBytes  int64           `json:"completed_bytes"`
+	Progress        float64         `json:"progress"` // 0.0 to 100.0
+	DownloadRate    int64           `json:"download_rate"` // bytes/sec
+	UploadRate      int64           `json:"upload_rate"`   // bytes/sec
+	ETASeconds      int64           `json:"eta_seconds"`
+	State           string          `json:"state"` // "downloading", "seeding", "paused", "metadata", "completed"
+	SavePath        string          `json:"save_path,omitempty"` // absolute path to downloaded file or folder
+	Seeders         int             `json:"seeders"`
+	Leechers        int             `json:"leechers"`
+	Peers           int             `json:"peers"`
+	Files           []string        `json:"files,omitempty"`
+	AddedAt         int64           `json:"added_at"`
+	SuggestedSwarm  *SwarmSuggestion `json:"suggested_swarm,omitempty"`
+	WebSeeds        []string        `json:"webseeds,omitempty"`
 	Qualifier       *SwarmQualifier `json:"qualifier,omitempty"`
 	AvailabilityETA string          `json:"availability_eta,omitempty"`
 	IsVerifying     bool            `json:"is_verifying,omitempty"`
@@ -161,6 +165,7 @@ type TorrentFileDetail struct {
 	State          string  `json:"state,omitempty"` // "pending", "downloading", "completed", "failed"
 	Status         string  `json:"status,omitempty"`
 	Error          string  `json:"error,omitempty"`
+	PiecesRoot     string  `json:"pieces_root,omitempty"` // BEP 52 SHA-256 Merkle root (64 hex chars)
 }
 
 type PeerDetail struct {
@@ -169,14 +174,17 @@ type PeerDetail struct {
 }
 
 type TorrentDetails struct {
-	InfoHash       string              `json:"info_hash"`
-	Name           string              `json:"name"`
-	MagnetURI      string              `json:"magnet_uri"`
-	TotalBytes     int64               `json:"total_bytes"`
-	CompletedBytes int64               `json:"completed_bytes"`
-	Progress       float64             `json:"progress"`
-	PieceLength    int64               `json:"piece_length"`
-	NumPieces      int                 `json:"num_pieces"`
+	InfoHash        string              `json:"info_hash"`
+	InfoHashV2      string              `json:"info_hash_v2,omitempty"`
+	ProtocolVersion string              `json:"protocol_version,omitempty"` // "v1", "v2", "hybrid"
+	IsHybrid        bool                `json:"is_hybrid,omitempty"`
+	Name            string              `json:"name"`
+	MagnetURI       string              `json:"magnet_uri"`
+	TotalBytes      int64               `json:"total_bytes"`
+	CompletedBytes  int64               `json:"completed_bytes"`
+	Progress        float64             `json:"progress"`
+	PieceLength     int64               `json:"piece_length"`
+	NumPieces       int                 `json:"num_pieces"`
 	DownloadDir    string              `json:"download_dir"`
 	SavePath       string              `json:"save_path,omitempty"` // absolute path to downloaded file or folder
 	State          string              `json:"state"`
@@ -1666,23 +1674,47 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 	var extractedPeers []string
 	var displayName string
 	var infoHashHex string
+	var v2InfoHashHex string
 	if strings.HasPrefix(uriOrURL, "magnet:?") {
-		if magObj, err := metainfo.ParseMagnetUri(uriOrURL); err == nil {
-			extractedWebSeeds = magObj.Params["ws"]
+		if magObj, err := metainfo.ParseMagnetV2Uri(uriOrURL); err == nil {
+			if magObj.Params != nil {
+				extractedWebSeeds = magObj.Params["ws"]
+			}
 			displayName = magObj.DisplayName
-			infoHashHex = magObj.InfoHash.HexString()
+			if magObj.InfoHash.Ok {
+				infoHashHex = magObj.InfoHash.Value.HexString()
+			}
+			if magObj.V2InfoHash.Ok {
+				v2InfoHashHex = magObj.V2InfoHash.Value.HexString()
+				if infoHashHex == "" {
+					infoHashHex = v2InfoHashHex
+				}
+			}
 		}
 		extractedPeers = ExtractPeersFromMagnet(uriOrURL)
 	} else if len(uriOrURL) == 40 || len(uriOrURL) == 32 {
 		infoHashHex = strings.ToLower(uriOrURL)
+	} else if len(uriOrURL) == 64 {
+		infoHashHex = strings.ToLower(uriOrURL)
+		v2InfoHashHex = strings.ToLower(uriOrURL)
 	}
 
 	var t *torrent.Torrent
 	var err error
 
 	// 1. If metainfo is already cached on disk, load directly for instantaneous metadata
+	var hashesToCheck []string
 	if infoHashHex != "" {
-		cachedPath := e.getTorrentCacheFilePath(infoHashHex)
+		hashesToCheck = append(hashesToCheck, infoHashHex)
+	}
+	if v2InfoHashHex != "" && v2InfoHashHex != infoHashHex {
+		hashesToCheck = append(hashesToCheck, v2InfoHashHex)
+	}
+	for _, h := range hashesToCheck {
+		if t != nil {
+			break
+		}
+		cachedPath := e.getTorrentCacheFilePath(h)
 		if stat, statErr := os.Stat(cachedPath); statErr == nil && stat.Size() > 100 {
 			if mi, loadErr := metainfo.LoadFromFile(cachedPath); loadErr == nil && mi != nil {
 				spec := torrent.TorrentSpecFromMetaInfo(mi)
@@ -3117,6 +3149,26 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 		stats := t.Stats()
 		webseeds := e.webSeedsMap[hash]
 		magURI := fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", hash, url.QueryEscape(name))
+		var infoHashV2 string
+		var protocolVersion = "v1"
+		var isHybrid bool
+		mi := t.Metainfo()
+		if len(mi.InfoBytes) > 0 {
+			if magV2, err := mi.MagnetV2(); err == nil {
+				magURI = magV2.String()
+				if magV2.V2InfoHash.Ok {
+					infoHashV2 = hex.EncodeToString(magV2.V2InfoHash.Value[:])
+				}
+			}
+		}
+		if info != nil {
+			if info.HasV1() && info.HasV2() {
+				protocolVersion = "hybrid"
+				isHybrid = true
+			} else if info.HasV2() {
+				protocolVersion = "v2"
+			}
+		}
 		magURI = AppendWebSeedsToMagnet(SuperchargeMagnet(magURI), webseeds)
 		webConns := t.WebseedPeerConns()
 		isSeeding := totalBytes > 0 && completedBytes >= totalBytes && !isGermanMode
@@ -3188,6 +3240,9 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 
 		statuses = append(statuses, TorrentStatus{
 			InfoHash:        hash,
+			InfoHashV2:      infoHashV2,
+			ProtocolVersion: protocolVersion,
+			IsHybrid:        isHybrid,
 			Name:            name,
 			MagnetURI:       magURI,
 			TotalBytes:      totalBytes,
@@ -3721,13 +3776,34 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 				progress = (float64(completedBytes) / float64(totalBytes)) * 100.0
 			}
 
-			magURI := fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", hashHex, url.QueryEscape(name))
+			var infoHashV2 string
+			var protocolVersion = "v1"
+			var isHybrid bool
+			var magURI = fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", hashHex, url.QueryEscape(name))
+			mi := t.Metainfo()
+			if len(mi.InfoBytes) > 0 {
+				if magV2, err := mi.MagnetV2(); err == nil {
+					magURI = magV2.String()
+					if magV2.V2InfoHash.Ok {
+						infoHashV2 = hex.EncodeToString(magV2.V2InfoHash.Value[:])
+					}
+				}
+			}
+			if info != nil {
+				if info.HasV1() && info.HasV2() {
+					protocolVersion = "hybrid"
+					isHybrid = true
+				} else if info.HasV2() {
+					protocolVersion = "v2"
+				}
+			}
 
 			var files []TorrentFileDetail
 			var pieceLength int64
 			var numPieces int
 
 			if info != nil {
+				upvFiles := info.UpvertedFiles()
 				pieceLength = info.PieceLength
 				numPieces = info.NumPieces()
 
@@ -3751,6 +3827,10 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 					} else if prio == 0 {
 						prio = 1 // Default to wanted/Normal
 					}
+					var piecesRoot string
+					if idx < len(upvFiles) && upvFiles[idx].PiecesRoot.Ok {
+						piecesRoot = hex.EncodeToString(upvFiles[idx].PiecesRoot.Value[:])
+					}
 					files = append(files, TorrentFileDetail{
 						Index:          idx,
 						Path:           tf.Path(),
@@ -3760,6 +3840,7 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 						Progress:       fProg,
 						Priority:       prio,
 						Completed:      (fComp >= fLen && fLen > 0) || fProg >= 100.0,
+						PiecesRoot:     piecesRoot,
 					})
 				}
 			}
@@ -3890,6 +3971,9 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 
 			return &TorrentDetails{
 				InfoHash:        hashHex,
+				InfoHashV2:      infoHashV2,
+				ProtocolVersion: protocolVersion,
+				IsHybrid:        isHybrid,
 				Name:            name,
 				MagnetURI:       magURI,
 				TotalBytes:      totalBytes,
@@ -4365,22 +4449,43 @@ type InspectResult struct {
 }
 
 var hex40Regex = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
+var hex64Regex = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 
 func extractInfoHash(input string) string {
 	input = strings.TrimSpace(input)
-	if hex40Regex.MatchString(input) {
+	if hex40Regex.MatchString(input) || hex64Regex.MatchString(input) {
 		return strings.ToLower(input)
 	}
+	if strings.HasPrefix(input, "magnet:?") {
+		if mag, err := metainfo.ParseMagnetV2Uri(input); err == nil {
+			if mag.InfoHash.Ok {
+				return strings.ToLower(mag.InfoHash.Value.HexString())
+			}
+			if mag.V2InfoHash.Ok {
+				return strings.ToLower(mag.V2InfoHash.Value.HexString())
+			}
+		}
+	}
 	lower := strings.ToLower(input)
-	idx := strings.Index(lower, "urn:btih:")
-	if idx != -1 {
+	if idx := strings.Index(lower, "urn:btih:"); idx != -1 {
 		part := input[idx+9:]
-		end := strings.IndexAny(part, ";&/?#")
-		if end != -1 {
+		if end := strings.IndexAny(part, ";&/?#"); end != -1 {
 			part = part[:end]
 		}
 		part = strings.TrimSpace(part)
-		if hex40Regex.MatchString(part) {
+		if hex40Regex.MatchString(part) || len(part) == 32 {
+			return strings.ToLower(part)
+		}
+	}
+	if idx := strings.Index(lower, "urn:btmh:"); idx != -1 {
+		part := input[idx+9:]
+		if end := strings.IndexAny(part, ";&/?#"); end != -1 {
+			part = part[:end]
+		}
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(strings.ToLower(part), "1220") && len(part) == 68 {
+			return strings.ToLower(part[4:])
+		} else if hex64Regex.MatchString(part) {
 			return strings.ToLower(part)
 		}
 	}

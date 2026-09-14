@@ -273,6 +273,49 @@ body {
   text-transform: capitalize;
 }
 
+.badge-protocol {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 6px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+
+.badge-v2 {
+  background: rgba(46, 194, 126, 0.2);
+  color: #2ec27e;
+  border: 1px solid rgba(46, 194, 126, 0.4);
+}
+
+.badge-hybrid {
+  background: rgba(53, 132, 228, 0.2);
+  color: #3584e4;
+  border: 1px solid rgba(53, 132, 228, 0.4);
+}
+
+.badge-v1 {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--adw-dim-label);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.badge-pieces-root {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: monospace;
+  font-size: 10px;
+  color: #3584e4;
+  background: rgba(53, 132, 228, 0.1);
+  border: 1px solid rgba(53, 132, 228, 0.25);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
 .badge-downloading {
   background: rgba(53, 132, 228, 0.2);
   color: var(--adw-accent);

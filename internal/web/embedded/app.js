@@ -128,6 +128,27 @@ function getPlatformBadge(p) {
   return `<span class="torrent-badge badge-platform badge-${p}">${escapeHtml(p)}</span>`;
 }
 
+function getProtocolBadge(t) {
+  if (!t) return '';
+  const proto = (t.protocol_version || (t.is_hybrid ? 'hybrid' : (t.info_hash_v2 ? 'v2' : ''))).toLowerCase();
+  if (proto === 'hybrid') {
+    return `<span class="badge-protocol badge-hybrid" title="BitTorrent Hybrid Swarm (v1 + v2 BEP 52)">Hybrid</span>`;
+  }
+  if (proto === 'v2') {
+    return `<span class="badge-protocol badge-v2" title="BitTorrent v2 Swarm (BEP 52 Merkle Trees)">v2</span>`;
+  }
+  return '';
+}
+
+function copyFileMagnet(parentName, piecesRoot, filePath, btn) {
+  if (!piecesRoot) return;
+  const decodedPath = decodeURIComponent(filePath || '');
+  const dn = encodeURIComponent(decodedPath ? decodedPath.split('/').pop() : parentName);
+  const mag = `magnet:?xt=urn:btmh:1220${piecesRoot}&dn=${dn}`;
+  copyToClipboard(mag, btn);
+  showToast("Copied BEP 52 File Magnet URI to clipboard!", "success");
+}
+
 // Helpers
 function formatBytes(bytes, decimals = 1) {
   if (!bytes || bytes === 0) return '0 B';
@@ -519,6 +540,7 @@ function createTorrentCardElement(t) {
       </div>
       <div style="display: flex; gap: 6px; align-items: center; flex-shrink: 0;">
         ${platformBadge}
+        ${getProtocolBadge(t)}
         ${getQualifierBadge(t.qualifier)}
         <span class="torrent-badge ${isCardOffline ? 'badge-peer_offline' : `badge-${t.state}`}" aria-label="Status: ${t.state}">${isCardOffline ? '💤 peer offline' : t.state}</span>
       </div>
@@ -559,12 +581,13 @@ function updateTorrentCardElement(cardEl, t) {
   // Update badges
   const badgeContainer = cardEl.querySelector('.card-header > div:last-child');
   const platformBadge = getPlatformBadge(t.platform);
+  const protocolBadge = getProtocolBadge(t);
   const qualifierBadge = getQualifierBadge(t.qualifier);
   const isCardOffline = t.state === 'peer_offline' || (t.state === 'failed' && t.status_message && (t.status_message.toLowerCase().includes('offline') || t.status_message.toLowerCase().includes('unreachable')));
   const stateBadgeClass = isCardOffline ? 'badge-peer_offline' : `badge-${t.state}`;
   const stateBadgeText = isCardOffline ? '💤 peer offline' : t.state;
   const stateBadgeHtml = `<span class="torrent-badge ${stateBadgeClass}" aria-label="Status: ${stateBadgeText}">${stateBadgeText}</span>`;
-  const fullBadgeHtml = platformBadge + qualifierBadge + stateBadgeHtml;
+  const fullBadgeHtml = platformBadge + protocolBadge + qualifierBadge + stateBadgeHtml;
   if (badgeContainer && badgeContainer.innerHTML !== fullBadgeHtml) {
     badgeContainer.innerHTML = fullBadgeHtml;
   }
@@ -1043,11 +1066,30 @@ function switchDetailTab(tab) {
         <span class="detail-label">Name:</span>
         <span class="detail-val" style="font-weight: 600;">${currentDetailData.name}</span>
 
-        <span class="detail-label">InfoHash / ID:</span>
+        ${currentDetailData.protocol_version ? `
+          <span class="detail-label">Protocol:</span>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            ${currentDetailData.protocol_version === 'hybrid' ? 
+              `<span class="badge-protocol badge-hybrid" style="font-size: 11px; padding: 3px 8px;">Hybrid (v1 + v2 BEP 52)</span> <span style="font-size: 11.5px; color: var(--adw-dim-label);">Dual-Swarm Compatible</span>` : 
+              (currentDetailData.protocol_version === 'v2' ? 
+                `<span class="badge-protocol badge-v2" style="font-size: 11px; padding: 3px 8px;">BitTorrent v2 (BEP 52)</span> <span style="font-size: 11.5px; color: var(--adw-dim-label);">SHA-256 Merkle Trees</span>` : 
+                `<span class="badge-protocol badge-v1" style="font-size: 11px; padding: 3px 8px;">BitTorrent v1</span>`)}
+          </div>
+        ` : ''}
+
+        <span class="detail-label">InfoHash${currentDetailData.protocol_version === 'hybrid' ? ' (v1 SHA-1)' : ''}:</span>
         <div class="detail-code-box">
           <span>${currentDetailData.info_hash}</span>
           <button class="btn" style="padding: 2px 8px; font-size: 11px;" onclick="copyToClipboard('${currentDetailData.info_hash}', this)">Copy</button>
         </div>
+
+        ${currentDetailData.info_hash_v2 ? `
+          <span class="detail-label">InfoHash (v2 SHA-256):</span>
+          <div class="detail-code-box">
+            <span style="word-break: break-all;">${currentDetailData.info_hash_v2}</span>
+            <button class="btn" style="padding: 2px 8px; font-size: 11px;" onclick="copyToClipboard('${currentDetailData.info_hash_v2}', this)">Copy</button>
+          </div>
+        ` : ''}
 
         <span class="detail-label">Source / Magnet:</span>
         <div class="detail-code-box" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
@@ -1240,6 +1282,15 @@ function switchDetailTab(tab) {
                   ${escapeHtml(hasMultipleDirs ? (f.basename || f.path) : f.path)}
                 </span>
               </div>
+              ${f.pieces_root ? `
+                <div style="display: flex; align-items: center; gap: 6px; margin-top: 3px; padding-left: ${hasMultipleDirs ? '16px' : '0'}; flex-wrap: wrap;">
+                  <span class="badge-pieces-root" title="BEP 52 SHA-256 Merkle Root: ${f.pieces_root}">
+                    <span style="font-weight: 700; color: var(--adw-dim-label);">v2 root:</span> ${f.pieces_root.substring(0, 10)}…${f.pieces_root.substring(58)}
+                  </span>
+                  <button class="btn" style="padding: 1px 6px; font-size: 10px;" title="Copy BEP 52 Root Hash" onclick="copyToClipboard('${f.pieces_root}', this)">Copy Root</button>
+                  <button class="btn" style="padding: 1px 6px; font-size: 10px;" title="Copy Standalone BEP 52 File Magnet URI" onclick="copyFileMagnet('${escapeHtml(currentDetailData.name)}', '${f.pieces_root}', '${encodeURIComponent(f.path)}', this)">Copy File Magnet</button>
+                </div>
+              ` : ''}
             </td>
             <td style="white-space: nowrap;">${formatBytes(f.length)}</td>
             <td style="white-space: nowrap;">${progressCell}</td>

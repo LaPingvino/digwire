@@ -43,7 +43,7 @@ func ExtractPeersFromMagnet(magnetURI string) []string {
 		return nil
 	}
 	var peers []string
-	if magObj, err := metainfo.ParseMagnetUri(magnetURI); err == nil && magObj.Params != nil {
+	if magObj, err := metainfo.ParseMagnetV2Uri(magnetURI); err == nil && magObj.Params != nil {
 		peers = append(peers, magObj.Params["x.pe"]...)
 		peers = append(peers, magObj.Params["peer"]...)
 		peers = append(peers, magObj.Params["x.p"]...)
