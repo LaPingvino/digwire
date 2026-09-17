@@ -51,7 +51,7 @@ type alternateCandidate struct {
 }
 
 const (
-	maxAlternateProbes   = 8
+	maxAlternateProbes    = 8
 	alternateProbeTimeout = 10 * time.Second
 )
 
