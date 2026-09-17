@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"runtime/debug"
 	"bytes"
 	"context"
 	"database/sql"
@@ -52,6 +53,8 @@ type SavedTorrent struct {
 	// FileMap and SiblingOf describe an alternate swarm attached to another torrent's files.
 	FileMap   map[string]string `json:"file_map,omitempty"`
 	SiblingOf string            `json:"sibling_of,omitempty"`
+	// LinkedLocal marks a torrent using files of other local torrents rather than an attached swarm.
+	LinkedLocal bool `json:"linked_local,omitempty"`
 }
 
 type SavedHTTPTask struct {
@@ -266,6 +269,7 @@ type rateTracker struct {
 	writeErr            atomic.Pointer[string]
 	fileMap             map[string]string
 	siblingHash         string
+	linkedLocal         bool
 	siblingSyncing      atomic.Bool
 	lastSiblingSync     time.Time
 	// Automatic search for another swarm (ideally hybrid / v2) with the same files.
@@ -751,6 +755,7 @@ func (e *Engine) saveSessionLocked() {
 			SkippedFiles:   skipped,
 			FileMap:        tr.fileMap,
 			SiblingOf:      tr.siblingHash,
+			LinkedLocal:    tr.linkedLocal,
 		}
 	}
 
@@ -1065,6 +1070,7 @@ func (e *Engine) loadSession() {
 			skippedFiles:        skippedMap,
 			fileMap:             item.FileMap,
 			siblingHash:         item.SiblingOf,
+			linkedLocal:         item.LinkedLocal,
 		}
 		e.rateMap[hash].verifyPending.Store(needsVerify)
 
@@ -2406,6 +2412,15 @@ func (e *Engine) AdoptExistingLocalProgress(tor *torrent.Torrent) {
 
 	info := tor.Info()
 	baseDownloadDir := e.cfg.DownloadDir
+	e.mu.RLock()
+	tr := e.rateMap[strings.ToLower(tor.InfoHash().HexString())]
+	if tr != nil && len(tr.fileMap) > 0 {
+		e.mu.RUnlock()
+		return // Mapped files already live where they belong.
+	}
+	// Never move a file another torrent uses into this one.
+	inUse := e.pathsInUseLocked(tor.InfoHash().HexString())
+	e.mu.RUnlock()
 
 	for _, f := range info.UpvertedFiles() {
 		targetPath := e.getFileTargetPath(info, f)
@@ -2453,6 +2468,9 @@ func (e *Engine) AdoptExistingLocalProgress(tor *torrent.Torrent) {
 
 		// Check candidates and adopt directly into expected targetPath
 		for _, cand := range candidates {
+			if inUse[filepath.Clean(cand)] {
+				continue
+			}
 			fi, err := os.Stat(cand)
 			if err == nil && !fi.IsDir() && fi.Size() > 0 {
 				_ = os.MkdirAll(filepath.Dir(targetPath), 0755)
@@ -2684,7 +2702,7 @@ func (e *Engine) ConsolidateAndVerifyForce(tor *torrent.Torrent, force bool, onC
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("⚠️ Recovered from verification error for %s: %v", hash, r)
+				log.Printf("⚠️ Recovered from verification error for %s: %v\n%s", hash, r, debug.Stack())
 				e.mu.RLock()
 				tr := e.rateMap[hash]
 				e.mu.RUnlock()
@@ -2700,6 +2718,9 @@ func (e *Engine) ConsolidateAndVerifyForce(tor *torrent.Torrent, force bool, onC
 		if tor.Info() == nil {
 			return
 		}
+
+		// Files other local torrents already hold are used in place rather than downloaded again.
+		tor = e.linkToLocalData(tor)
 
 		// 1. Persist metainfo
 		e.saveTorrentMetainfo(tor)
@@ -3141,7 +3162,7 @@ func (e *Engine) Remove(infoHashHex string, deleteFiles bool) error {
 		if strings.EqualFold(hex, infoHashHex) {
 			name := t.Name()
 			// An attached swarm writes into another torrent's files, which are not its to delete.
-			if tr := e.rateMap[strings.ToLower(hex)]; tr != nil && tr.siblingHash != "" {
+			if tr := e.rateMap[strings.ToLower(hex)]; tr != nil && tr.siblingHash != "" && !tr.linkedLocal {
 				deleteFiles = false
 			}
 			t.Drop()
@@ -3164,8 +3185,7 @@ func (e *Engine) Remove(infoHashHex string, deleteFiles bool) error {
 			_ = os.Remove(e.getTorrentCacheFilePath(hex))
 
 			if deleteFiles && name != "" {
-				targetPath := filepath.Join(e.cfg.DownloadDir, name)
-				_ = os.RemoveAll(targetPath)
+				removeTorrentFiles(filepath.Join(e.cfg.DownloadDir, name), e.pathsInUseLocked(hex))
 			}
 			removed = true
 			break
@@ -3203,6 +3223,11 @@ func (e *Engine) Remove(infoHashHex string, deleteFiles bool) error {
 func (e *Engine) removeAttachedSwarmsLocked(siblingHex string) {
 	for hash, tr := range e.rateMap {
 		if !strings.EqualFold(tr.siblingHash, siblingHex) {
+			continue
+		}
+		if tr.linkedLocal {
+			// A linked torrent is a download of its own; its files stay where they are.
+			tr.siblingHash = ""
 			continue
 		}
 		if t, _ := e.findUserTorrent(hash); t != nil {
