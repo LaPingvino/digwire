@@ -235,9 +235,20 @@ func (m *Manager) SearchAll(ctx context.Context, query string) []Result {
 	locDHT := m.localDHT
 	m.mu.RUnlock()
 
+	for i := range combined {
+		if combined[i].ProtocolVersion == "" {
+			combined[i].ProtocolVersion, combined[i].InfoHashV2 = ClassifyMagnet(combined[i].MagnetURI)
+		}
+	}
+
 	if locDHT != nil && locDHT.indexer != nil {
 		for i := range combined {
 			if combined[i].InfoHash != "" {
+				if combined[i].ProtocolVersion == "" {
+					if pi, ok := resolveProtocol(locDHT.indexer, combined[i].InfoHash); ok {
+						combined[i].ProtocolVersion, combined[i].InfoHashV2 = pi.ProtocolVersion, pi.InfoHashV2
+					}
+				}
 				combined[i].Health = locDHT.indexer.GetHealthPrediction(combined[i].InfoHash)
 				if combined[i].Seeders >= 0 {
 					locDHT.indexer.RecordSwarmActivity(combined[i].InfoHash, combined[i].Title, combined[i].Seeders, combined[i].Leechers)
@@ -264,4 +275,36 @@ func (m *Manager) SearchAll(ctx context.Context, query string) []Result {
 	}
 
 	return combined
+}
+
+type ProtocolInfo struct {
+	ProtocolVersion string `json:"protocol_version"`
+	InfoHashV2      string `json:"info_hash_v2,omitempty"`
+}
+
+// resolveProtocol reports the protocol version from metadata already resolved into the local
+// index. Unresolved torrents are queued for a metadata crawl so a later lookup can answer.
+func resolveProtocol(idx *dhtindex.Indexer, infoHash string) (ProtocolInfo, bool) {
+	if rec := idx.GetRecord(infoHash); rec != nil && len(rec.Files) > 0 && rec.ProtocolVersion != "" {
+		return ProtocolInfo{ProtocolVersion: rec.ProtocolVersion, InfoHashV2: rec.InfoHashV2}, true
+	}
+	idx.QueueCrawl(infoHash)
+	return ProtocolInfo{}, false
+}
+
+// ResolveProtocols returns the protocol versions known so far for the given info hashes.
+func (m *Manager) ResolveProtocols(infoHashes []string) map[string]ProtocolInfo {
+	m.mu.RLock()
+	locDHT := m.localDHT
+	m.mu.RUnlock()
+	known := make(map[string]ProtocolInfo)
+	if locDHT == nil || locDHT.indexer == nil {
+		return known
+	}
+	for _, h := range infoHashes {
+		if pi, ok := resolveProtocol(locDHT.indexer, h); ok {
+			known[h] = pi
+		}
+	}
+	return known
 }

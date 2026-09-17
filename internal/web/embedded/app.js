@@ -7,6 +7,8 @@ let activeConfig = null;
 let rawSearchResults = [];
 let currentSourceFilter = 'all';
 let currentSortBy = 'relevance';
+let currentProtocolFilter = 'all';
+let protocolPollTimer = null;
 
 // Details Modal state
 let currentDetailData = null;
@@ -2123,9 +2125,11 @@ async function executeSearch(query) {
     showToast(feedbackMsg, "success", 3000);
 
     currentSourceFilter = 'all';
+    currentProtocolFilter = 'all';
     if (controls) controls.style.display = 'flex';
     renderSourceFilterChips();
     renderSearchResults();
+    pollSearchProtocols(rawSearchResults);
   } catch (err) {
     if (spinner) spinner.style.display = 'none';
     showToast("Search failed: " + err.message, "error", 3500);
@@ -2205,7 +2209,90 @@ function renderSourceFilterChips() {
     `;
   });
 
+  const protoCounts = {};
+  rawSearchResults.forEach(r => {
+    const proto = searchResultProtocol(r);
+    if (proto) protoCounts[proto] = (protoCounts[proto] || 0) + 1;
+  });
+  const protoLabels = { hybrid: 'Hybrid', v2: 'v2', v1: 'v1', unknown: 'Unresolved' };
+  const protoTitles = {
+    hybrid: 'Torrents seeding to both v1 and v2 (BEP 52) clients',
+    v2: 'BitTorrent v2 only (BEP 52)',
+    v1: 'Legacy v1-only torrents',
+    unknown: 'Metadata not resolved yet — looking these up on the DHT'
+  };
+  if (Object.keys(protoCounts).length > 0) {
+    chipsHTML += `<span class="chip-divider" aria-hidden="true"></span>`;
+    chipsHTML += `<button class="source-chip ${currentProtocolFilter === 'all' ? 'active' : ''}" onclick="setProtocolFilter('all')">Any Protocol</button>`;
+    ['hybrid', 'v2', 'v1', 'unknown'].forEach(proto => {
+      if (!protoCounts[proto] && currentProtocolFilter !== proto) return;
+      chipsHTML += `
+        <button class="source-chip ${currentProtocolFilter === proto ? 'active' : ''}" onclick="setProtocolFilter('${proto}')" title="${protoTitles[proto]}">
+          ${protoLabels[proto]} <span style="opacity: 0.75; font-size: 10px; margin-left: 3px; font-weight: 700;">(${protoCounts[proto] || 0})</span>
+        </button>
+      `;
+    });
+  }
+
   chipsGroup.innerHTML = chipsHTML;
+}
+
+// Protocol of a torrent search result: 'hybrid', 'v2', 'v1', 'unknown' (not resolved yet),
+// or null for results that are not torrents (Soulseek, documents).
+function searchResultProtocol(r) {
+  if (!r || !r.info_hash) return null;
+  const proto = (r.protocol_version || '').toLowerCase();
+  return ['hybrid', 'v2', 'v1'].includes(proto) ? proto : 'unknown';
+}
+
+function getSearchProtocolBadge(r) {
+  const proto = searchResultProtocol(r);
+  if (proto === 'hybrid' || proto === 'v2') return getProtocolBadge(r);
+  if (proto === 'v1') return `<span class="badge-protocol badge-v1" title="Legacy BitTorrent v1 swarm">v1</span>`;
+  if (proto === 'unknown') return `<span class="badge-protocol" style="color: var(--adw-dim-label); border: 1px dashed rgba(128, 128, 128, 0.4);" title="Protocol unknown until metadata is resolved from the DHT">v?</span>`;
+  return '';
+}
+
+function setProtocolFilter(proto) {
+  currentProtocolFilter = proto;
+  renderSourceFilterChips();
+  renderSearchResults();
+}
+
+// Most indexers only publish v1 info hashes, so the protocol is learned by resolving each
+// torrent's metadata in the background; poll for results as they come in.
+function pollSearchProtocols(results) {
+  if (protocolPollTimer) clearTimeout(protocolPollTimer);
+  let attempts = 0;
+  const tick = async () => {
+    protocolPollTimer = null;
+    if (results !== rawSearchResults) return;
+    const pending = results.filter(r => searchResultProtocol(r) === 'unknown');
+    if (pending.length === 0 || attempts++ >= 12) return;
+    try {
+      const hashes = [...new Set(pending.map(r => r.info_hash.toLowerCase()))].slice(0, 200);
+      const res = await fetch(`/api/search/protocols?hashes=${hashes.join(',')}`);
+      const known = await res.json() || {};
+      if (results !== rawSearchResults) return;
+      let changed = false;
+      pending.forEach(r => {
+        const info = known[r.info_hash.toLowerCase()];
+        if (info && info.protocol_version) {
+          r.protocol_version = info.protocol_version;
+          if (info.info_hash_v2) r.info_hash_v2 = info.info_hash_v2;
+          changed = true;
+        }
+      });
+      if (changed) {
+        renderSourceFilterChips();
+        renderSearchResults();
+      }
+    } catch (err) {
+      // Retry on the next tick.
+    }
+    protocolPollTimer = setTimeout(tick, 3000);
+  };
+  protocolPollTimer = setTimeout(tick, 2000);
 }
 
 function setSourceFilter(source) {
@@ -2697,6 +2784,9 @@ function renderSearchResults() {
   if (currentSourceFilter !== 'all') {
     filtered = rawSearchResults.filter(r => r.provider_type === currentSourceFilter);
   }
+  if (currentProtocolFilter !== 'all') {
+    filtered = filtered.filter(r => searchResultProtocol(r) === currentProtocolFilter);
+  }
 
   // Filter in-place by active path element without reloading search
   if (currentPathFilter) {
@@ -3104,6 +3194,7 @@ function renderSearchResults() {
             ${seedersHtml}
             ${leechersHtml}
             <span class="provider-badge ${tagClass}">${escapeHtml(r.provider)}</span>
+            ${getSearchProtocolBadge(r)}
             ${healthBadge}
             ${fileCountBadge}
             ${scoreText}

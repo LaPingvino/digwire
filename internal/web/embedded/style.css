@@ -544,6 +544,13 @@ body {
   color: var(--adw-fg-color);
 }
 
+.chip-divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 4px;
+  background: var(--adw-border);
+}
+
 .source-chip.active {
   background: var(--adw-accent);
   color: #ffffff;

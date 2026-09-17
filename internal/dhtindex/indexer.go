@@ -427,6 +427,10 @@ func (idx *Indexer) AddRecord(rec *DHTRecord) {
 		if len(rec.Files) > 0 && len(existing.Files) == 0 {
 			existing.Files = rec.Files
 			existing.NumFiles = rec.NumFiles
+			// Resolved metadata is authoritative over the default protocol of a name-only record.
+			if rec.ProtocolVersion != "" {
+				existing.ProtocolVersion = rec.ProtocolVersion
+			}
 		}
 		if len(rec.PiecesRoots) > 0 && len(existing.PiecesRoots) == 0 {
 			existing.PiecesRoots = rec.PiecesRoots

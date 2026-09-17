@@ -75,6 +75,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/torrents/{hash}/resume", s.handleResumeTorrent)
 	s.mux.HandleFunc("DELETE /api/torrents/{hash}", s.handleDeleteTorrent)
 	s.mux.HandleFunc("GET /api/search", s.handleSearch)
+	s.mux.HandleFunc("GET /api/search/protocols", s.handleSearchProtocols)
 	s.mux.HandleFunc("GET /api/soulseek/peer-status", s.handleGetSoulseekPeerStatus)
 	s.mux.HandleFunc("GET /api/soulseek/shares", s.handleGetSoulseekShares)
 	s.mux.HandleFunc("POST /api/soulseek/shares/rescan", s.handleRescanSoulseekShares)
@@ -678,6 +679,17 @@ func (s *Server) handleDeleteTorrent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleSearchProtocols(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	var hashes []string
+	for _, h := range strings.Split(r.URL.Query().Get("hashes"), ",") {
+		if h = strings.TrimSpace(h); h != "" && len(hashes) < 200 {
+			hashes = append(hashes, h)
+		}
+	}
+	_ = json.NewEncoder(w).Encode(s.search.ResolveProtocols(hashes))
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
