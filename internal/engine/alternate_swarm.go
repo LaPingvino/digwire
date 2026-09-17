@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -445,6 +444,12 @@ type nonClosingPieceCompletion struct {
 
 func (nonClosingPieceCompletion) Close() error { return nil }
 
+// fileStorage stores a torrent's files under baseDir, sharing the engine's persistent piece
+// completion so completion Digwire records is the completion the torrent sees.
+func (e *Engine) fileStorage(baseDir string) storage.ClientImplCloser {
+	return storage.NewFileOpts(newFileClientOpts(baseDir, nonClosingPieceCompletion{e.pieceComp}))
+}
+
 // mappedFileStorage stores files named in fileMap (keyed by the torrent's own file path) at the
 // given paths relative to the download dir, so an attached swarm writes into the files of the
 // torrent it was matched against. Other files land in their default location.
@@ -454,11 +459,7 @@ func (e *Engine) mappedFileStorage(fileMap map[string]string) storage.ClientImpl
 		if p, ok := fileMap[strings.Join(o.File.BestPath(), "/")]; ok {
 			return p
 		}
-		var parts []string
-		if o.Info.BestName() != metainfo.NoName {
-			parts = append(parts, o.Info.BestName())
-		}
-		return filepath.Join(append(parts, o.File.BestPath()...)...)
+		return torrentFilePath(o)
 	}
 	return storage.NewFileOpts(opts)
 }

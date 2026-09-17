@@ -157,3 +157,31 @@ func TestUpgradeToBEP52(t *testing.T) {
 		t.Fatalf("expected TotalHybrid >= 1, got %d", stats.TotalHybrid)
 	}
 }
+
+// A single file becomes a single-file hybrid (no directory, no trailing padding) and seeds from the
+// file where it is, rather than from name/name.
+func TestSingleFileHybridSeedsInPlace(t *testing.T) {
+	eng, downloadDir := newTestEngine(t)
+	path := filepath.Join(downloadDir, "image.iso")
+	writeRandomFile(t, path, 3*testPieceLen+100)
+
+	mi, err := BuildBEP52MetaInfo(path, true, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := unmarshalInfo(t, mi)
+	if len(info.Files) != 0 || info.Length != 3*testPieceLen+100 {
+		t.Fatalf("expected a single-file v1 part, got length %d with %d files", info.Length, len(info.Files))
+	}
+
+	tor, err := eng.SeedMetaInfo(mi, downloadDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tor.BytesCompleted() != tor.Length() {
+		t.Fatalf("seeded single-file hybrid has %d of %d bytes", tor.BytesCompleted(), tor.Length())
+	}
+	if _, err := os.Stat(filepath.Join(downloadDir, "image.iso", "image.iso")); err == nil {
+		t.Fatal("single-file hybrid stored as name/name")
+	}
+}

@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -259,4 +261,120 @@ func TestFolderTaskFailureAndResume(t *testing.T) {
 		}
 	}
 	folderTask.mu.RUnlock()
+}
+
+// A download the session remembers as finished is assumed complete at startup, then checked:
+// intact data keeps seeding, while missing files or corrupt data go back to downloading.
+func TestSessionSeedingClaimIsVerified(t *testing.T) {
+	content := bytes.Repeat([]byte("digwire!"), 8192)
+	corrupt := append([]byte(nil), content...)
+	corrupt[20000] ^= 0xff
+	for _, tc := range []struct {
+		name        string
+		onDisk      []byte // nil: file missing
+		wantSeeding bool
+	}{
+		{"intact data keeps seeding", content, true},
+		{"missing files download again", nil, false},
+		{"corrupt data downloads again", corrupt, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(tempDir, "xdg"))
+			cfg := &config.Config{DownloadDir: filepath.Join(tempDir, "downloads")}
+			cfg.SetConfigPath(filepath.Join(tempDir, "config.yaml"))
+
+			path := filepath.Join(cfg.DownloadDir, "movie.mkv")
+			if err := os.MkdirAll(cfg.DownloadDir, 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, content, 0644); err != nil {
+				t.Fatal(err)
+			}
+			info := metainfo.Info{PieceLength: 16384}
+			if err := info.BuildFromFilePath(path); err != nil {
+				t.Fatal(err)
+			}
+			if tc.onDisk == nil {
+				_ = os.Remove(path)
+			} else if err := os.WriteFile(path, tc.onDisk, 0644); err != nil {
+				t.Fatal(err)
+			}
+			infoBytes, err := bencode.Marshal(info)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mi := metainfo.MetaInfo{InfoBytes: infoBytes}
+			hash := strings.ToLower(mi.HashInfoBytes().HexString())
+
+			cacheDir := filepath.Join(tempDir, "torrents")
+			if err := os.MkdirAll(cacheDir, 0755); err != nil {
+				t.Fatal(err)
+			}
+			f, err := os.Create(filepath.Join(cacheDir, hash+".torrent"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = mi.Write(f)
+			f.Close()
+
+			session, err := json.Marshal(SessionState{Torrents: []SavedTorrent{{
+				InfoHash:       hash,
+				MagnetURI:      "magnet:?xt=urn:btih:" + hash,
+				Name:           info.Name,
+				IsSeeding:      true,
+				TotalBytes:     info.TotalLength(),
+				CompletedBytes: info.TotalLength(),
+			}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(tempDir, "session.json"), session, 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			eng, err := NewEngine(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer eng.Close()
+			eng.WaitForSession(5 * time.Second)
+
+			status := func() TorrentStatus {
+				for _, st := range eng.GetTorrents() {
+					if strings.EqualFold(st.InfoHash, hash) {
+						return st
+					}
+				}
+				t.Fatal("torrent not loaded from session")
+				return TorrentStatus{}
+			}
+			if tc.onDisk != nil {
+				if st := status(); st.Progress < 100 {
+					t.Fatalf("assumed-complete torrent started at %.1f%% instead of 100%%", st.Progress)
+				}
+			}
+			deadline := time.Now().Add(20 * time.Second)
+			for {
+				eng.mu.RLock()
+				tr := eng.rateMap[hash]
+				settled := tr != nil && !tr.verifyPending.Load() && !tr.isVerifying.Load()
+				eng.mu.RUnlock()
+				if settled {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("verification did not settle")
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+			// Let the once-a-second monitor loop act on the verified state.
+			time.Sleep(1500 * time.Millisecond)
+
+			st := status()
+			if seeding := st.State == "seeding" || st.State == "completed"; seeding != tc.wantSeeding {
+				t.Fatalf("state %q with %d of %d bytes, want seeding=%v", st.State, st.CompletedBytes, st.TotalBytes, tc.wantSeeding)
+			}
+		})
+	}
 }

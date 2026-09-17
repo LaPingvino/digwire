@@ -254,6 +254,8 @@ type rateTracker struct {
 	isPaused            bool
 	isSeeding           bool
 	isVerifying         atomic.Bool
+	// Assumed complete from the session, awaiting the verification that confirms or invalidates it.
+	verifyPending       atomic.Bool
 	verifyProgressBits  uint64
 	displayName         string
 	savedTotalBytes     int64
@@ -959,7 +961,7 @@ func (e *Engine) loadSession() {
 				if mi, err := metainfo.LoadFromFile(cachedTorrentPath); err == nil && mi != nil {
 					spec := torrent.TorrentSpecFromMetaInfo(mi)
 					if customDir != "" {
-						spec.Storage = storage.NewFile(customDir)
+						spec.Storage = e.fileStorage(customDir)
 					}
 					if len(item.FileMap) > 0 {
 						spec.Storage = e.mappedFileStorage(item.FileMap)
@@ -980,7 +982,7 @@ func (e *Engine) loadSession() {
 			spec, specErr := torrent.TorrentSpecFromMagnetUri(item.MagnetURI)
 			if specErr == nil && spec != nil {
 				if customDir != "" {
-					spec.Storage = storage.NewFile(customDir)
+					spec.Storage = e.fileStorage(customDir)
 				}
 				if len(item.FileMap) > 0 {
 					spec.Storage = e.mappedFileStorage(item.FileMap)
@@ -1003,25 +1005,31 @@ func (e *Engine) loadSession() {
 		// Inject tier-1 trackers
 		t.AddTrackers(GetTier1TrackerList())
 
+		// A download the session remembers as finished is assumed complete, so it seeds right away
+		// instead of starting over at 0%. Unless the piece completion database already confirms it,
+		// its data is then hashed and only a failed check sends it back to downloading. Files that
+		// are missing or short invalidate the claim at once.
 		savedCompleted := item.CompletedBytes
-		isPlausiblePureSeed := item.IsSeeding || (item.TotalBytes > 0 && savedCompleted >= item.TotalBytes)
-
-		if !isPlausiblePureSeed && t != nil && t.Info() != nil {
+		sessionSaysComplete := item.IsSeeding || (item.TotalBytes > 0 && savedCompleted >= item.TotalBytes)
+		isPlausiblePureSeed := sessionSaysComplete
+		if t != nil && t.Info() != nil {
 			tLen := t.Length()
+			if item.TotalBytes == 0 {
+				item.TotalBytes = tLen
+			}
 			bComp := t.BytesCompleted()
-			if bComp > savedCompleted {
+			switch {
+			case tLen > 0 && bComp >= tLen:
+				isPlausiblePureSeed = true
+				savedCompleted = tLen
+			case sessionSaysComplete && e.checkExistingLocalFileSize(t) >= tLen:
+				// Assumed complete; verified below.
+			default:
+				isPlausiblePureSeed = false
 				savedCompleted = bComp
 			}
-			if tLen > 0 {
-				if item.TotalBytes == 0 {
-					item.TotalBytes = tLen
-				}
-				if savedCompleted >= tLen {
-					isPlausiblePureSeed = true
-					savedCompleted = tLen
-				}
-			}
 		}
+		needsVerify := isPlausiblePureSeed && (t == nil || t.Info() == nil || t.BytesCompleted() < t.Length())
 
 		peakS := 0
 		peakP := 0
@@ -1034,14 +1042,6 @@ func (e *Engine) loadSession() {
 
 		isGermanMode := e.cfg != nil && e.cfg.GermanyMode
 		isSeeding := isPlausiblePureSeed && !isGermanMode
-
-		if isPlausiblePureSeed && t != nil && t.Info() != nil {
-			e.markTorrentPiecesComplete(t)
-			if t.Length() > 0 {
-				savedCompleted = t.Length()
-				item.TotalBytes = t.Length()
-			}
-		}
 
 		var skippedMap map[int]bool
 		if len(item.SkippedFiles) > 0 {
@@ -1066,6 +1066,7 @@ func (e *Engine) loadSession() {
 			fileMap:             item.FileMap,
 			siblingHash:         item.SiblingOf,
 		}
+		e.rateMap[hash].verifyPending.Store(needsVerify)
 
 		if len(item.WebSeeds) > 0 {
 			e.webSeedsMap[hash] = SanitizeWebSeeds(item.WebSeeds, false)
@@ -1118,12 +1119,21 @@ func (e *Engine) loadSession() {
 				<-tor.GotInfo()
 				if tor.Info() != nil {
 					e.saveTorrentMetainfo(tor)
-					e.markTorrentPiecesComplete(tor)
 					if len(seeds) > 0 {
 						clean := SanitizeWebSeeds(seeds, tor.Info().IsDir())
 						if len(clean) > 0 {
 							tor.AddWebSeeds(clean)
 						}
+					}
+					if tor.BytesCompleted() < tor.Length() {
+						// Seeding on the session's word: confirm by hashing.
+						e.ConsolidateAndVerifyForce(tor, true)
+					} else {
+						e.mu.RLock()
+						if tr := e.rateMap[strings.ToLower(tor.InfoHash().HexString())]; tr != nil {
+							tr.verifyPending.Store(false)
+						}
+						e.mu.RUnlock()
 					}
 				}
 			}(t, item.WebSeeds)
@@ -1425,16 +1435,11 @@ func (e *Engine) monitorLoop() {
 				}
 
 				tLen := t.Length()
-				bComp := t.BytesCompleted()
-				if tracker.savedCompletedBytes > bComp {
-					bComp = tracker.savedCompletedBytes
-				}
-				isComplete := tLen > 0 && bComp >= tLen
+				isComplete := t.Info() != nil && tLen > 0 && t.BytesCompleted() >= tLen
 
-				if isComplete {
-					if t.Info() != nil && t.BytesCompleted() < tLen {
-						e.markTorrentPiecesComplete(t)
-					}
+				if tracker.isVerifying.Load() || tracker.verifyPending.Load() {
+					// Leave the state alone until verification settles it.
+				} else if isComplete {
 					if e.cfg != nil && e.cfg.GermanyMode {
 						tracker.isSeeding = false
 						t.DisallowDataDownload()
@@ -1446,6 +1451,11 @@ func (e *Engine) monitorLoop() {
 						e.saveSessionLocked()
 					}
 				} else {
+					if tracker.isSeeding && !tracker.isPaused && t.Info() != nil {
+						// Data went missing from a seed (e.g. files deleted): fetch it again.
+						t.AllowDataDownload()
+						downloadWanted(t, tracker.skippedFiles)
+					}
 					tracker.isSeeding = false
 					if e.cfg != nil && e.cfg.GermanyMode {
 						t.DisallowDataUpload()
@@ -2055,7 +2065,7 @@ func (e *Engine) CreateTorrent(sourcePath, comment string, format ...string) (st
 	}
 
 	spec := torrent.TorrentSpecFromMetaInfo(&mi)
-	spec.Storage = storage.NewFile(filepath.Dir(sourcePath))
+	spec.Storage = e.fileStorage(filepath.Dir(sourcePath))
 
 	h := mi.HashInfoBytes()
 	hash := h.HexString()
@@ -2152,7 +2162,7 @@ func (e *Engine) SeedMetaInfo(mi *metainfo.MetaInfo, storageDir string) (*torren
 	}
 
 	spec := torrent.TorrentSpecFromMetaInfo(mi)
-	spec.Storage = storage.NewFile(storageDir)
+	spec.Storage = e.fileStorage(storageDir)
 
 	tor, _, err := e.client.AddTorrentSpec(spec)
 	if err != nil {
@@ -2680,6 +2690,7 @@ func (e *Engine) ConsolidateAndVerifyForce(tor *torrent.Torrent, force bool, onC
 				e.mu.RUnlock()
 				if tr != nil {
 					tr.isVerifying.Store(false)
+					tr.verifyPending.Store(false)
 					tr.setVerifyProgress(0)
 				}
 			}
@@ -2707,7 +2718,7 @@ func (e *Engine) ConsolidateAndVerifyForce(tor *torrent.Torrent, force bool, onC
 
 		// If NOT force verifying, check if files on disk are already complete or empty
 		if !force {
-			if tLen > 0 && (bComp >= tLen || (tr != nil && tr.savedCompletedBytes >= tLen)) {
+			if tLen > 0 && bComp >= tLen {
 				// Already 100% complete! Mark pieces complete immediately with ZERO hash delay
 				e.markTorrentPiecesComplete(tor)
 				if tr != nil {
@@ -2803,6 +2814,7 @@ func (e *Engine) ConsolidateAndVerifyForce(tor *torrent.Torrent, force bool, onC
 
 		if tr := e.rateMap[hash]; tr != nil {
 			tr.isVerifying.Store(false)
+			tr.verifyPending.Store(false)
 			tr.setVerifyProgress(0)
 			tr.savedTotalBytes = tLen
 			tr.savedCompletedBytes = bComp
@@ -3359,7 +3371,8 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 			name = info.Name
 			totalBytes = t.Length()
 			completedBytes = t.BytesCompleted()
-			if tracker.savedCompletedBytes > completedBytes {
+			if (tracker.isVerifying.Load() || tracker.verifyPending.Load()) && tracker.savedCompletedBytes > completedBytes {
+				// Show the last known progress rather than a dip while data is re-hashed.
 				completedBytes = tracker.savedCompletedBytes
 			}
 			if totalBytes > 0 {
@@ -4121,9 +4134,6 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 			var verifyProg float64
 			tr := e.rateMap[strings.ToLower(hashHex)]
 			if tr != nil {
-				if tr.savedCompletedBytes > completedBytes {
-					completedBytes = tr.savedCompletedBytes
-				}
 				if tr.isVerifying.Load() {
 					verifyProg = tr.getVerifyProgress()
 				}
@@ -4890,7 +4900,7 @@ func (e *Engine) SetGermanyMode(enabled bool) {
 			if tr != nil && tr.isPaused {
 				t.DisallowDataDownload()
 				t.AllowDataUpload()
-			} else if tr != nil && tr.savedTotalBytes > 0 && tr.savedCompletedBytes >= tr.savedTotalBytes {
+			} else if tr != nil && t.Info() != nil && t.BytesCompleted() >= t.Length() {
 				tr.isSeeding = true
 				t.DisallowDataDownload()
 				t.AllowDataUpload()
@@ -4964,7 +4974,26 @@ func newFileClientOpts(baseDir string, pieceCompletion storage.PieceCompletion) 
 		ClientBaseDir:   baseDir,
 		PieceCompletion: pieceCompletion,
 		UsePartFiles:    g.Some(false),
+		FilePathMaker:   torrentFilePath,
 	}
+}
+
+// torrentFilePath is the storage path of a torrent file relative to the download dir: under the
+// torrent name, except that a single-file v2 or hybrid torrent is stored as that one file. Its file
+// tree lists the file beneath the torrent name, which would otherwise become name/name.
+func torrentFilePath(o storage.FilePathMakerOpts) string {
+	name := o.Info.BestName()
+	path := o.File.BestPath()
+	if o.Info.HasV2() && len(o.Info.FileTree.Dir) == 1 && len(path) == 1 {
+		if entry, ok := o.Info.FileTree.Dir[path[0]]; ok && !entry.IsDir() {
+			return name
+		}
+	}
+	var parts []string
+	if name != metainfo.NoName {
+		parts = append(parts, name)
+	}
+	return filepath.Join(append(parts, path...)...)
 }
 
 // WriteClientStatus dumps the underlying BitTorrent client's internal state

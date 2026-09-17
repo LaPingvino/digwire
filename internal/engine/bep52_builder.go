@@ -184,7 +184,7 @@ func BuildBEP52MetaInfo(sourcePath string, isHybrid bool, comment string, tracke
 		var sha1Buf []byte
 		hasher := sha1.New()
 
-		for _, rec := range records {
+		for i, rec := range records {
 			v1Files = append(v1Files, metainfo.FileInfo{
 				Length: rec.size,
 				Path:   rec.pathList,
@@ -212,9 +212,9 @@ func BuildBEP52MetaInfo(sourcePath string, isHybrid bool, comment string, tracke
 			}
 			f.Close()
 
-			// Check for piece boundary padding
+			// Pad to the next piece boundary; the last file needs none (BEP 47).
 			rem := rec.size % pieceLen
-			if rem != 0 {
+			if rem != 0 && i < len(records)-1 {
 				padLen := pieceLen - rem
 				padPath := []string{".pad", fmt.Sprintf("%d", padLen)}
 				v1Files = append(v1Files, metainfo.FileInfo{
@@ -241,7 +241,12 @@ func BuildBEP52MetaInfo(sourcePath string, isHybrid bool, comment string, tracke
 			info.Pieces = append(info.Pieces, pHash[:]...)
 		}
 
-		info.Files = v1Files
+		if stat.IsDir() {
+			info.Files = v1Files
+		} else {
+			// A single file stays a single-file torrent for v1 clients too.
+			info.Length = stat.Size()
+		}
 	}
 
 	infoBytes, err := bencode.Marshal(&info)
