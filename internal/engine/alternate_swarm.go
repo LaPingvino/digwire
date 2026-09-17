@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"fmt"
 	"net/url"
 	"sort"
@@ -13,7 +14,24 @@ import (
 	"github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/metainfo"
 	"github.com/anacrolix/torrent/storage"
+
+	"digwire/internal/dhtindex"
 )
+
+// contentNames are names another release of a torrent's content may go by: the torrent's own and
+// those of its top-level folders, which are often published on their own.
+func contentNames(info *metainfo.Info) []string {
+	names := []string{info.BestName()}
+	seen := map[string]bool{info.BestName(): true}
+	for _, f := range info.UpvertedFiles() {
+		path := f.BestPath()
+		if len(path) > 1 && !seen[path[0]] && !strings.HasPrefix(path[0], ".") {
+			seen[path[0]] = true
+			names = append(names, path[0])
+		}
+	}
+	return names
+}
 
 // AlternateSwarm is another torrent whose files provably hold the same data as files of a local
 // torrent, so its swarm can feed the same files on disk. A hybrid or v2 release of the same
@@ -126,6 +144,19 @@ func (e *Engine) matchTorrentFiles(tor *torrent.Torrent, mi *metainfo.MetaInfo, 
 		usedTheirs[m.theirsIndex] = true
 	}
 	theirFiles := theirs.UpvertedFiles()
+	// Equal v2 pieces roots prove equal content outright, including roots remembered for v1 files.
+	for oi, root := range e.knownPiecesRoots(tor.InfoHash().HexString(), tor.Info()) {
+		if usedOurs[oi] {
+			continue
+		}
+		for ti, tf := range theirFiles {
+			if !usedTheirs[ti] && tf.PiecesRoot.Ok && tf.PiecesRoot.Value == root {
+				usedOurs[oi], usedTheirs[ti] = true, true
+				matches = append(matches, fileMatch{oursIndex: oi, theirsIndex: ti, theirsBestPath: tf.BestPath(), checked: 1})
+				break
+			}
+		}
+	}
 	for oi := range tor.Files() {
 		if usedOurs[oi] {
 			continue
@@ -251,7 +282,7 @@ func magnetForRecord(infoHash, infoHashV2, name string) string {
 // gatherSwarmCandidates collects tentative swarms that may carry some content: releases found in
 // the local DHT index holding a file of exactly one of the given sizes, and indexer search results
 // by name. None of them is trusted until its hashes are checked against local data.
-func (e *Engine) gatherSwarmCandidates(ctx context.Context, name string, fileSizes []int64, exclude map[string]bool) []swarmCandidate {
+func (e *Engine) gatherSwarmCandidates(ctx context.Context, names []string, fileSizes []int64, roots [][32]byte, exclude map[string]bool) []swarmCandidate {
 	seen := make(map[string]bool, len(exclude))
 	for h := range exclude {
 		seen[strings.ToLower(h)] = true
@@ -261,7 +292,34 @@ func (e *Engine) gatherSwarmCandidates(ctx context.Context, name string, fileSiz
 		largest = max(largest, size)
 	}
 
-	var bySize, byName []swarmCandidate
+	var byRoot, bySize, byName []swarmCandidate
+	recordCandidate := func(rec *dhtindex.DHTRecord, provider string) (swarmCandidate, bool) {
+		h := strings.ToLower(rec.InfoHash)
+		if seen[h] {
+			return swarmCandidate{}, false
+		}
+		seen[h] = true
+		seeders, leechers := -1, -1
+		if rec.Activity != nil {
+			seeders, leechers = rec.Activity.LastSeeders, rec.Activity.LastPeers
+		}
+		return swarmCandidate{
+			magnet:   magnetForRecord(h, rec.InfoHashV2, rec.Name),
+			provider: provider,
+			protocol: rec.ProtocolVersion,
+			seeders:  seeders,
+			leechers: leechers,
+		}, true
+	}
+	if e.dhtIndexer != nil {
+		for _, root := range roots {
+			for _, rec := range e.dhtIndexer.SearchByPiecesRoot(hex.EncodeToString(root[:])) {
+				if c, ok := recordCandidate(rec, "Local DHT Index (same v2 file)"); ok {
+					byRoot = append(byRoot, c)
+				}
+			}
+		}
+	}
 	if e.dhtIndexer != nil {
 		sort.Slice(fileSizes, func(i, j int) bool { return fileSizes[i] > fileSizes[j] })
 		for i, size := range fileSizes {
@@ -269,28 +327,37 @@ func (e *Engine) gatherSwarmCandidates(ctx context.Context, name string, fileSiz
 				break
 			}
 			for _, rec := range e.dhtIndexer.SearchByFileSize(size) {
-				h := strings.ToLower(rec.InfoHash)
-				if seen[h] {
-					continue
+				if c, ok := recordCandidate(rec, "Local DHT Index (file size match)"); ok {
+					bySize = append(bySize, c)
 				}
-				seen[h] = true
-				seeders, leechers := -1, -1
-				if rec.Activity != nil {
-					seeders, leechers = rec.Activity.LastSeeders, rec.Activity.LastPeers
-				}
-				bySize = append(bySize, swarmCandidate{
-					magnet:   magnetForRecord(h, rec.InfoHashV2, rec.Name),
-					provider: "Local DHT Index (file size match)",
-					protocol: rec.ProtocolVersion,
-					seeders:  seeders,
-					leechers: leechers,
-				})
 			}
 		}
 	}
 
 	if e.searchMgr != nil {
-		for _, q := range buildSearchQueries(name) {
+		// Take turns between names, so a folder's own release is searched for early too.
+		var queries []string
+		seenQuery := make(map[string]bool)
+		perName := make([][]string, len(names))
+		for i, name := range names {
+			perName[i] = buildSearchQueries(name)
+		}
+		for round := 0; len(queries) < 64; round++ {
+			added := false
+			for _, qs := range perName {
+				if round < len(qs) {
+					added = true
+					if q := strings.ToLower(qs[round]); !seenQuery[q] {
+						seenQuery[q] = true
+						queries = append(queries, qs[round])
+					}
+				}
+			}
+			if !added {
+				break
+			}
+		}
+		for _, q := range queries {
 			for _, r := range e.searchMgr.SearchAll(ctx, q) {
 				h := strings.ToLower(r.InfoHash)
 				if h == "" || seen[h] || !strings.HasPrefix(r.MagnetURI, "magnet:") {
@@ -316,10 +383,11 @@ func (e *Engine) gatherSwarmCandidates(ctx context.Context, name string, fileSiz
 			return list[i].seeders > list[j].seeders
 		})
 	}
+	rank(byRoot)
 	rank(bySize)
 	rank(byName)
-	// An exact file size is a stronger lead than a similar name.
-	candidates := append(bySize, byName...)
+	// A shared pieces root is proof already; an exact file size is a stronger lead than a name.
+	candidates := append(append(byRoot, bySize...), byName...)
 	if len(candidates) > maxAlternateProbes {
 		candidates = candidates[:maxAlternateProbes]
 	}
@@ -380,7 +448,11 @@ func (e *Engine) FindAlternateSwarms(ctx context.Context, infoHashHex string) ([
 	for _, f := range tor.Files() {
 		sizes = append(sizes, f.Length())
 	}
-	candidates := e.gatherSwarmCandidates(ctx, info.BestName(), sizes, map[string]bool{ourHash: true})
+	var roots [][32]byte
+	for _, root := range e.knownPiecesRoots(ourHash, info) {
+		roots = append(roots, root)
+	}
+	candidates := e.gatherSwarmCandidates(ctx, contentNames(info), sizes, roots, map[string]bool{ourHash: true})
 
 	var (
 		mu    sync.Mutex
@@ -409,6 +481,11 @@ func (e *Engine) FindAlternateSwarms(ctx context.Context, infoHashHex string) ([
 			swarm.VerifiedPieces += m.checked
 		}
 		swarm.MagnetURI, swarm.InfoHashV2 = swarmMagnet(c.magnet, mi)
+		pairs := make([][2]int, 0, len(matches))
+		for _, m := range matches {
+			pairs = append(pairs, [2]int{m.oursIndex, m.theirsIndex})
+		}
+		e.recordEquivalentFiles(ourHash, info, swarm.InfoHash, candInfo, pairs)
 		mu.Lock()
 		found = append(found, alternateCandidate{swarm: swarm, mi: mi, matches: matches})
 		mu.Unlock()

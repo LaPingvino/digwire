@@ -256,3 +256,48 @@ func TestInitSchemaMigratesPreBEP52Database(t *testing.T) {
 	}
 }
 
+
+// Roots learned later for files of a known torrent, e.g. proven equal to a v2 release's files,
+// are merged into its file entries and survive a restart.
+func TestAddRecordMergesPiecesRoots(t *testing.T) {
+	idx, tmp := createTestIndexer(t)
+	defer os.RemoveAll(tmp)
+
+	hash := strings.Repeat("d", 40)
+	root := strings.Repeat("e", 64)
+	idx.AddRecord(&DHTRecord{
+		InfoHash: hash, Name: "Show", ProtocolVersion: "v1", SizeBytes: 300, NumFiles: 2,
+		Files:       []string{"Show/a.mkv", "Show/b.mkv"},
+		FileEntries: []DHTFileEntry{{Path: "Show/a.mkv", SizeBytes: 100}, {Path: "Show/b.mkv", SizeBytes: 200}},
+	})
+	idx.AddRecord(&DHTRecord{
+		InfoHash: hash, Name: "Show", ProtocolVersion: "v1",
+		PiecesRoots: []string{root},
+		FileEntries: []DHTFileEntry{{Path: "Show/b.mkv", SizeBytes: 200, PiecesRoot: root}},
+	})
+
+	check := func(idx *Indexer) {
+		t.Helper()
+		entries := idx.FileEntries(hash)
+		if len(entries) != 2 {
+			t.Fatalf("entries = %+v, want 2", entries)
+		}
+		for _, fe := range entries {
+			if want := map[string]string{"Show/a.mkv": "", "Show/b.mkv": root}[fe.Path]; fe.PiecesRoot != want {
+				t.Fatalf("%s root = %q, want %q", fe.Path, fe.PiecesRoot, want)
+			}
+		}
+		if got := idx.SearchByPiecesRoot(root); len(got) != 1 || got[0].InfoHash != hash {
+			t.Fatalf("SearchByPiecesRoot = %+v", got)
+		}
+		if rec := idx.GetRecord(hash); rec == nil || rec.ProtocolVersion != "v1" || rec.NumFiles != 2 {
+			t.Fatalf("record = %+v", rec)
+		}
+	}
+	check(idx)
+	defer idx.Close()
+
+	// A fresh cache over the same database, as after a restart.
+	reopened := &Indexer{cache: make(map[string]*DHTRecord), db: idx.db, seenCrawl: make(map[string]bool), stopChan: make(chan struct{})}
+	check(reopened)
+}

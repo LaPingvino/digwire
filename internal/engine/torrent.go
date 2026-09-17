@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"runtime/debug"
 	"bytes"
 	"context"
 	"database/sql"
@@ -19,6 +18,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -1792,20 +1792,6 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 				tor.AddWebSeeds(clean)
 			}
 		}
-		if e.dhtIndexer != nil {
-			var fileNames []string
-			for _, f := range tor.Info().UpvertedFiles() {
-				fileNames = append(fileNames, f.DisplayPath(tor.Info()))
-			}
-			e.dhtIndexer.AddRecord(&dhtindex.DHTRecord{
-				InfoHash:     tor.InfoHash().HexString(),
-				Name:         tor.Info().BestName(),
-				SizeBytes:    tor.Length(),
-				NumFiles:     len(fileNames),
-				DiscoveredAt: time.Now().Unix(),
-				Files:        fileNames,
-			})
-		}
 		e.ConsolidateAndVerify(tor)
 	}(t, wsList, peerInfos)
 
@@ -2288,43 +2274,24 @@ func (e *Engine) UpgradeToBEP52(infoHashHex string) (string, string, error) {
 	e.saveSessionLocked()
 	e.mu.Unlock()
 
-	if e.dhtIndexer != nil {
-		if info, iErr := mi.UnmarshalInfo(); iErr == nil {
-			var fileNames []string
-			var piecesRoots []string
-			var fileEntries []dhtindex.DHTFileEntry
-			for _, f := range info.UpvertedFiles() {
-				dispPath := f.DisplayPath(&info)
-				fileNames = append(fileNames, dispPath)
-				var pRoot string
-				if f.PiecesRoot.Ok {
-					pRoot = hex.EncodeToString(f.PiecesRoot.Value[:])
-					piecesRoots = append(piecesRoots, pRoot)
-				}
-				fileEntries = append(fileEntries, dhtindex.DHTFileEntry{
-					Path:       dispPath,
-					SizeBytes:  f.Length,
-					PiecesRoot: pRoot,
-				})
-			}
-			var v2Hash string
-			if magV2, err := mi.MagnetV2(); err == nil && magV2.V2InfoHash.Ok {
-				v2Hash = hex.EncodeToString(magV2.V2InfoHash.Value[:])
-			}
-			e.dhtIndexer.AddRecord(&dhtindex.DHTRecord{
-				InfoHash:        seededTor.InfoHash().HexString(),
-				InfoHashV2:      v2Hash,
-				ProtocolVersion: "hybrid",
-				Name:            torrentName,
-				SizeBytes:       info.TotalLength(),
-				NumFiles:        len(fileNames),
-				DiscoveredAt:    time.Now().Unix(),
-				Files:           fileNames,
-				PiecesRoots:     piecesRoots,
-				FileEntries:     fileEntries,
-			})
+	e.indexLocalTorrent(seededTor)
+	if newInfo, iErr := mi.UnmarshalInfo(); iErr == nil {
+		// The hybrid was built from the v1 torrent's own files, so files pair up by path.
+		newIndex := make(map[string]int)
+		for i, f := range newInfo.UpvertedFiles() {
+			newIndex[f.DisplayPath(&newInfo)] = i
 		}
+		var pairs [][2]int
+		for i, f := range info.UpvertedFiles() {
+			if j, ok := newIndex[f.DisplayPath(info)]; ok {
+				pairs = append(pairs, [2]int{i, j})
+			}
+		}
+		e.recordEquivalentFiles(oldHex, info, seededTor.InfoHash().HexString(), &newInfo, pairs)
 	}
+	// Other releases of (parts of) this content, e.g. a folder published on its own, learn the
+	// new roots too once verified against the local files.
+	go e.findAlternateSwarmsInBackground(seededTor.InfoHash().HexString())
 
 	magURI := ""
 	if magObj, err := mi.MagnetV2(); err == nil {
@@ -2721,6 +2688,7 @@ func (e *Engine) ConsolidateAndVerifyForce(tor *torrent.Torrent, force bool, onC
 
 		// Files other local torrents already hold are used in place rather than downloaded again.
 		tor = e.linkToLocalData(tor)
+		e.indexLocalTorrent(tor)
 
 		// 1. Persist metainfo
 		e.saveTorrentMetainfo(tor)

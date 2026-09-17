@@ -348,7 +348,7 @@ func (e *Engine) FindSuggestedSwarm(ctx context.Context, task *HTTPTask, searchM
 	}
 
 	// STAGE 2: Tentative candidates from the DHT index and indexers, verified by content
-	candidates := e.gatherSwarmCandidates(ctx, task.Name, []int64{task.TotalBytes}, nil)
+	candidates := e.gatherSwarmCandidates(ctx, []string{task.Name}, []int64{task.TotalBytes}, nil, nil)
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("no candidate torrents found for %s", task.Name)
 	}

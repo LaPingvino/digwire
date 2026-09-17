@@ -516,11 +516,11 @@ func TestGatherSwarmCandidatesByFileSize(t *testing.T) {
 		Files:           []string{"x.mkv"},
 		FileEntries:     []dhtindex.DHTFileEntry{{Path: "x.mkv", SizeBytes: 123456789}},
 	})
-	candidates := eng.gatherSwarmCandidates(context.Background(), "My Movie", []int64{123456789}, nil)
+	candidates := eng.gatherSwarmCandidates(context.Background(), []string{"My Movie"}, []int64{123456789}, nil, nil)
 	if len(candidates) == 0 || !strings.Contains(candidates[0].magnet, v1) || !strings.Contains(candidates[0].magnet, "btmh:1220"+v2) {
 		t.Fatalf("expected the hybrid with a same-size file as candidate, got %+v", candidates)
 	}
-	if got := eng.gatherSwarmCandidates(context.Background(), "My Movie", []int64{123456789}, map[string]bool{v1: true}); len(got) != 0 {
+	if got := eng.gatherSwarmCandidates(context.Background(), []string{"My Movie"}, []int64{123456789}, nil, map[string]bool{v1: true}); len(got) != 0 {
 		t.Fatalf("excluded hash still proposed: %+v", got)
 	}
 }

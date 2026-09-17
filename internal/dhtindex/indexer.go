@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -361,12 +360,48 @@ func (idx *Indexer) GetRecord(infoHashHex string) *DHTRecord {
 		_ = json.Unmarshal([]byte(rootsStr), &rec.PiecesRoots)
 	}
 	rec.InfoHash = strings.ToLower(rec.InfoHash)
+	rec.FileEntries = idx.loadFileEntries(rec.InfoHash)
 
 	idx.mu.Lock()
 	idx.putCacheLocked(&rec)
 	idx.mu.Unlock()
 
 	return &rec
+}
+
+// FileEntries returns the files known for a torrent, with sizes and any known pieces roots.
+func (idx *Indexer) FileEntries(infoHashHex string) []DHTFileEntry {
+	if idx == nil {
+		return nil
+	}
+	hash := strings.ToLower(strings.TrimSpace(infoHashHex))
+	idx.mu.RLock()
+	if rec, ok := idx.cache[hash]; ok && len(rec.FileEntries) > 0 {
+		entries := append([]DHTFileEntry(nil), rec.FileEntries...)
+		idx.mu.RUnlock()
+		return entries
+	}
+	idx.mu.RUnlock()
+	return idx.loadFileEntries(hash)
+}
+
+func (idx *Indexer) loadFileEntries(hash string) []DHTFileEntry {
+	if idx.db == nil {
+		return nil
+	}
+	rows, err := idx.db.Query(`SELECT file_path, size_bytes, COALESCE(pieces_root, '') FROM dht_files WHERE info_hash = ?`, hash)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var entries []DHTFileEntry
+	for rows.Next() {
+		var fe DHTFileEntry
+		if rows.Scan(&fe.Path, &fe.SizeBytes, &fe.PiecesRoot) == nil {
+			entries = append(entries, fe)
+		}
+	}
+	return entries
 }
 
 // GetHealthPrediction evaluates historical swarm health for an infohash
@@ -438,20 +473,22 @@ func (idx *Indexer) AddRecord(rec *DHTRecord) {
 				existing.ProtocolVersion = rec.ProtocolVersion
 			}
 		}
-		if len(rec.PiecesRoots) > 0 && len(existing.PiecesRoots) == 0 {
-			existing.PiecesRoots = rec.PiecesRoots
-		}
+		existing.PiecesRoots = mergeRoots(existing.PiecesRoots, rec.PiecesRoots)
 		if rec.InfoHashV2 != "" && existing.InfoHashV2 == "" {
 			existing.InfoHashV2 = rec.InfoHashV2
 		}
 		if rec.ProtocolVersion != "" && existing.ProtocolVersion == "" {
 			existing.ProtocolVersion = rec.ProtocolVersion
 		}
-		if len(rec.FileEntries) > 0 && len(existing.FileEntries) == 0 {
-			existing.FileEntries = rec.FileEntries
+		existing.FileEntries, _ = mergeFileEntries(existing.FileEntries, rec.FileEntries)
+		if len(rec.FileEntries) > 0 && existing.SizeBytes == 0 {
+			existing.SizeBytes = rec.SizeBytes
 		}
+		saved := *existing
+		// Entries not in this call are already stored; only write what it brings.
+		saved.FileEntries = rec.FileEntries
 		idx.mu.Unlock()
-		idx.saveRecordToSQLite(existing)
+		idx.saveRecordToSQLite(&saved)
 		return
 	}
 	idx.putCacheLocked(rec)
@@ -595,48 +632,7 @@ func (idx *Indexer) crawlerWorker() {
 			if existingT, ok := idx.client.Torrent(ih); ok {
 				if info := existingT.Info(); info != nil {
 					mi := existingT.Metainfo()
-					var v2Hash string
-					var proto = "v1"
-					if len(mi.InfoBytes) > 0 {
-						if magV2, err := mi.MagnetV2(); err == nil && magV2.V2InfoHash.Ok {
-							v2Hash = hex.EncodeToString(magV2.V2InfoHash.Value[:])
-						}
-					}
-					if info.HasV1() && info.HasV2() {
-						proto = "hybrid"
-					} else if info.HasV2() {
-						proto = "v2"
-					}
-
-					var fileNames []string
-					var piecesRoots []string
-					var fileEntries []DHTFileEntry
-					for _, f := range info.UpvertedFiles() {
-						dispPath := f.DisplayPath(info)
-						fileNames = append(fileNames, dispPath)
-						var pRoot string
-						if f.PiecesRoot.Ok {
-							pRoot = hex.EncodeToString(f.PiecesRoot.Value[:])
-							piecesRoots = append(piecesRoots, pRoot)
-						}
-						fileEntries = append(fileEntries, DHTFileEntry{
-							Path:       dispPath,
-							SizeBytes:  f.Length,
-							PiecesRoot: pRoot,
-						})
-					}
-					idx.AddRecord(&DHTRecord{
-						InfoHash:        hashHex,
-						InfoHashV2:      v2Hash,
-						ProtocolVersion: proto,
-						Name:            info.BestName(),
-						SizeBytes:       existingT.Length(),
-						NumFiles:        len(fileNames),
-						DiscoveredAt:    time.Now().Unix(),
-						Files:           fileNames,
-						PiecesRoots:     piecesRoots,
-						FileEntries:     fileEntries,
-					})
+					idx.AddRecord(RecordFromMetaInfo(hashHex, &mi, info))
 				}
 				continue
 			}
@@ -679,48 +675,7 @@ func (idx *Indexer) crawlerWorker() {
 						}
 					}
 
-					var v2Hash string
-					var proto = "v1"
-					if len(mi.InfoBytes) > 0 {
-						if magV2, err := mi.MagnetV2(); err == nil && magV2.V2InfoHash.Ok {
-							v2Hash = hex.EncodeToString(magV2.V2InfoHash.Value[:])
-						}
-					}
-					if info.HasV1() && info.HasV2() {
-						proto = "hybrid"
-					} else if info.HasV2() {
-						proto = "v2"
-					}
-
-					var fileNames []string
-					var piecesRoots []string
-					var fileEntries []DHTFileEntry
-					for _, f := range info.UpvertedFiles() {
-						dispPath := f.DisplayPath(info)
-						fileNames = append(fileNames, dispPath)
-						var pRoot string
-						if f.PiecesRoot.Ok {
-							pRoot = hex.EncodeToString(f.PiecesRoot.Value[:])
-							piecesRoots = append(piecesRoots, pRoot)
-						}
-						fileEntries = append(fileEntries, DHTFileEntry{
-							Path:       dispPath,
-							SizeBytes:  f.Length,
-							PiecesRoot: pRoot,
-						})
-					}
-					idx.AddRecord(&DHTRecord{
-						InfoHash:        hashHex,
-						InfoHashV2:      v2Hash,
-						ProtocolVersion: proto,
-						Name:            info.BestName(),
-						SizeBytes:       t.Length(),
-						NumFiles:        len(fileNames),
-						DiscoveredAt:    time.Now().Unix(),
-						Files:           fileNames,
-						PiecesRoots:     piecesRoots,
-						FileEntries:     fileEntries,
-					})
+					idx.AddRecord(RecordFromMetaInfo(hashHex, &mi, info))
 				}
 				idx.safeDrop(t, hashHex)
 			case <-time.After(5 * time.Second):

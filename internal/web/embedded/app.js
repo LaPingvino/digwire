@@ -164,12 +164,15 @@ function getBEP52UpgradeBadgeHtml(t) {
 function canSearchAlternateSwarms(t) {
   if (!t || !t.info_hash || t.info_hash.length !== 40 || t.platform || t.is_media) return false;
   if (!t.magnet_uri || !t.magnet_uri.startsWith('magnet:')) return false;
-  const proto = (t.protocol_version || (t.is_hybrid ? 'hybrid' : (t.info_hash_v2 ? 'v2' : 'v1'))).toLowerCase();
-  return proto === 'v1';
+  return true;
+}
+
+function torrentProtocol(t) {
+  return (t.protocol_version || (t.is_hybrid ? 'hybrid' : (t.info_hash_v2 ? 'v2' : 'v1'))).toLowerCase();
 }
 
 function getAltSwarmBadgeHtml(t) {
-  if (!canSearchAlternateSwarms(t) || t.suggested_swarm || t.progress >= 100 || t.state === 'seeding' || t.state === 'completed' || t.state === 'metadata') return '';
+  if (!canSearchAlternateSwarms(t) || torrentProtocol(t) !== 'v1' || t.suggested_swarm || t.progress >= 100 || t.state === 'seeding' || t.state === 'completed' || t.state === 'metadata') return '';
   return `<button class="btn" style="padding: 2px 7px; font-size: 10.5px; border-radius: 9999px; display: inline-flex; align-items: center; gap: 3px; cursor: pointer;" title="Look for a hybrid / v2 (or other) swarm with the same files to help finish this download" onclick="event.stopPropagation(); openAlternateSwarmSearch('${t.info_hash}')">🔎 Other swarms</button>`;
 }
 
@@ -226,7 +229,7 @@ function getAltSwarmSectionHtml(d) {
   } else if (st.error) {
     body = `<div style="font-size: 12px; color: #ed333b; margin-top: 6px;">${escapeHtml(st.error)}</div>`;
   } else if (st.swarms && st.swarms.length === 0) {
-    body = `<div style="font-size: 12px; color: var(--adw-dim-label); margin-top: 6px;">No other swarm with provably identical files found. Matching needs the same piece size, so differently packed releases can't be compared.</div>`;
+    body = `<div style="font-size: 12px; color: var(--adw-dim-label); margin-top: 6px;">No other release with provably identical files found yet. Releases are compared by hashing files that are already on disk.</div>`;
   } else if (st.swarms) {
     body = st.swarms.map(sw => {
       const seeds = sw.seeders >= 0 ? `${sw.seeders} seeds` : '? seeds';
@@ -254,7 +257,7 @@ function getAltSwarmSectionHtml(d) {
         <div>
           🔎 <strong>Other swarms with these files</strong>
           <div style="font-size: 11.5px; color: var(--adw-dim-label); margin-top: 2px;">
-            Find hybrid / v2 (or other) releases whose piece hashes prove identical content, and let them feed the same files.
+            Find hybrid / v2 (or other) releases, including single folders published on their own, whose hashes prove identical content. Verified matches are remembered, so adding one later is instant.
           </div>
         </div>
         <button class="btn" style="padding: 4px 12px; font-size: 11.5px; white-space: nowrap;" ${st.loading ? 'disabled' : ''} onclick="findAlternateSwarms('${d.info_hash}')">

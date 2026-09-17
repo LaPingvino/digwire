@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"log"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -28,10 +29,11 @@ func (e *Engine) maybeSearchAlternateSwarm(now time.Time, t *torrent.Torrent, tr
 	if protocolOfInfo(info) != "v1" || now.Sub(tr.lastAltSearch) < alternateSearchInterval {
 		return
 	}
-	if t.BytesCompleted() < min(max(minBytesForSwarmSearch, t.Length()/100), t.Length()/4) {
+	hash := strings.ToLower(t.InfoHash().HexString())
+	// Files remembered as equal to v2 files need no downloaded data to be matched by root.
+	if t.BytesCompleted() < min(max(minBytesForSwarmSearch, t.Length()/100), t.Length()/4) && len(e.knownPiecesRoots(hash, info)) == 0 {
 		return
 	}
-	hash := strings.ToLower(t.InfoHash().HexString())
 	for _, other := range e.rateMap {
 		if other.siblingHash == hash {
 			return // Already has an attached swarm.
@@ -47,6 +49,7 @@ func (e *Engine) maybeSearchAlternateSwarm(now time.Time, t *torrent.Torrent, tr
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		swarms, err := e.FindAlternateSwarms(ctx, hash)
+		log.Printf("Alternate swarm search for %s: %d verified release(s), err=%v", hash, len(swarms), err)
 		if err != nil || len(swarms) == 0 || swarms[0].Attached {
 			return
 		}
@@ -68,6 +71,19 @@ func (e *Engine) maybeSearchAlternateSwarm(now time.Time, t *torrent.Torrent, tr
 			}
 		}
 	}()
+}
+
+// findAlternateSwarmsInBackground verifies other releases against a torrent's local files, so the
+// DHT index learns which of their files equal this torrent's v2 files.
+func (e *Engine) findAlternateSwarmsInBackground(infoHashHex string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	swarms, err := e.FindAlternateSwarms(ctx, infoHashHex)
+	if err != nil {
+		log.Printf("Alternate swarm search for %s failed: %v", infoHashHex, err)
+		return
+	}
+	log.Printf("Alternate swarm search for %s: %d verified release(s)", infoHashHex, len(swarms))
 }
 
 // TorrentSwarmSuggestion returns the swarm automatically found for a torrent, if any.

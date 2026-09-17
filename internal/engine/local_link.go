@@ -22,7 +22,9 @@ func storedFilePath(info *metainfo.Info, fi metainfo.FileInfo, fileMap map[strin
 
 // linkMatch is a file of a new torrent proven to be present in another local torrent.
 type linkMatch struct {
-	sourceHash string
+	ourIndex, sourceIndex int // Indexes into UpvertedFiles.
+	sourceInfo            *metainfo.Info
+	sourceHash            string
 	path       string // Relative to the download directory.
 	length     int64
 }
@@ -39,6 +41,7 @@ func (e *Engine) findLocalFileMatches(tor *torrent.Torrent) map[string]linkMatch
 
 	type source struct {
 		tor  *torrent.Torrent
+		info *metainfo.Info
 		hash string
 		idx  int
 		path string
@@ -56,13 +59,13 @@ func (e *Engine) findLocalFileMatches(tor *torrent.Torrent) map[string]linkMatch
 			if fi.Length == 0 || i >= len(other.Files()) {
 				continue
 			}
-			bySize[fi.Length] = append(bySize[fi.Length], source{other, hash, i, storedFilePath(oinfo, fi, otr.fileMap)})
+			bySize[fi.Length] = append(bySize[fi.Length], source{other, oinfo, hash, i, storedFilePath(oinfo, fi, otr.fileMap)})
 		}
 	}
 	e.mu.RUnlock()
 
 	matches := make(map[string]linkMatch)
-	for _, fi := range info.UpvertedFiles() {
+	for oi, fi := range info.UpvertedFiles() {
 		if fi.Length == 0 {
 			continue
 		}
@@ -70,7 +73,7 @@ func (e *Engine) findLocalFileMatches(tor *torrent.Torrent) map[string]linkMatch
 			ld := torrentFileData(e.cfg.DownloadDir, src.tor, src.idx)
 			ld.path = filepath.Join(e.cfg.DownloadDir, src.path)
 			if _, ok := verifyFileBySampling(ld, &mi, info, fi); ok {
-				matches[strings.Join(fi.BestPath(), "/")] = linkMatch{src.hash, src.path, fi.Length}
+				matches[strings.Join(fi.BestPath(), "/")] = linkMatch{oi, src.idx, src.info, src.hash, src.path, fi.Length}
 				break
 			}
 		}
@@ -98,9 +101,17 @@ func (e *Engine) linkToLocalData(tor *torrent.Torrent) *torrent.Torrent {
 	}
 	fileMap := make(map[string]string, len(matches))
 	bytesBySource := make(map[string]int64)
+	pairsBySource := make(map[string][][2]int)
 	for key, m := range matches {
 		fileMap[key] = m.path
 		bytesBySource[m.sourceHash] += m.length
+		pairsBySource[m.sourceHash] = append(pairsBySource[m.sourceHash], [2]int{m.ourIndex, m.sourceIndex})
+	}
+	for _, m := range matches {
+		if pairs := pairsBySource[m.sourceHash]; pairs != nil {
+			e.recordEquivalentFiles(hash, info, m.sourceHash, m.sourceInfo, pairs)
+			delete(pairsBySource, m.sourceHash)
+		}
 	}
 	sibling := ""
 	for h, n := range bytesBySource {
