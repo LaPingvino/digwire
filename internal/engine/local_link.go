@@ -25,8 +25,8 @@ type linkMatch struct {
 	ourIndex, sourceIndex int // Indexes into UpvertedFiles.
 	sourceInfo            *metainfo.Info
 	sourceHash            string
-	path       string // Relative to the download directory.
-	length     int64
+	path                  string // Relative to the download directory.
+	length                int64
 }
 
 // findLocalFileMatches looks for files of tor that other local torrents already hold, proving each
@@ -121,9 +121,6 @@ func (e *Engine) linkToLocalData(tor *torrent.Torrent) *torrent.Torrent {
 	}
 
 	mi := tor.Metainfo()
-	if !info.HasV2() {
-		mi.PieceLayers = nil // The client reports an empty map, which it then rejects for v1 files.
-	}
 	spec := torrent.TorrentSpecFromMetaInfo(&mi)
 	spec.Storage = e.mappedFileStorage(fileMap)
 	wasPaused := tr.isPaused
@@ -155,6 +152,19 @@ func (e *Engine) linkToLocalData(tor *torrent.Torrent) *torrent.Torrent {
 	e.mu.Unlock()
 	log.Printf("🔗 %s: using %d file(s) already on disk from %d local torrent(s)", info.BestName(), len(matches), len(bytesBySource))
 	return newTor
+}
+
+// markLinkPendingLocked has a newly added torrent's first verification look for its files among
+// other local torrents. A torrent that was already present keeps its own progress.
+func (e *Engine) markLinkPendingLocked(hash string) {
+	tr := e.rateMap[strings.ToLower(hash)]
+	if tr == nil {
+		return
+	}
+	if t, _ := e.findUserTorrent(hash); t != nil && t.Info() != nil && t.BytesCompleted() > 0 {
+		return
+	}
+	tr.linkPending = true
 }
 
 // pathsInUseLocked returns the absolute paths of files belonging to local torrents other than

@@ -22,6 +22,7 @@ func addLocalTorrent(t *testing.T, eng *Engine, mi *metainfo.MetaInfo) *torrent.
 	eng.mu.Lock()
 	eng.initTracker(hash)
 	eng.rateMap[hash].isPaused = true
+	eng.markLinkPendingLocked(hash)
 	eng.mu.Unlock()
 	verifyNow(t, eng, tor)
 	tor, _ = eng.findUserTorrent(hash)
@@ -137,6 +138,39 @@ func TestNewTorrentUsesFilesOfLocalTorrent(t *testing.T) {
 	eng.mu.RUnlock()
 	if !stillLinked {
 		t.Fatal("linked torrent was dropped along with its source")
+	}
+}
+
+// Only a newly added torrent looks for local files; one reverified later keeps its own layout.
+func TestReverifyDoesNotLinkExistingTorrent(t *testing.T) {
+	eng, downloadDir := newTestEngine(t)
+	show := filepath.Join(downloadDir, "Show")
+	writeRandomFile(t, filepath.Join(show, "a.mkv"), 6*testPieceLen+1)
+	hybridMI, err := BuildBEP52MetaInfo(show, true, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	addLocalTorrent(t, eng, hybridMI)
+
+	elsewhere := filepath.Join(t.TempDir(), "Copy")
+	data, _ := os.ReadFile(filepath.Join(show, "a.mkv"))
+	_ = os.MkdirAll(elsewhere, 0755)
+	_ = os.WriteFile(filepath.Join(elsewhere, "a.mkv"), data, 0644)
+	tor, _, err := eng.client.AddTorrentSpec(torrent.TorrentSpecFromMetaInfo(v1MetaInfo(t, elsewhere, "Copy", testPieceLen)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := strings.ToLower(tor.InfoHash().HexString())
+	eng.mu.Lock()
+	eng.initTracker(hash)
+	eng.rateMap[hash].isPaused = true
+	eng.mu.Unlock()
+	verifyNow(t, eng, tor)
+	eng.mu.RLock()
+	mapped := len(eng.rateMap[hash].fileMap)
+	eng.mu.RUnlock()
+	if mapped != 0 {
+		t.Fatalf("reverified torrent was linked to local files")
 	}
 }
 

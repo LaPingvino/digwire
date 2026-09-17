@@ -477,6 +477,10 @@ func (idx *Indexer) AddRecord(rec *DHTRecord) {
 		if rec.InfoHashV2 != "" && existing.InfoHashV2 == "" {
 			existing.InfoHashV2 = rec.InfoHashV2
 		}
+		// A record built from real metadata knows the protocol, whatever an earlier guess said.
+		if len(rec.FileEntries) > 0 && rec.ProtocolVersion != "" {
+			existing.ProtocolVersion = rec.ProtocolVersion
+		}
 		if rec.ProtocolVersion != "" && existing.ProtocolVersion == "" {
 			existing.ProtocolVersion = rec.ProtocolVersion
 		}

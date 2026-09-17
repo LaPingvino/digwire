@@ -270,6 +270,9 @@ type rateTracker struct {
 	fileMap             map[string]string
 	siblingHash         string
 	linkedLocal         bool
+	// linkPending asks the next verification to look for local files first: set on add only, so
+	// restarts never remap a torrent that already has its own progress.
+	linkPending bool
 	siblingSyncing      atomic.Bool
 	lastSiblingSync     time.Time
 	// Automatic search for another swarm (ideally hybrid / v2) with the same files.
@@ -1587,6 +1590,7 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 		e.mu.Lock()
 		e.saveTorrentMetainfo(t)
 		e.initTracker(t.InfoHash().HexString())
+		e.markLinkPendingLocked(t.InfoHash().HexString())
 		e.saveSessionLocked()
 		e.mu.Unlock()
 
@@ -1743,6 +1747,7 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 	}
 	wsList := e.webSeedsMap[hash]
 	e.initTracker(hash, displayName)
+	e.markLinkPendingLocked(hash)
 	if tr := e.rateMap[hash]; tr != nil && strings.HasPrefix(uriOrURL, "magnet:?") {
 		tr.magnetURI = uriOrURL
 	}
@@ -1816,6 +1821,7 @@ func (e *Engine) AddTorrentFile(reader io.Reader) (*torrent.Torrent, error) {
 	}
 	e.saveTorrentMetainfo(t)
 	e.initTracker(t.InfoHash().HexString())
+	e.markLinkPendingLocked(t.InfoHash().HexString())
 	e.saveSessionLocked()
 
 	e.ConsolidateAndVerify(t)
@@ -2270,7 +2276,7 @@ func (e *Engine) UpgradeToBEP52(infoHashHex string) (string, string, error) {
 			delete(e.savedTorrentsMap, k)
 		}
 	}
-	_ = os.Remove(e.getTorrentCacheFilePath(oldHex))
+	// The v1 metadata stays cached: re-adding that torrent later needs it to find its remembered roots.
 	e.saveSessionLocked()
 	e.mu.Unlock()
 
@@ -2687,7 +2693,15 @@ func (e *Engine) ConsolidateAndVerifyForce(tor *torrent.Torrent, force bool, onC
 		}
 
 		// Files other local torrents already hold are used in place rather than downloaded again.
-		tor = e.linkToLocalData(tor)
+		e.mu.Lock()
+		linkPending := false
+		if tr := e.rateMap[hash]; tr != nil {
+			linkPending, tr.linkPending = tr.linkPending, false
+		}
+		e.mu.Unlock()
+		if linkPending {
+			tor = e.linkToLocalData(tor)
+		}
 		e.indexLocalTorrent(tor)
 
 		// 1. Persist metainfo
@@ -4974,6 +4988,9 @@ func (e *Engine) onWriteChunkError(t *torrent.Torrent, tr *rateTracker) func(err
 func writeErrStatus(tr *rateTracker) string {
 	if msg := tr.writeErr.Load(); msg != nil && !tr.isPaused {
 		return *msg
+	}
+	if tr.linkedLocal && len(tr.fileMap) > 0 {
+		return fmt.Sprintf("Uses %d file(s) already on disk from another torrent", len(tr.fileMap))
 	}
 	return ""
 }

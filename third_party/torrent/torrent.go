@@ -447,7 +447,8 @@ func (t *Torrent) makePieces() {
 }
 
 func (t *Torrent) addPieceLayersLocked(layers map[string]string) (errs []error) {
-	if layers == nil {
+	// Metainfo() reports an empty map while layers are still unknown; that is not a claim of none.
+	if len(layers) == 0 {
 		return
 	}
 files:

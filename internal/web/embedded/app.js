@@ -656,6 +656,9 @@ function getTorrentMetaString(t) {
   } else if (t.state === 'failed' && t.status_message) {
     metaString += ` • <span style="color: #ed333b; font-weight: 500;" title="${escapeHtml(t.status_message)}">⚠️ ${escapeHtml(t.status_message)}</span>`;
   } else {
+    if (t.status_message && t.status_message.startsWith('Uses ')) {
+      metaString += ` • <span style="color: var(--adw-dim-label);" title="${escapeHtml(t.status_message)}">🔗 ${escapeHtml(t.status_message)}</span>`;
+    }
     if (isVerifying) {
       const vProg = (t.verify_progress !== undefined && t.verify_progress > 0) ? ` (${t.verify_progress.toFixed(0)}% checked)` : '';
       metaString += ` • <span style="color: #c061cb; font-weight: 500;">${ICONS.verify || ''}Verifying integrity${vProg}</span>`;
