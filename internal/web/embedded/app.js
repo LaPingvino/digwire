@@ -714,7 +714,7 @@ function getCardActionsHtml(t) {
     ${isCompletedV1 ?
       `<button class="btn btn-icon" style="color: #c061cb;" title="Upgrade to BEP 52 Hybrid Seeding" aria-label="Upgrade ${escapeHtml(t.name)} to BitTorrent v2 Hybrid" onclick="event.stopPropagation(); upgradeToBEP52('${t.info_hash}', this)">⚡</button>` : ''
     }
-    <button class="btn btn-icon" title="Copy Magnet / URL" aria-label="Copy Magnet link for ${escapeHtml(t.name)}" onclick="copyToClipboard('${encodeURI(t.magnet_uri || '')}', this)">${ICONS.magnet}</button>
+    <button class="btn btn-icon" title="Copy Magnet / URL" aria-label="Copy Magnet link for ${escapeHtml(t.name)}" onclick="copyToClipboard('${escapeJs(t.magnet_uri || '')}', this)">${ICONS.magnet}</button>
     <button class="btn btn-icon" title="Inspect Details & Peers" aria-label="Inspect details and peers for ${escapeHtml(t.name)}" onclick="openDetailsModal('${t.info_hash}')">${ICONS.info}</button>
     ${(isPaused || t.state === 'failed' || t.state === 'peer_offline' || (t.status_message && (t.status_message.toLowerCase().includes('offline') || t.status_message.toLowerCase().includes('unreachable')))) ? 
       `<button class="btn btn-icon" title="Resume download" aria-label="Resume download for ${escapeHtml(t.name)}" onclick="resumeTorrent('${t.info_hash}')">${ICONS.play}</button>` :
@@ -1865,7 +1865,7 @@ async function performSubtitleSearch(hash) {
               </div>
             </div>
             <div>
-              <button class="btn btn-primary" style="padding: 3px 8px; font-size: 11px;" onclick="downloadSubtitleTrack('${hash}', '${encodeURI(tr.download_url)}', '${tr.language_code || 'en'}', '${escapeHtml(tr.title || '')}', this)">
+              <button class="btn btn-primary" style="padding: 3px 8px; font-size: 11px;" onclick="downloadSubtitleTrack('${hash}', '${escapeJs(tr.download_url)}', '${tr.language_code || 'en'}', '${escapeHtml(tr.title || '')}', this)">
                 ${ICONS.download} Download & Pair
               </button>
             </div>
@@ -3331,7 +3331,7 @@ function renderSearchResults() {
             <span class="emoji-face" style="margin-right: 4px;">📦</span>
             <span>Files</span>
           </button>
-          <button class="btn btn-icon" title="Copy Magnet / Link" aria-label="Copy link for ${escapeHtml(r.title)}" onclick="copyToClipboard('${encodeURI(r.magnet_uri)}', this)">${ICONS.magnet}</button>
+          <button class="btn btn-icon" title="Copy Magnet / Link" aria-label="Copy link for ${escapeHtml(r.title)}" onclick="copyToClipboard('${escapeJs(r.magnet_uri || '')}', this)">${ICONS.magnet}</button>
           <button class="btn btn-primary" aria-label="Download ${escapeHtml(r.title)}" onclick="downloadFromSearch('${encodeURIComponent(r.magnet_uri)}', this)">
             ${ICONS.download}
             <span>Download</span>
