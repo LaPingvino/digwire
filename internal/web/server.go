@@ -575,6 +575,18 @@ func (s *Server) handleUpgradeToSwarm(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	hash := r.PathValue("hash")
 
+	// A torrent's suggestion is another swarm to attach alongside it; a web download is replaced.
+	if sugg := s.engine.TorrentSwarmSuggestion(hash); sugg != nil {
+		newHash, err := s.engine.AttachAlternateSwarm(hash, sugg.InfoHash)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "info_hash": newHash})
+		return
+	}
+
 	t, err := s.engine.UpgradeHTTPToSwarm(hash)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)

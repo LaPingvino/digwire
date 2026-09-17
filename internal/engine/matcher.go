@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"digwire/internal/search"
@@ -35,6 +36,10 @@ type SwarmSuggestion struct {
 	IsPartial        bool   `json:"is_partial"`
 	MatchedFileIndex int    `json:"matched_file_index"`
 	MatchedFileName  string `json:"matched_file_name"`
+	ProtocolVersion  string `json:"protocol_version,omitempty"`
+	InfoHashV2       string `json:"info_hash_v2,omitempty"`
+	// Hashes of already-downloaded data that matched this swarm; 0 when checked remotely.
+	VerifiedPieces int `json:"verified_pieces,omitempty"`
 }
 
 type MatchResult struct {
@@ -327,7 +332,11 @@ func (e *Engine) FindAndAttachSwarm(ctx context.Context, fileURL string, searchM
 	}, nil
 }
 
-// FindSuggestedSwarm searches for an equivalent or parent collection torrent for an existing HTTP task
+// FindSuggestedSwarm looks for a torrent carrying an HTTP download's file. Candidates come from the
+// source host's .torrent, the local DHT index (releases with a file of exactly this size) and
+// indexer searches by name. Each is verified by hashing the parts already downloaded against its
+// piece hashes, or by fetching sample ranges from the source while nothing is downloaded yet.
+// Among verified swarms, hybrid and v2 ones are preferred.
 func (e *Engine) FindSuggestedSwarm(ctx context.Context, task *HTTPTask, searchMgr *search.Manager) (*SwarmSuggestion, error) {
 	if task == nil || task.TotalBytes <= 0 {
 		return nil, fmt.Errorf("invalid task")
@@ -338,206 +347,84 @@ func (e *Engine) FindSuggestedSwarm(ctx context.Context, task *HTTPTask, searchM
 		return sugg, nil
 	}
 
-	// STAGE 2: Multi-Query Search across Indexers (TorrentsCSV, Archive.org, Torznab)
-	queries := buildSearchQueries(task.Name)
-	seenMagnets := make(map[string]bool)
-	var candidates []search.Result
-
-	for _, q := range queries {
-		results := searchMgr.SearchAll(ctx, q)
-		for _, r := range results {
-			if !seenMagnets[r.MagnetURI] {
-				seenMagnets[r.MagnetURI] = true
-				candidates = append(candidates, r)
-			}
-		}
-		if len(candidates) >= 15 {
-			break
-		}
-	}
-
+	// STAGE 2: Tentative candidates from the DHT index and indexers, verified by content
+	candidates := e.gatherSwarmCandidates(ctx, task.Name, []int64{task.TotalBytes}, nil)
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("no candidate torrents found for %s", task.Name)
 	}
+	ld, haveLocal := task.localData()
 
-	// Filter candidates: only check compatible sizes and limit to top 4
-	var filteredCandidates []search.Result
-	for _, cand := range candidates {
-		if cand.SizeBytes > 0 && task.TotalBytes > 0 {
-			if cand.SizeBytes < task.TotalBytes {
-				continue // Smaller torrent cannot contain target file
-			}
-		}
-		filteredCandidates = append(filteredCandidates, cand)
-		if len(filteredCandidates) >= 4 {
-			break
-		}
-	}
-
-	for _, cand := range filteredCandidates {
-		// Optimization A: If candidate is a direct HTTP .torrent URL (e.g. Archive.org, Torznab)
-		if (strings.HasPrefix(cand.MagnetURI, "http://") || strings.HasPrefix(cand.MagnetURI, "https://")) &&
-			strings.HasSuffix(strings.ToLower(cand.MagnetURI), ".torrent") {
-
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, cand.MagnetURI, nil)
-			if err == nil {
-				req.Header.Set("User-Agent", "Digwire/1.0")
-				resp, err := http.DefaultClient.Do(req)
-				if err == nil && resp.StatusCode == 200 {
-					mi, err := metainfo.Load(resp.Body)
-					resp.Body.Close()
-					if err == nil {
-						info, err := mi.UnmarshalInfo()
-						if err == nil {
-							// Single file match
-							if info.TotalLength() == task.TotalBytes {
-								ok, err := VerifyRandomPieces(ctx, task.URL, &info)
-								if err == nil && ok {
-									hash := mi.HashInfoBytes().HexString()
-									mag := fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", hash, url.QueryEscape(info.BestName()))
-									for _, tier := range mi.AnnounceList {
-										for _, tr := range tier {
-											mag += "&tr=" + url.QueryEscape(tr)
-										}
-									}
-									return &SwarmSuggestion{
-										InfoHash:   hash,
-										MagnetURI:  mag,
-										Name:       info.BestName(),
-										Seeders:    cand.Seeders,
-										Peers:      cand.Leechers,
-										TotalBytes: info.TotalLength(),
-										Provider:   cand.Provider,
-										IsPartial:  false,
-									}, nil
-								}
-							}
-
-							// Multi-file partial match
-							if info.IsDir() {
-								var fileOffset int64 = 0
-								for fIdx, f := range info.Files {
-									if f.Length == task.TotalBytes {
-										if VerifyFileInMultiTorrent(ctx, task.URL, fileOffset, f.Length, &info) {
-											hash := mi.HashInfoBytes().HexString()
-											mag := fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", hash, url.QueryEscape(info.BestName()))
-											return &SwarmSuggestion{
-												InfoHash:         hash,
-												MagnetURI:        mag,
-												Name:             info.BestName(),
-												Seeders:          cand.Seeders,
-												Peers:            cand.Leechers,
-												TotalBytes:       f.Length,
-												Provider:         cand.Provider,
-												IsPartial:        true,
-												MatchedFileIndex: fIdx,
-												MatchedFileName:  strings.Join(f.Path, "/"),
-											}, nil
-										}
-									}
-									fileOffset += f.Length
-								}
-							}
-						}
-					}
-				}
-			}
-			continue
-		}
-
-		// Optimization B: Magnet Link candidate
-		magURI := SuperchargeMagnet(cand.MagnetURI)
-
-		candHash := extractInfoHash(magURI)
-		if candHash != "" {
-			candHash = strings.ToLower(candHash)
-			e.mu.RLock()
-			_, isUserDl := e.rateMap[candHash]
-			e.mu.RUnlock()
-			if isUserDl {
+	var (
+		mu   sync.Mutex
+		best *SwarmSuggestion
+	)
+	e.probeCandidates(ctx, candidates, func(c swarmCandidate, mi *metainfo.MetaInfo, info *metainfo.Info) {
+		files := info.UpvertedFiles()
+		for idx, f := range files {
+			if f.Length != task.TotalBytes {
 				continue
 			}
-		}
-
-		t, err := e.client.AddMagnet(magURI)
-		if err != nil {
-			continue
-		}
-
-		hashHex := strings.ToLower(t.InfoHash().HexString())
-		e.mu.RLock()
-		_, isUserDl := e.rateMap[hashHex]
-		e.mu.RUnlock()
-		if isUserDl {
-			continue
-		}
-
-		t.DisallowDataDownload()
-
-		safeDrop := func() {
-			e.mu.RLock()
-			_, isUser := e.rateMap[hashHex]
-			e.mu.RUnlock()
-			if !isUser {
-				t.Drop()
+			checked, ok := 0, false
+			if haveLocal {
+				checked, ok = verifyFileBySampling(ld, mi, info, f)
 			}
-		}
-
-		select {
-		case <-t.GotInfo():
-			info := t.Info()
-			if info != nil {
-				// Case 1: Full file match
-				if t.Length() == task.TotalBytes {
-					ok, _ := VerifyRandomPieces(ctx, task.URL, info)
-					if ok {
-						safeDrop()
-						return &SwarmSuggestion{
-							InfoHash:   t.InfoHash().HexString(),
-							MagnetURI:  magURI,
-							Name:       info.BestName(),
-							Seeders:    cand.Seeders,
-							Peers:      cand.Leechers,
-							TotalBytes: t.Length(),
-							Provider:   cand.Provider,
-							IsPartial:  false,
-						}, nil
-					}
-				}
-
-				// Case 2: Partial match inside multi-file pack / collection
-				if info.IsDir() {
-					var fileOffset int64 = 0
-					for fIdx, f := range info.Files {
-						fLen := f.Length
-						if fLen == task.TotalBytes {
-							if VerifyFileInMultiTorrent(ctx, task.URL, fileOffset, fLen, info) {
-								safeDrop()
-								return &SwarmSuggestion{
-									InfoHash:         t.InfoHash().HexString(),
-									MagnetURI:        magURI,
-									Name:             info.BestName(),
-									Seeders:          cand.Seeders,
-									Peers:            cand.Leechers,
-									TotalBytes:       fLen,
-									Provider:         cand.Provider,
-									IsPartial:        true,
-									MatchedFileIndex: fIdx,
-									MatchedFileName:  strings.Join(f.Path, "/"),
-								}, nil
-							}
-						}
-						fileOffset += fLen
-					}
-				}
+			if checked == 0 {
+				ok = verifyFileFromSource(ctx, task.URL, info, f, len(files) == 1)
 			}
-			safeDrop()
-		case <-time.After(4 * time.Second):
-			safeDrop()
+			if !ok {
+				continue
+			}
+			magnet, infoHashV2 := swarmMagnet(c.magnet, mi)
+			sugg := &SwarmSuggestion{
+				InfoHash:         mi.HashInfoBytes().HexString(),
+				MagnetURI:        magnet,
+				Name:             info.BestName(),
+				Seeders:          c.seeders,
+				Peers:            c.leechers,
+				TotalBytes:       f.Length,
+				Provider:         c.provider,
+				IsPartial:        len(files) > 1,
+				MatchedFileIndex: idx,
+				MatchedFileName:  strings.Join(f.BestPath(), "/"),
+				ProtocolVersion:  protocolOfInfo(info),
+				InfoHashV2:       infoHashV2,
+				VerifiedPieces:   checked,
+			}
+			mu.Lock()
+			if best == nil || betterSuggestion(sugg, best) {
+				best = sugg
+			}
+			mu.Unlock()
+			return
 		}
+	})
+	if best == nil {
+		return nil, fmt.Errorf("no candidate torrent passed cryptographic piece verification")
 	}
+	return best, nil
+}
 
-	return nil, fmt.Errorf("no candidate torrent passed cryptographic piece verification")
+func betterSuggestion(a, b *SwarmSuggestion) bool {
+	if ra, rb := protocolRank(a.ProtocolVersion), protocolRank(b.ProtocolVersion); ra != rb {
+		return ra < rb
+	}
+	if a.VerifiedPieces != b.VerifiedPieces {
+		return a.VerifiedPieces > b.VerifiedPieces
+	}
+	return a.Seeders > b.Seeders
+}
+
+// verifyFileFromSource checks a candidate's v1 piece hashes against ranges fetched from the HTTP
+// source, for when nothing is downloaded locally yet.
+func verifyFileFromSource(ctx context.Context, fileURL string, info *metainfo.Info, f metainfo.FileInfo, singleFile bool) bool {
+	if len(info.Pieces) == 0 {
+		return false
+	}
+	if singleFile && f.TorrentOffset == 0 {
+		ok, err := VerifyRandomPieces(ctx, fileURL, info)
+		return err == nil && ok
+	}
+	return VerifyFileInMultiTorrent(ctx, fileURL, f.TorrentOffset, f.Length, info)
 }
 
 // UpgradeHTTPToSwarm upgrades an active HTTP task to a hybrid BitTorrent swarm (with optional partial file download)

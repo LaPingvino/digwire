@@ -117,6 +117,7 @@ func initSchema(db *sql.DB) error {
 	CREATE INDEX IF NOT EXISTS idx_dht_v2 ON dht_records(info_hash_v2);
 	CREATE INDEX IF NOT EXISTS idx_dht_files_root ON dht_files(pieces_root);
 	CREATE INDEX IF NOT EXISTS idx_dht_files_path ON dht_files(file_path);
+	CREATE INDEX IF NOT EXISTS idx_dht_files_size ON dht_files(size_bytes);
 	`
 	_, err := db.Exec(indexes)
 	return err
@@ -881,15 +882,27 @@ func (idx *Indexer) SearchByPiecesRoot(rootHex string) []*DHTRecord {
 	if idx == nil || idx.db == nil || rootHex == "" {
 		return nil
 	}
-	rootHex = strings.ToLower(strings.TrimSpace(rootHex))
+	return idx.queryRecordsByFile(`f.pieces_root = ?`, strings.ToLower(strings.TrimSpace(rootHex)))
+}
+
+// SearchByFileSize finds torrent records containing a file of exactly this many bytes. Large files
+// rarely share a size by accident, so these are good tentative matches to verify by content.
+func (idx *Indexer) SearchByFileSize(sizeBytes int64) []*DHTRecord {
+	if idx == nil || idx.db == nil || sizeBytes <= 0 {
+		return nil
+	}
+	return idx.queryRecordsByFile(`f.size_bytes = ?`, sizeBytes)
+}
+
+func (idx *Indexer) queryRecordsByFile(fileCondition string, arg any) []*DHTRecord {
 	rows, err := idx.db.Query(`
 		SELECT DISTINCT r.info_hash, r.name, r.size_bytes, r.num_files, r.discovered_at, r.files_json, r.activity_json,
 		       COALESCE(r.info_hash_v2, ''), COALESCE(r.protocol_version, 'v1'), COALESCE(r.pieces_roots_json, '[]')
 		FROM dht_records r
 		JOIN dht_files f ON r.info_hash = f.info_hash
-		WHERE f.pieces_root = ?
+		WHERE `+fileCondition+`
 		LIMIT 50
-	`, rootHex)
+	`, arg)
 	if err != nil {
 		return nil
 	}

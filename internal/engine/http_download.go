@@ -59,6 +59,49 @@ type HTTPTask struct {
 	client          *http.Client          `json:"-"`
 	file            *os.File              `json:"-"`
 	activeWorkers   sync.WaitGroup        `json:"-"`
+
+	swarmSearching       atomic.Bool
+	swarmSearches        int
+	lastSwarmSearch      time.Time
+	lastSwarmSearchBytes int64
+}
+
+const httpChunkSize int64 = 8 * 1024 * 1024
+
+// localData describes the file's bytes downloaded so far: whole verified chunks of a segmented
+// download, or the written prefix of a single-stream one.
+func (t *HTTPTask) localData() (localData, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if t.DestPath == "" || t.TotalBytes <= 0 {
+		return localData{}, false
+	}
+	ld := localData{path: t.DestPath + ".part", length: t.TotalBytes}
+	switch {
+	case t.State == "completed":
+		ld.path = t.DestPath
+		ld.have = func(off, n int64) bool { return off >= 0 && off+n <= t.TotalBytes }
+	case t.completedChunks != nil:
+		chunks := make(map[int64]bool, len(t.completedChunks))
+		for idx, done := range t.completedChunks {
+			chunks[idx] = done
+		}
+		ld.have = func(off, n int64) bool {
+			if off < 0 || n <= 0 || off+n > t.TotalBytes {
+				return false
+			}
+			for c := off / httpChunkSize; c*httpChunkSize < off+n; c++ {
+				if !chunks[c] {
+					return false
+				}
+			}
+			return true
+		}
+	default:
+		written := atomic.LoadInt64(&t.CompletedBytes)
+		ld.have = func(off, n int64) bool { return off >= 0 && off+n <= written }
+	}
+	return ld, true
 }
 
 func getChunksManifestPath(partPath string) string {
@@ -284,7 +327,7 @@ func (t *HTTPTask) runDownload() {
 
 	if totalBytes > 0 && supportsRange {
 		// Multi-mirror Segmented Downloader for Gigabit lines
-		const chunkSize int64 = 8 * 1024 * 1024
+		const chunkSize = httpChunkSize
 		numChunks := (totalBytes + chunkSize - 1) / chunkSize
 		t.chunkQueue = make(chan ChunkSpec, numChunks)
 

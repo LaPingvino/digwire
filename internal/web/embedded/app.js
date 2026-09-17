@@ -169,7 +169,7 @@ function canSearchAlternateSwarms(t) {
 }
 
 function getAltSwarmBadgeHtml(t) {
-  if (!canSearchAlternateSwarms(t) || t.progress >= 100 || t.state === 'seeding' || t.state === 'completed' || t.state === 'metadata') return '';
+  if (!canSearchAlternateSwarms(t) || t.suggested_swarm || t.progress >= 100 || t.state === 'seeding' || t.state === 'completed' || t.state === 'metadata') return '';
   return `<button class="btn" style="padding: 2px 7px; font-size: 10.5px; border-radius: 9999px; display: inline-flex; align-items: center; gap: 3px; cursor: pointer;" title="Look for a hybrid / v2 (or other) swarm with the same files to help finish this download" onclick="event.stopPropagation(); openAlternateSwarmSearch('${t.info_hash}')">🔎 Other swarms</button>`;
 }
 
@@ -731,14 +731,12 @@ function createTorrentCardElement(t) {
 
   let swarmBanner = '';
   if (t.suggested_swarm) {
-    const matchText = t.suggested_swarm.is_partial ?
-      `${ICONS.zap}<strong>Partial Match in Pack!</strong> "${escapeHtml(t.suggested_swarm.name)}" (${t.suggested_swarm.seeders} seeds). Upgrade to swarm?` :
-      `${ICONS.zap}<strong>Equivalent Swarm Found!</strong> Verified with ${t.suggested_swarm.seeders} seeds. Upgrade to hybrid swarm?`;
+    const matchText = swarmSuggestionText(t);
     swarmBanner = `
       <div class="swarm-suggestion-banner">
         <div>${matchText}</div>
         <button class="btn btn-primary" style="padding: 3px 10px; font-size: 11px; white-space: nowrap;" onclick="upgradeToSwarm('${t.info_hash}')">
-          Upgrade to Swarm
+          ${swarmSuggestionAction(t)}
         </button>
       </div>
     `;
@@ -836,13 +834,11 @@ function updateTorrentCardElement(cardEl, t) {
   // Update swarm banner
   let bannerEl = cardEl.querySelector('.swarm-suggestion-banner');
   if (t.suggested_swarm) {
-    const matchText = t.suggested_swarm.is_partial ?
-      `${ICONS.zap}<strong>Partial Match in Pack!</strong> "${escapeHtml(t.suggested_swarm.name)}" (${t.suggested_swarm.seeders} seeds). Upgrade to swarm?` :
-      `${ICONS.zap}<strong>Equivalent Swarm Found!</strong> Verified with ${t.suggested_swarm.seeders} seeds. Upgrade to hybrid swarm?`;
+    const matchText = swarmSuggestionText(t);
     const newBannerHtml = `
       <div>${matchText}</div>
       <button class="btn btn-primary" style="padding: 3px 10px; font-size: 11px; white-space: nowrap;" onclick="upgradeToSwarm('${t.info_hash}')">
-        Upgrade to Swarm
+        ${swarmSuggestionAction(t)}
       </button>
     `;
     if (!bannerEl) {
@@ -1064,12 +1060,35 @@ async function triggerFindSwarm(hash, btn) {
   if (btn) btn.disabled = false;
 }
 
+function isWebDownload(t) {
+  return !!(t && t.magnet_uri && (t.magnet_uri.startsWith('http://') || t.magnet_uri.startsWith('https://')));
+}
+
+// Describes a verified swarm suggestion: for a web download, a torrent carrying the file to switch
+// to; for a torrent, another (ideally hybrid / v2) swarm with the same files to attach.
+function swarmSuggestionText(t) {
+  const s = t.suggested_swarm;
+  const proto = getSearchProtocolBadge({ info_hash: s.info_hash, protocol_version: s.protocol_version, info_hash_v2: s.info_hash_v2 });
+  const seeds = s.seeders >= 0 ? ` • ${s.seeders} seeds` : '';
+  const proof = s.verified_pieces > 0
+    ? `verified against ${s.verified_pieces} piece${s.verified_pieces !== 1 ? 's' : ''} you already downloaded`
+    : 'verified against the source';
+  const what = isWebDownload(t)
+    ? (s.is_partial ? `Found this file inside "${escapeHtml(s.name)}"` : 'Found a swarm carrying this file')
+    : `Found another swarm with these files: "${escapeHtml(s.name)}"`;
+  return `${ICONS.zap}<strong>${what}</strong> ${proto}<span style="opacity: 0.8;"> — ${proof}${seeds}</span>`;
+}
+
+function swarmSuggestionAction(t) {
+  return isWebDownload(t) ? 'Upgrade to Swarm' : 'Attach Swarm';
+}
+
 async function upgradeToSwarm(hash) {
   try {
     const res = await fetch(`/api/torrents/${hash}/upgrade-to-swarm`, { method: 'POST' });
     const data = await res.json();
     if (data.status === 'ok') {
-      showToast("Upgraded to hybrid P2P swarm with WebSeed acceleration!", "accent", 4000);
+      showToast("Swarm added — it downloads into and seeds from the same file.", "accent", 4000);
       if (document.getElementById('modal-details').classList.contains('open')) {
         closeDetailsModal();
       }
@@ -1288,11 +1307,9 @@ function switchDetailTab(tab) {
   if (tab === 'overview') {
     const suggHtml = currentDetailData.suggested_swarm ? `
       <div class="swarm-suggestion-banner" style="grid-column: 1 / -1; margin-bottom: 8px;">
-        <div>
-          ${ICONS.zap} <strong>${currentDetailData.suggested_swarm.is_partial ? 'Partial Match in Collection!' : 'Equivalent BitTorrent Swarm Verified!'}</strong>${currentDetailData.suggested_swarm.seeders >= 0 ? ` (${currentDetailData.suggested_swarm.seeders} seeds)` : ''}.
-        </div>
+        <div>${swarmSuggestionText(currentDetailData)}</div>
         <button class="btn btn-primary" style="padding: 3px 10px; font-size: 11px;" onclick="upgradeToSwarm('${currentDetailData.info_hash}')">
-          Upgrade to Swarm
+          ${swarmSuggestionAction(currentDetailData)}
         </button>
       </div>
     ` : '';

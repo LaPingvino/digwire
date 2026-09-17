@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"crypto/rand"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"github.com/anacrolix/torrent/metainfo"
 
 	"digwire/internal/config"
+	"digwire/internal/dhtindex"
 )
 
 const testPieceLen = 16384
@@ -101,8 +103,182 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	}
 }
 
+func registerCandidate(t *testing.T, eng *Engine, ours *torrent.Torrent, mi *metainfo.MetaInfo) []fileMatch {
+	t.Helper()
+	matches := eng.matchTorrentFiles(ours, mi, unmarshalInfo(t, mi))
+	if len(matches) == 0 {
+		t.Fatal("candidate did not match local data")
+	}
+	eng.mu.Lock()
+	defer eng.mu.Unlock()
+	eng.alternateSwarms = map[string]map[string]alternateCandidate{
+		strings.ToLower(ours.InfoHash().HexString()): {strings.ToLower(mi.HashInfoBytes().HexString()): {mi: mi, matches: matches}},
+	}
+	return matches
+}
+
+func newTestEngine(t *testing.T) (*Engine, string) {
+	t.Helper()
+	tempDir := t.TempDir()
+	// Keep the DHT index and torrent cache out of the real user config.
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tempDir, "xdg"))
+	downloadDir := filepath.Join(tempDir, "downloads")
+	cfg := &config.Config{DownloadDir: downloadDir}
+	cfg.SetConfigPath(filepath.Join(tempDir, "config.yaml"))
+	eng, err := NewEngine(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(eng.Close)
+	return eng, downloadDir
+}
+
+// addPartialV1Download adds a paused v1 torrent of data with piece length pl, of which only the
+// first `have` bytes are on disk, and verifies it.
+func addPartialV1Download(t *testing.T, eng *Engine, path string, data []byte, pl int64, have int) *torrent.Torrent {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	info := buildV1Info(t, filepath.Dir(path), pl)
+	partial := make([]byte, len(data))
+	copy(partial, data[:have])
+	if err := os.WriteFile(path, partial, 0644); err != nil {
+		t.Fatal(err)
+	}
+	infoBytes, err := bencode.Marshal(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tor, _, err := eng.client.AddTorrentSpec(torrent.TorrentSpecFromMetaInfo(&metainfo.MetaInfo{InfoBytes: infoBytes}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := strings.ToLower(tor.InfoHash().HexString())
+	eng.mu.Lock()
+	eng.initTracker(hash)
+	eng.rateMap[hash].isPaused = true
+	eng.mu.Unlock()
+	verifyNow(t, eng, tor)
+	return tor
+}
+
+// A release with a different piece size can't be compared hash-for-hash, so the downloaded half of
+// our file is hashed against the hybrid's pieces instead.
+func TestMatchByHashingDownloadedDataAcrossPieceSizes(t *testing.T) {
+	eng, downloadDir := newTestEngine(t)
+	elsewhere := filepath.Join(filepath.Dir(downloadDir), "elsewhere", "Hybrid Release")
+	movie := writeRandomFile(t, filepath.Join(elsewhere, "movie.mkv"), 16*testPieceLen)
+	hybridMI, err := BuildBEP52MetaInfo(elsewhere, true, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hybrid := unmarshalInfo(t, hybridMI)
+
+	ourPath := filepath.Join(downloadDir, "Release", "Movie.mkv")
+	ours := addPartialV1Download(t, eng, ourPath, movie, 2*hybrid.PieceLength, len(movie)/2)
+	if ours.BytesCompleted() == 0 || ours.BytesCompleted() == ours.Length() {
+		t.Fatalf("expected a partial download, have %d of %d", ours.BytesCompleted(), ours.Length())
+	}
+	if m := matchFilesByPieceHashes(ours.Info(), hybrid); len(m) != 0 {
+		t.Fatalf("piece grids differ, metadata-only matching should not apply: %+v", m)
+	}
+	matches := eng.matchTorrentFiles(ours, hybridMI, hybrid)
+	if len(matches) != 1 || matches[0].checked == 0 {
+		t.Fatalf("expected a match proven by hashing downloaded data, got %+v", matches)
+	}
+
+	// A different release of the same size must be discarded.
+	other := append([]byte(nil), movie...)
+	other[testPieceLen+7] ^= 0xff
+	otherDir := filepath.Join(filepath.Dir(downloadDir), "other", "Hybrid Release")
+	if err := os.MkdirAll(otherDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(otherDir, "movie.mkv"), other, 0644); err != nil {
+		t.Fatal(err)
+	}
+	otherMI, err := BuildBEP52MetaInfo(otherDir, true, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := eng.matchTorrentFiles(ours, otherMI, unmarshalInfo(t, otherMI)); len(m) != 0 {
+		t.Fatalf("different content matched: %+v", m)
+	}
+
+	// Attach, finish the data through the hybrid, and let the byte-range sync complete ours.
+	registerCandidate(t, eng, ours, hybridMI)
+	attached := make(chan struct{})
+	altHash, err := eng.AttachAlternateSwarm(ours.InfoHash().HexString(), hybridMI.HashInfoBytes().HexString(), func() { close(attached) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-attached
+	if err := os.WriteFile(ourPath, movie, 0644); err != nil {
+		t.Fatal(err)
+	}
+	eng.mu.RLock()
+	alt, altTr := eng.findUserTorrent(altHash)
+	eng.mu.RUnlock()
+	waitFor(t, "hybrid swarm to verify the full file", func() bool {
+		verifyNow(t, eng, alt)
+		return alt.BytesCompleted() == alt.Length()
+	})
+	waitFor(t, "v1 download to complete from the hybrid's pieces", func() bool {
+		eng.syncSiblingPieces(alt, altTr, ours)
+		return ours.BytesCompleted() == ours.Length()
+	})
+}
+
+// Pure v2 torrents carry no v1 piece hashes: partial data is checked against piece layers, and a
+// complete file against its root.
+func TestVerifyFileBySamplingV2(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "V2 Release")
+	movie := writeRandomFile(t, filepath.Join(root, "movie.mkv"), 16*testPieceLen)
+	mi, err := BuildBEP52MetaInfo(root, false, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := unmarshalInfo(t, mi)
+	if info.HasV1() {
+		t.Fatal("expected a pure v2 torrent")
+	}
+	file := info.UpvertedFiles()[0]
+	half := func(off, n int64) bool { return off+n <= int64(len(movie))/2 }
+	all := func(off, n int64) bool { return true }
+	ld := localData{path: filepath.Join(root, "movie.mkv"), length: int64(len(movie)), have: half}
+
+	if len(mi.PieceLayers) == 0 {
+		t.Fatal("expected piece layers in the built v2 torrent")
+	}
+	if checked, ok := verifyFileBySampling(ld, mi, info, file); !ok || checked == 0 {
+		t.Fatalf("partial data not verified against piece layers: checked=%d ok=%v", checked, ok)
+	}
+	withoutLayers := *mi
+	withoutLayers.PieceLayers = nil
+	if _, ok := verifyFileBySampling(ld, &withoutLayers, info, file); ok {
+		t.Fatal("partial data cannot be verified without piece layers")
+	}
+	ld.have = all
+	if _, ok := verifyFileBySampling(ld, &withoutLayers, info, file); !ok {
+		t.Fatal("complete file not verified against its pieces root")
+	}
+	movie[5] ^= 0xff
+	if err := os.WriteFile(ld.path, movie, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := verifyFileBySampling(ld, &withoutLayers, info, file); ok {
+		t.Fatal("modified file verified against pieces root")
+	}
+}
+
 func TestAttachAlternateSwarmSharesFiles(t *testing.T) {
 	tempDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tempDir, "xdg"))
 	downloadDir := filepath.Join(tempDir, "downloads")
 	cfg := &config.Config{DownloadDir: downloadDir}
 	cfg.SetConfigPath(filepath.Join(tempDir, "config.yaml"))
@@ -145,11 +321,9 @@ func TestAttachAlternateSwarmSharesFiles(t *testing.T) {
 	eng.mu.Lock()
 	eng.initTracker(ourHash)
 	eng.rateMap[ourHash].isPaused = true
-	eng.alternateSwarms = map[string]map[string]alternateCandidate{
-		ourHash: {strings.ToLower(altMI.HashInfoBytes().HexString()): {mi: altMI}},
-	}
 	eng.mu.Unlock()
 	verifyNow(t, eng, ours)
+	registerCandidate(t, eng, ours, altMI)
 
 	attached := make(chan struct{})
 	altHash, err := eng.AttachAlternateSwarm(ourHash, altMI.HashInfoBytes().HexString(), func() { close(attached) })
@@ -200,6 +374,7 @@ func TestAttachAlternateSwarmSharesFiles(t *testing.T) {
 
 func TestRemovingTorrentDropsAttachedSwarms(t *testing.T) {
 	tempDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tempDir, "xdg"))
 	cfg := &config.Config{DownloadDir: filepath.Join(tempDir, "downloads")}
 	cfg.SetConfigPath(filepath.Join(tempDir, "config.yaml"))
 	eng, err := NewEngine(cfg)
@@ -241,6 +416,7 @@ func TestRemovingTorrentDropsAttachedSwarms(t *testing.T) {
 
 func TestRemovingAttachedSwarmKeepsSharedFiles(t *testing.T) {
 	tempDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tempDir, "xdg"))
 	downloadDir := filepath.Join(tempDir, "downloads")
 	cfg := &config.Config{DownloadDir: downloadDir}
 	cfg.SetConfigPath(filepath.Join(tempDir, "config.yaml"))
@@ -273,5 +449,78 @@ func TestRemovingAttachedSwarmKeepsSharedFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(moviePath); err != nil {
 		t.Fatalf("removing an attached swarm with files deleted the shared data: %v", err)
+	}
+}
+
+// A web download is matched against a hybrid by hashing the chunks it already has.
+func TestHTTPDownloadVerifiedByDownloadedChunks(t *testing.T) {
+	dir := t.TempDir()
+	releaseDir := filepath.Join(dir, "Hybrid Release")
+	data := writeRandomFile(t, filepath.Join(releaseDir, "image.iso"), int(2*httpChunkSize+12345))
+	mi, err := BuildBEP52MetaInfo(releaseDir, true, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := unmarshalInfo(t, mi)
+	file := info.UpvertedFiles()[0]
+
+	destPath := filepath.Join(dir, "downloads", "image.iso")
+	partial := make([]byte, len(data))
+	copy(partial[:httpChunkSize], data[:httpChunkSize]) // Only chunk 0 downloaded.
+	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(destPath+".part", partial, 0644); err != nil {
+		t.Fatal(err)
+	}
+	task := &HTTPTask{
+		DestPath:        destPath,
+		TotalBytes:      int64(len(data)),
+		State:           "downloading",
+		completedChunks: map[int64]bool{0: true},
+	}
+	ld, ok := task.localData()
+	if !ok {
+		t.Fatal("no local data for a partial download")
+	}
+	if checked, ok := verifyFileBySampling(ld, mi, info, file); !ok || checked == 0 {
+		t.Fatalf("downloaded chunk not verified: checked=%d ok=%v", checked, ok)
+	}
+
+	// Chunk 1 is zeros on disk but not marked downloaded, so it must not be sampled; if it were, the
+	// match would fail. Corrupting chunk 0 must fail.
+	partial[100] ^= 0xff
+	if err := os.WriteFile(destPath+".part", partial, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := verifyFileBySampling(ld, mi, info, file); ok {
+		t.Fatal("corrupt downloaded data verified")
+	}
+}
+
+// The DHT index proposes releases holding a file of exactly the right size, whatever their name.
+func TestGatherSwarmCandidatesByFileSize(t *testing.T) {
+	eng, _ := newTestEngine(t)
+	if eng.dhtIndexer == nil {
+		t.Fatal("no DHT index")
+	}
+	v1 := strings.Repeat("a", 40)
+	v2 := strings.Repeat("b", 64)
+	eng.dhtIndexer.AddRecord(&dhtindex.DHTRecord{
+		InfoHash:        v1,
+		InfoHashV2:      v2,
+		ProtocolVersion: "hybrid",
+		Name:            "Completely Different Name",
+		SizeBytes:       123456789,
+		NumFiles:        1,
+		Files:           []string{"x.mkv"},
+		FileEntries:     []dhtindex.DHTFileEntry{{Path: "x.mkv", SizeBytes: 123456789}},
+	})
+	candidates := eng.gatherSwarmCandidates(context.Background(), "My Movie", []int64{123456789}, nil)
+	if len(candidates) == 0 || !strings.Contains(candidates[0].magnet, v1) || !strings.Contains(candidates[0].magnet, "btmh:1220"+v2) {
+		t.Fatalf("expected the hybrid with a same-size file as candidate, got %+v", candidates)
+	}
+	if got := eng.gatherSwarmCandidates(context.Background(), "My Movie", []int64{123456789}, map[string]bool{v1: true}); len(got) != 0 {
+		t.Fatalf("excluded hash still proposed: %+v", got)
 	}
 }

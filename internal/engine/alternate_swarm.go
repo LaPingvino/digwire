@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -17,7 +18,7 @@ import (
 
 // AlternateSwarm is another torrent whose files provably hold the same data as files of a local
 // torrent, so its swarm can feed the same files on disk. A hybrid or v2 release of the same
-// content is the typical case, but any release with matching piece hashes qualifies.
+// content is the typical case, but any release with matching hashes qualifies.
 type AlternateSwarm struct {
 	InfoHash        string `json:"info_hash"`
 	InfoHashV2      string `json:"info_hash_v2,omitempty"`
@@ -29,30 +30,37 @@ type AlternateSwarm struct {
 	Leechers        int    `json:"leechers"`
 	MatchedFiles    int    `json:"matched_files"`
 	MatchedBytes    int64  `json:"matched_bytes"`
+	VerifiedPieces  int    `json:"verified_pieces"`
 	TotalBytes      int64  `json:"total_bytes"`
 	Attached        bool   `json:"attached,omitempty"`
 }
 
 type fileMatch struct {
 	oursIndex, theirsIndex int
-	// theirs piece index = ours piece index + pieceDelta, for every full piece of the file.
-	pieceDelta      int
-	firstPiece, end int
-	theirsBestPath  []string
-}
-
-type pieceLink struct {
-	ours, theirs int
+	theirsBestPath         []string
+	// Number of hashes that proved the match.
+	checked int
 }
 
 type alternateCandidate struct {
-	swarm AlternateSwarm
-	mi    *metainfo.MetaInfo
+	swarm   AlternateSwarm
+	mi      *metainfo.MetaInfo
+	matches []fileMatch
+}
+
+// swarmCandidate is a tentative swarm for some content, to be verified before it is trusted.
+type swarmCandidate struct {
+	magnet, provider, protocol string
+	seeders, leechers          int
 }
 
 const (
 	maxAlternateProbes    = 8
 	alternateProbeTimeout = 10 * time.Second
+	// Pure v2 metadata carries no piece hashes; peers send them on request after metadata.
+	pieceLayersTimeout = 20 * time.Second
+	// Smallest file size worth a DHT index lookup; small sizes collide too often to be useful.
+	minFileSizeForLookup = 1 << 20
 )
 
 // matchFilesByPieceHashes pairs files of two torrents whose v1 piece hashes prove identical
@@ -85,10 +93,8 @@ func matchFilesByPieceHashes(ours, theirs *metainfo.Info) []fileMatch {
 			matches = append(matches, fileMatch{
 				oursIndex:      oi,
 				theirsIndex:    ti,
-				pieceDelta:     delta,
-				firstPiece:     first,
-				end:            end,
 				theirsBestPath: tf.BestPath(),
+				checked:        end - first,
 			})
 			break
 		}
@@ -109,14 +115,35 @@ func pieceHashesEqual(ours, theirs *metainfo.Info, first, end, delta int) bool {
 	return true
 }
 
-func pieceLinksFor(matches []fileMatch) []pieceLink {
-	var links []pieceLink
+// matchTorrentFiles pairs files of a local torrent with a candidate's files holding the same data:
+// by identical piece hashes where the piece grids line up, otherwise by hashing the parts of our
+// files that are already downloaded against the candidate's expected hashes.
+func (e *Engine) matchTorrentFiles(tor *torrent.Torrent, mi *metainfo.MetaInfo, theirs *metainfo.Info) []fileMatch {
+	matches := matchFilesByPieceHashes(tor.Info(), theirs)
+	usedOurs := make(map[int]bool)
+	usedTheirs := make(map[int]bool)
 	for _, m := range matches {
-		for p := m.firstPiece; p < m.end; p++ {
-			links = append(links, pieceLink{ours: p, theirs: p + m.pieceDelta})
+		usedOurs[m.oursIndex] = true
+		usedTheirs[m.theirsIndex] = true
+	}
+	theirFiles := theirs.UpvertedFiles()
+	for oi := range tor.Files() {
+		if usedOurs[oi] {
+			continue
+		}
+		ld := torrentFileData(e.cfg.DownloadDir, tor, oi)
+		for ti, tf := range theirFiles {
+			if usedTheirs[ti] || tf.Length != ld.length {
+				continue
+			}
+			if checked, ok := verifyFileBySampling(ld, mi, theirs, tf); ok {
+				usedTheirs[ti] = true
+				matches = append(matches, fileMatch{oursIndex: oi, theirsIndex: ti, theirsBestPath: tf.BestPath(), checked: checked})
+				break
+			}
 		}
 	}
-	return links
+	return matches
 }
 
 func protocolOfInfo(info *metainfo.Info) string {
@@ -151,12 +178,15 @@ func (e *Engine) findUserTorrent(infoHashHex string) (*torrent.Torrent, *rateTra
 }
 
 // probeMetaInfo resolves a candidate's metadata without downloading data, reusing metadata the
-// DHT crawler already cached. User torrents are never touched.
+// DHT crawler already cached. For pure v2 torrents it also waits for piece layers so partial data
+// can be checked. User torrents are never touched.
 func (e *Engine) probeMetaInfo(ctx context.Context, magnetURI string) (*metainfo.MetaInfo, error) {
 	hash := strings.ToLower(extractInfoHash(magnetURI))
 	if hash != "" {
 		if mi, err := metainfo.LoadFromFile(e.getTorrentCacheFilePath(hash)); err == nil {
-			return mi, nil
+			if info, err := mi.UnmarshalInfo(); err == nil && (info.HasV1() || len(mi.PieceLayers) > 0) {
+				return mi, nil
+			}
 		}
 	}
 	isUser := func(h string) bool {
@@ -192,15 +222,151 @@ func (e *Engine) probeMetaInfo(ctx context.Context, magnetURI string) (*metainfo
 		return nil, fmt.Errorf("metadata timeout")
 	}
 	mi := t.Metainfo()
+	if info := t.Info(); info.HasV2() && !info.HasV1() {
+		deadline := time.After(pieceLayersTimeout)
+		for len(mi.PieceLayers) == 0 {
+			select {
+			case <-ctx.Done():
+				return &mi, nil
+			case <-deadline:
+				return &mi, nil
+			case <-time.After(time.Second):
+				mi = t.Metainfo()
+			}
+		}
+	}
 	return &mi, nil
 }
 
-// FindAlternateSwarms searches indexers for other releases of a torrent's content and returns
-// those whose piece hashes prove they contain the same files, hybrid and v2 releases first.
+func magnetForRecord(infoHash, infoHashV2, name string) string {
+	dn := url.QueryEscape(name)
+	switch {
+	case len(infoHash) == 64:
+		return fmt.Sprintf("magnet:?xt=urn:btmh:1220%s&dn=%s", infoHash, dn)
+	case infoHashV2 != "":
+		return fmt.Sprintf("magnet:?xt=urn:btih:%s&xt=urn:btmh:1220%s&dn=%s", infoHash, infoHashV2, dn)
+	}
+	return fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", infoHash, dn)
+}
+
+// gatherSwarmCandidates collects tentative swarms that may carry some content: releases found in
+// the local DHT index holding a file of exactly one of the given sizes, and indexer search results
+// by name. None of them is trusted until its hashes are checked against local data.
+func (e *Engine) gatherSwarmCandidates(ctx context.Context, name string, fileSizes []int64, exclude map[string]bool) []swarmCandidate {
+	seen := make(map[string]bool, len(exclude))
+	for h := range exclude {
+		seen[strings.ToLower(h)] = true
+	}
+	var largest int64
+	for _, size := range fileSizes {
+		largest = max(largest, size)
+	}
+
+	var bySize, byName []swarmCandidate
+	if e.dhtIndexer != nil {
+		sort.Slice(fileSizes, func(i, j int) bool { return fileSizes[i] > fileSizes[j] })
+		for i, size := range fileSizes {
+			if i >= 3 || size < minFileSizeForLookup {
+				break
+			}
+			for _, rec := range e.dhtIndexer.SearchByFileSize(size) {
+				h := strings.ToLower(rec.InfoHash)
+				if seen[h] {
+					continue
+				}
+				seen[h] = true
+				seeders, leechers := -1, -1
+				if rec.Activity != nil {
+					seeders, leechers = rec.Activity.LastSeeders, rec.Activity.LastPeers
+				}
+				bySize = append(bySize, swarmCandidate{
+					magnet:   magnetForRecord(h, rec.InfoHashV2, rec.Name),
+					provider: "Local DHT Index (file size match)",
+					protocol: rec.ProtocolVersion,
+					seeders:  seeders,
+					leechers: leechers,
+				})
+			}
+		}
+	}
+
+	if e.searchMgr != nil {
+		for _, q := range buildSearchQueries(name) {
+			for _, r := range e.searchMgr.SearchAll(ctx, q) {
+				h := strings.ToLower(r.InfoHash)
+				if h == "" || seen[h] || !strings.HasPrefix(r.MagnetURI, "magnet:") {
+					continue
+				}
+				seen[h] = true
+				if r.SizeBytes > 0 && r.SizeBytes < largest {
+					continue
+				}
+				byName = append(byName, swarmCandidate{r.MagnetURI, r.Provider, r.ProtocolVersion, r.Seeders, r.Leechers})
+			}
+			if len(byName) >= 3*maxAlternateProbes || ctx.Err() != nil {
+				break
+			}
+		}
+	}
+
+	rank := func(list []swarmCandidate) {
+		sort.SliceStable(list, func(i, j int) bool {
+			if ri, rj := protocolRank(list[i].protocol), protocolRank(list[j].protocol); ri != rj {
+				return ri < rj
+			}
+			return list[i].seeders > list[j].seeders
+		})
+	}
+	rank(bySize)
+	rank(byName)
+	// An exact file size is a stronger lead than a similar name.
+	candidates := append(bySize, byName...)
+	if len(candidates) > maxAlternateProbes {
+		candidates = candidates[:maxAlternateProbes]
+	}
+	return candidates
+}
+
+// probeCandidates resolves candidates' metadata a few at a time and passes each to check.
+func (e *Engine) probeCandidates(ctx context.Context, candidates []swarmCandidate, check func(swarmCandidate, *metainfo.MetaInfo, *metainfo.Info)) {
+	var wg sync.WaitGroup
+	limits := make(chan struct{}, 4)
+	for _, c := range candidates {
+		wg.Add(1)
+		go func(c swarmCandidate) {
+			defer wg.Done()
+			limits <- struct{}{}
+			defer func() { <-limits }()
+			mi, err := e.probeMetaInfo(ctx, c.magnet)
+			if err != nil {
+				return
+			}
+			info, err := mi.UnmarshalInfo()
+			if err != nil {
+				return
+			}
+			check(c, mi, &info)
+		}(c)
+	}
+	wg.Wait()
+}
+
+func swarmMagnet(fallback string, mi *metainfo.MetaInfo) (magnet, infoHashV2 string) {
+	mag, err := mi.MagnetV2()
+	if err != nil {
+		return fallback, ""
+	}
+	if mag.V2InfoHash.Ok {
+		infoHashV2 = mag.V2InfoHash.Value.HexString()
+	}
+	return mag.String(), infoHashV2
+}
+
+// FindAlternateSwarms looks for other releases of a torrent's content and returns those whose
+// hashes prove they contain the same files, hybrid and v2 releases first.
 func (e *Engine) FindAlternateSwarms(ctx context.Context, infoHashHex string) ([]AlternateSwarm, error) {
 	e.mu.RLock()
 	tor, _ := e.findUserTorrent(infoHashHex)
-	searchMgr := e.searchMgr
 	e.mu.RUnlock()
 	if tor == nil {
 		return nil, fmt.Errorf("torrent %s not found", infoHashHex)
@@ -209,99 +375,45 @@ func (e *Engine) FindAlternateSwarms(ctx context.Context, infoHashHex string) ([
 	if info == nil {
 		return nil, fmt.Errorf("metadata not available yet")
 	}
-	if searchMgr == nil {
-		return nil, fmt.Errorf("search is not available")
-	}
 	ourHash := strings.ToLower(tor.InfoHash().HexString())
 
-	var largestFile int64
-	for _, f := range info.UpvertedFiles() {
-		largestFile = max(largestFile, f.Length)
+	var sizes []int64
+	for _, f := range tor.Files() {
+		sizes = append(sizes, f.Length())
 	}
-
-	type candidate struct {
-		magnet, provider, protocol string
-		seeders, leechers          int
-	}
-	seen := map[string]bool{ourHash: true}
-	var candidates []candidate
-	for _, q := range buildSearchQueries(info.BestName()) {
-		for _, r := range searchMgr.SearchAll(ctx, q) {
-			h := strings.ToLower(r.InfoHash)
-			if h == "" || seen[h] || !strings.HasPrefix(r.MagnetURI, "magnet:") {
-				continue
-			}
-			seen[h] = true
-			if r.SizeBytes > 0 && r.SizeBytes < largestFile {
-				continue
-			}
-			candidates = append(candidates, candidate{r.MagnetURI, r.Provider, r.ProtocolVersion, r.Seeders, r.Leechers})
-		}
-		if len(candidates) >= 3*maxAlternateProbes || ctx.Err() != nil {
-			break
-		}
-	}
-	sort.SliceStable(candidates, func(i, j int) bool {
-		if ri, rj := protocolRank(candidates[i].protocol), protocolRank(candidates[j].protocol); ri != rj {
-			return ri < rj
-		}
-		return candidates[i].seeders > candidates[j].seeders
-	})
-	if len(candidates) > maxAlternateProbes {
-		candidates = candidates[:maxAlternateProbes]
-	}
+	candidates := e.gatherSwarmCandidates(ctx, info.BestName(), sizes, map[string]bool{ourHash: true})
 
 	var (
-		mu     sync.Mutex
-		wg     sync.WaitGroup
-		found  []alternateCandidate
-		limits = make(chan struct{}, 4)
+		mu    sync.Mutex
+		found []alternateCandidate
 	)
-	for _, c := range candidates {
-		wg.Add(1)
-		go func(c candidate) {
-			defer wg.Done()
-			limits <- struct{}{}
-			defer func() { <-limits }()
-			mi, err := e.probeMetaInfo(ctx, c.magnet)
-			if err != nil {
-				return
-			}
-			candInfo, err := mi.UnmarshalInfo()
-			if err != nil {
-				return
-			}
-			matches := matchFilesByPieceHashes(info, &candInfo)
-			if len(matches) == 0 {
-				return
-			}
-			files := info.UpvertedFiles()
-			swarm := AlternateSwarm{
-				InfoHash:        mi.HashInfoBytes().HexString(),
-				ProtocolVersion: protocolOfInfo(&candInfo),
-				Name:            candInfo.BestName(),
-				Provider:        c.provider,
-				Seeders:         c.seeders,
-				Leechers:        c.leechers,
-				MatchedFiles:    len(matches),
-				TotalBytes:      candInfo.TotalLength(),
-			}
-			for _, m := range matches {
-				swarm.MatchedBytes += files[m.oursIndex].Length
-			}
-			swarm.MagnetURI = c.magnet
-			if mag, err := mi.MagnetV2(); err == nil {
-				if mag.V2InfoHash.Ok {
-					swarm.InfoHashV2 = mag.V2InfoHash.Value.HexString()
-				}
-				swarm.MagnetURI = mag.String()
-			}
-			mu.Lock()
-			found = append(found, alternateCandidate{swarm: swarm, mi: mi})
-			mu.Unlock()
-		}(c)
-	}
-	wg.Wait()
+	e.probeCandidates(ctx, candidates, func(c swarmCandidate, mi *metainfo.MetaInfo, candInfo *metainfo.Info) {
+		if strings.EqualFold(mi.HashInfoBytes().HexString(), ourHash) {
+			return
+		}
+		matches := e.matchTorrentFiles(tor, mi, candInfo)
+		if len(matches) == 0 {
+			return
+		}
+		swarm := AlternateSwarm{
+			InfoHash:        mi.HashInfoBytes().HexString(),
+			ProtocolVersion: protocolOfInfo(candInfo),
+			Name:            candInfo.BestName(),
+			Provider:        c.provider,
+			Seeders:         c.seeders,
+			Leechers:        c.leechers,
+			MatchedFiles:    len(matches),
+			TotalBytes:      candInfo.TotalLength(),
+		}
+		for _, m := range matches {
+			swarm.MatchedBytes += tor.Files()[m.oursIndex].Length()
+			swarm.VerifiedPieces += m.checked
+		}
+		swarm.MagnetURI, swarm.InfoHashV2 = swarmMagnet(c.magnet, mi)
+		mu.Lock()
+		found = append(found, alternateCandidate{swarm: swarm, mi: mi, matches: matches})
+		mu.Unlock()
+	})
 
 	sort.SliceStable(found, func(i, j int) bool {
 		if ri, rj := protocolRank(found[i].swarm.ProtocolVersion), protocolRank(found[j].swarm.ProtocolVersion); ri != rj {
@@ -366,25 +478,17 @@ func (e *Engine) AttachAlternateSwarm(infoHashHex, alternateHashHex string, onVe
 	if tor == nil || tor.Info() == nil {
 		return "", fmt.Errorf("torrent %s not found or has no metadata", infoHashHex)
 	}
-	if !ok {
+	if !ok || len(cand.matches) == 0 {
 		return "", fmt.Errorf("swarm %s was not verified for this torrent; search again", alternateHashHex)
 	}
 	if alreadyAdded {
 		return "", fmt.Errorf("that swarm is already in your downloads")
 	}
 
-	candInfo, err := cand.mi.UnmarshalInfo()
-	if err != nil {
-		return "", err
-	}
-	matches := matchFilesByPieceHashes(tor.Info(), &candInfo)
-	if len(matches) == 0 {
-		return "", fmt.Errorf("no matching files")
-	}
 	ourFiles := tor.Files()
-	fileMap := make(map[string]string, len(matches))
-	matched := make(map[int]bool, len(matches))
-	for _, m := range matches {
+	fileMap := make(map[string]string, len(cand.matches))
+	matched := make(map[int]bool, len(cand.matches))
+	for _, m := range cand.matches {
 		fileMap[strings.Join(m.theirsBestPath, "/")] = ourFiles[m.oursIndex].Path()
 		matched[m.theirsIndex] = true
 	}
@@ -398,7 +502,7 @@ func (e *Engine) AttachAlternateSwarm(infoHashHex, alternateHashHex string, onVe
 	newHash := strings.ToLower(newTor.InfoHash().HexString())
 
 	e.mu.Lock()
-	e.initTracker(newHash, candInfo.BestName())
+	e.initTracker(newHash, cand.swarm.Name)
 	tr := e.rateMap[newHash]
 	tr.magnetURI = cand.swarm.MagnetURI
 	tr.fileMap = fileMap
@@ -409,8 +513,9 @@ func (e *Engine) AttachAlternateSwarm(infoHashHex, alternateHashHex string, onVe
 			tr.skippedFiles[i] = true
 		}
 	}
-	if ourTr := e.rateMap[ourHash]; ourTr != nil && ourTr.isPaused {
-		tr.isPaused = true
+	if ourTr := e.rateMap[ourHash]; ourTr != nil {
+		ourTr.suggestedSwarm = nil
+		tr.isPaused = ourTr.isPaused
 	}
 	e.saveSessionLocked()
 	e.mu.Unlock()
@@ -421,23 +526,53 @@ func (e *Engine) AttachAlternateSwarm(infoHashHex, alternateHashHex string, onVe
 }
 
 // syncSiblingPieces re-verifies pieces that one of two torrents sharing files has completed but the
-// other has not, so both reflect data downloaded through either swarm.
+// other has not, so both reflect data downloaded through either swarm. Piece grids may differ.
 func (e *Engine) syncSiblingPieces(alt *torrent.Torrent, tr *rateTracker, sibling *torrent.Torrent) {
 	if alt.Info() == nil || sibling.Info() == nil || tr.isVerifying.Load() || !tr.siblingSyncing.CompareAndSwap(false, true) {
 		return
 	}
 	go func() {
 		defer tr.siblingSyncing.Store(false)
-		links := pieceLinksFor(matchFilesByPieceHashes(sibling.Info(), alt.Info()))
-		for _, l := range links {
-			ours, theirs := sibling.Piece(l.ours), alt.Piece(l.theirs)
-			oursDone, theirsDone := ours.State().Complete, theirs.State().Complete
-			switch {
-			case theirsDone && !oursDone:
-				_ = ours.VerifyDataContext(context.Background())
-			case oursDone && !theirsDone:
-				_ = theirs.VerifyDataContext(context.Background())
+		siblingFiles := make(map[string]*torrent.File)
+		for _, f := range sibling.Files() {
+			siblingFiles[f.Path()] = f
+		}
+		altFiles := alt.Files()
+		for i, fi := range alt.Info().UpvertedFiles() {
+			sf, ok := siblingFiles[tr.fileMap[strings.Join(fi.BestPath(), "/")]]
+			if !ok || i >= len(altFiles) || sf.Length() != altFiles[i].Length() {
+				continue
 			}
+			verifyPiecesCoveredBy(sibling, sf, alt, altFiles[i])
+			verifyPiecesCoveredBy(alt, altFiles[i], sibling, sf)
 		}
 	}()
+}
+
+// verifyPiecesCoveredBy re-verifies incomplete pieces of dst lying wholly within dstFile whose bytes
+// src already holds as complete pieces of srcFile, the same data at the same file offsets.
+func verifyPiecesCoveredBy(dst *torrent.Torrent, dstFile *torrent.File, src *torrent.Torrent, srcFile *torrent.File) {
+	dpl, spl := dst.Info().PieceLength, src.Info().PieceLength
+	fileBegin, fileEnd := dstFile.Offset(), dstFile.Offset()+dstFile.Length()
+	for i := (fileBegin + dpl - 1) / dpl; i*dpl < fileEnd; i++ {
+		begin, end := i*dpl, min((i+1)*dpl, dst.Length())
+		if end > fileEnd {
+			break // The piece reaches into the next file, which src does not provide.
+		}
+		piece := dst.Piece(int(i))
+		if piece.State().Complete {
+			continue
+		}
+		srcBegin := srcFile.Offset() + begin - fileBegin
+		covered := true
+		for j := srcBegin / spl; j*spl < srcBegin+end-begin; j++ {
+			if !src.Piece(int(j)).State().Complete {
+				covered = false
+				break
+			}
+		}
+		if covered {
+			_ = piece.VerifyDataContext(context.Background())
+		}
+	}
 }

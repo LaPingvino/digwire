@@ -266,6 +266,10 @@ type rateTracker struct {
 	siblingHash         string
 	siblingSyncing      atomic.Bool
 	lastSiblingSync     time.Time
+	// Automatic search for another swarm (ideally hybrid / v2) with the same files.
+	suggestedSwarm *SwarmSuggestion
+	altSearching   atomic.Bool
+	lastAltSearch  time.Time
 }
 
 func (tr *rateTracker) setVerifyProgress(pct float64) {
@@ -284,6 +288,7 @@ func (tr *rateTracker) getVerifyProgress() float64 {
 
 type Engine struct {
 	mu                       sync.RWMutex
+	alternateSearchRunning   atomic.Bool
 	alternateSwarms          map[string]map[string]alternateCandidate
 	client                   *torrent.Client
 	pieceComp                storage.PieceCompletion
@@ -1447,14 +1452,15 @@ func (e *Engine) monitorLoop() {
 					}
 				}
 
-				// Periodically sample swarm presence into DHT indexer (every 60 seconds)
 				if tracker.siblingHash != "" && now.Sub(tracker.lastSiblingSync) >= 15*time.Second {
 					tracker.lastSiblingSync = now
 					if sibling, _ := e.findUserTorrent(tracker.siblingHash); sibling != nil {
 						e.syncSiblingPieces(t, tracker, sibling)
 					}
 				}
+				e.maybeSearchAlternateSwarm(now, t, tracker, isComplete)
 
+				// Periodically sample swarm presence into DHT indexer (every 60 seconds)
 				if now.Sub(tracker.lastSampleTime) >= 60*time.Second {
 					tracker.lastSampleTime = now
 					if e.dhtIndexer != nil {
@@ -1478,6 +1484,7 @@ func (e *Engine) monitorLoop() {
 
 			// Update HTTP task stats
 			e.httpManager.UpdateStats(now)
+			e.maybeSearchHTTPSwarms(now)
 		}
 	}
 }
@@ -1621,27 +1628,14 @@ func (e *Engine) Add(uriOrURL string) (*torrent.Torrent, error) {
 
 	// Direct HTTP file download
 	if strings.HasPrefix(uriOrURL, "http://") || strings.HasPrefix(uriOrURL, "https://") {
-		task, err := e.httpManager.StartDownload(uriOrURL)
-		if err != nil {
+		if _, err := e.httpManager.StartDownload(uriOrURL); err != nil {
 			return nil, err
 		}
 		e.mu.Lock()
 		e.saveSessionLocked()
 		e.mu.Unlock()
 
-		// Background swarm discovery with multi-piece random sampling verification
-		if e.searchMgr != nil {
-			go func(t *HTTPTask) {
-				ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
-				defer cancel()
-				sugg, err := e.FindSuggestedSwarm(ctx, t, e.searchMgr)
-				if err == nil && sugg != nil {
-					t.mu.Lock()
-					t.SuggestedSwarm = sugg
-					t.mu.Unlock()
-				}
-			}(task)
-		}
+		// The monitor loop searches for a swarm carrying this file right away and again as data arrives.
 		return nil, nil
 	}
 
@@ -3600,6 +3594,7 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 			Thumbnail:           thumbnail,
 			SoulseekSharedCount: slskShared,
 			StatusMessage:       writeErrStatus(tracker),
+			SuggestedSwarm:      tracker.suggestedSwarm,
 		})
 	}
 
@@ -4387,6 +4382,7 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 				VerifyProgress:      verifyProg,
 				Subtitles:           subTracks,
 				SoulseekSharedCount: slskShared,
+				SuggestedSwarm:      suggestedSwarmOf(tr),
 			}, nil
 		}
 	}
@@ -4927,6 +4923,13 @@ func downloadWanted(t *torrent.Torrent, skipped map[int]bool) {
 			f.Cancel()
 		}
 	}
+}
+
+func suggestedSwarmOf(tr *rateTracker) *SwarmSuggestion {
+	if tr == nil {
+		return nil
+	}
+	return tr.suggestedSwarm
 }
 
 func skippedOf(tr *rateTracker) map[int]bool {

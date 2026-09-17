@@ -18,6 +18,7 @@ import (
 // before their data arrives. Verification must hash, not compare sizes.
 func TestPreallocatedFileIsNotMarkedComplete(t *testing.T) {
 	tempDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tempDir, "xdg"))
 	downloadDir := filepath.Join(tempDir, "downloads")
 	if err := os.MkdirAll(downloadDir, 0755); err != nil {
 		t.Fatal(err)

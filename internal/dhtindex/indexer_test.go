@@ -203,6 +203,14 @@ func TestBEP52StorageAndPiecesRootSearch(t *testing.T) {
 		t.Fatalf("expected 1 match for pieces_root, got %d", len(rootMatches))
 	}
 
+	// Search by exact file size, for tentative content matches
+	if sizeMatches := idx.SearchByFileSize(250000000); len(sizeMatches) != 1 || sizeMatches[0].InfoHash != v1Hash {
+		t.Fatalf("expected 1 match for file size, got %d", len(sizeMatches))
+	}
+	if sizeMatches := idx.SearchByFileSize(250000001); len(sizeMatches) != 0 {
+		t.Fatalf("expected no match for a different file size, got %d", len(sizeMatches))
+	}
+
 	// General search with 64-char pieces root
 	genMatches := idx.Search(piecesRoot)
 	if len(genMatches) != 1 || genMatches[0].InfoHash != v1Hash {
