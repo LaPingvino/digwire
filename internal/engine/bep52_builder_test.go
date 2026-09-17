@@ -185,3 +185,23 @@ func TestSingleFileHybridSeedsInPlace(t *testing.T) {
 		t.Fatal("single-file hybrid stored as name/name")
 	}
 }
+
+// A hybrid of a directory holding a single file stays a directory on disk.
+func TestSingleFileDirectoryHybridKeepsDirectory(t *testing.T) {
+	eng, downloadDir := newTestEngine(t)
+	dir := filepath.Join(downloadDir, "Movie Release")
+	writeRandomFile(t, filepath.Join(dir, "movie.mkv"), 3*testPieceLen+100)
+
+	mi, err := BuildBEP52MetaInfo(dir, true, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tor, err := eng.SeedMetaInfo(mi, downloadDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tor.BytesCompleted() != tor.Length() {
+		t.Fatalf("seeded directory hybrid has %d of %d bytes", tor.BytesCompleted(), tor.Length())
+	}
+}
+

@@ -4935,6 +4935,22 @@ func downloadWanted(t *torrent.Torrent, skipped map[int]bool) {
 	}
 }
 
+func isSingleFileV2(info *metainfo.Info) bool {
+	if !info.HasV2() || len(info.FileTree.Dir) != 1 {
+		return false
+	}
+	for key, entry := range info.FileTree.Dir {
+		if entry.IsDir() {
+			return false
+		}
+		if info.HasV1() {
+			return len(info.Files) == 0
+		}
+		return key == info.BestName()
+	}
+	return false
+}
+
 func suggestedSwarmOf(tr *rateTracker) *SwarmSuggestion {
 	if tr == nil {
 		return nil
@@ -4979,15 +4995,14 @@ func newFileClientOpts(baseDir string, pieceCompletion storage.PieceCompletion) 
 }
 
 // torrentFilePath is the storage path of a torrent file relative to the download dir: under the
-// torrent name, except that a single-file v2 or hybrid torrent is stored as that one file. Its file
-// tree lists the file beneath the torrent name, which would otherwise become name/name.
+// torrent name, except for a single-file v2 or hybrid torrent. Its file tree lists the file beneath
+// the torrent name, which would otherwise become name/name. A hybrid whose v1 part is a directory
+// holding one file really is a directory, so that layout is kept.
 func torrentFilePath(o storage.FilePathMakerOpts) string {
 	name := o.Info.BestName()
 	path := o.File.BestPath()
-	if o.Info.HasV2() && len(o.Info.FileTree.Dir) == 1 && len(path) == 1 {
-		if entry, ok := o.Info.FileTree.Dir[path[0]]; ok && !entry.IsDir() {
-			return name
-		}
+	if isSingleFileV2(o.Info) && len(path) == 1 {
+		return name
 	}
 	var parts []string
 	if name != metainfo.NoName {
