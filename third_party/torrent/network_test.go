@@ -1,0 +1,86 @@
+package torrent
+
+import (
+	"net"
+	"testing"
+
+	"github.com/anacrolix/log"
+	"github.com/anacrolix/missinggo/v2"
+	qt "github.com/go-quicktest/qt"
+)
+
+func testListenerNetwork(
+	t *testing.T,
+	listenFunc func(net, addr string) (net.Listener, error),
+	expectedNet, givenNet, addr string, validIp4 bool,
+) {
+	l, err := listenFunc(givenNet, addr)
+	if isUnsupportedNetworkError(err) {
+		return
+	}
+	qt.Assert(t, qt.IsNil(err))
+	defer l.Close()
+	qt.Check(t, qt.Equals(l.Addr().Network(), expectedNet))
+	ip := missinggo.AddrIP(l.Addr())
+	qt.Check(t, qt.Equals(ip.To4() != nil, validIp4), qt.Commentf("%v", ip))
+}
+
+func listenUtpListener(net, addr string) (l net.Listener, err error) {
+	l, err = NewUtpSocket(net, addr, nil, log.Default)
+	return
+}
+
+func testAcceptedConnAddr(
+	t *testing.T,
+	network string, valid4 bool,
+	dial func(addr string) (net.Conn, error),
+	listen func() (net.Listener, error),
+) {
+	l, err := listen()
+	qt.Assert(t, qt.IsNil(err))
+	defer l.Close()
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		c, err := dial(l.Addr().String())
+		qt.Assert(t, qt.IsNil(err))
+		<-done
+		c.Close()
+	}()
+	c, err := l.Accept()
+	qt.Assert(t, qt.IsNil(err))
+	defer c.Close()
+	qt.Check(t, qt.Equals(c.RemoteAddr().Network(), network))
+	qt.Check(t, qt.Equals(missinggo.AddrIP(c.RemoteAddr()).To4() == nil, valid4))
+}
+
+func listenClosure(
+	rawListenFunc func(string, string) (net.Listener, error),
+	network, addr string,
+) func() (net.Listener, error) {
+	return func() (net.Listener, error) {
+		return rawListenFunc(network, addr)
+	}
+}
+
+func dialClosure(f func(net, addr string) (net.Conn, error), network string) func(addr string) (net.Conn, error) {
+	return func(addr string) (net.Conn, error) {
+		return f(network, addr)
+	}
+}
+
+func TestListenLocalhostNetwork(t *testing.T) {
+	testListenerNetwork(t, net.Listen, "tcp", "tcp", "0.0.0.0:0", false)
+	testListenerNetwork(t, net.Listen, "tcp", "tcp", "[::1]:0", false)
+	testListenerNetwork(t, listenUtpListener, "udp", "udp6", "[::1]:0", false)
+	testListenerNetwork(t, listenUtpListener, "udp", "udp6", "[::]:0", false)
+	testListenerNetwork(t, listenUtpListener, "udp", "udp4", "localhost:0", true)
+
+	testAcceptedConnAddr(
+		t,
+		"tcp",
+		false,
+		dialClosure(net.Dial, "tcp"),
+		listenClosure(net.Listen, "tcp4", "localhost:0"),
+	)
+}

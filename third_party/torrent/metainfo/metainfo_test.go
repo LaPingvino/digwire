@@ -1,0 +1,173 @@
+package metainfo
+
+import (
+	"io"
+	"os"
+	"path"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/anacrolix/missinggo/v2"
+	"github.com/davecgh/go-spew/spew"
+	qt "github.com/go-quicktest/qt"
+
+	"github.com/anacrolix/torrent/bencode"
+)
+
+func testFile(t *testing.T, filename string) {
+	mi, err := LoadFromFile(filename)
+	qt.Assert(t, qt.IsNil(err))
+	info, err := mi.UnmarshalInfo()
+	qt.Assert(t, qt.IsNil(err))
+
+	if len(info.Files) == 1 {
+		t.Logf("Single file: %s (length: %d)\n", info.BestName(), info.Files[0].Length)
+	} else {
+		t.Logf("Multiple files: %s\n", info.BestName())
+		for _, f := range info.Files {
+			t.Logf(" - %s (length: %d)\n", path.Join(f.Path...), f.Length)
+		}
+	}
+
+	for _, group := range mi.AnnounceList {
+		for _, tracker := range group {
+			t.Logf("Tracker: %s\n", tracker)
+		}
+	}
+
+	b, err := bencode.Marshal(&info)
+	qt.Assert(t, qt.IsNil(err))
+	qt.Check(t, qt.Equals(string(mi.InfoBytes), string(b)))
+}
+
+func TestFile(t *testing.T) {
+	testFile(t, "testdata/archlinux-2011.08.19-netinstall-i686.iso.torrent")
+	testFile(t, "testdata/continuum.torrent")
+	testFile(t, "testdata/23516C72685E8DB0C8F15553382A927F185C4F01.torrent")
+	testFile(t, "testdata/trackerless.torrent")
+	_, err := LoadFromFile("testdata/minimal-trailing-newline.torrent")
+	qt.Check(t, qt.ErrorMatches(err, ".*expected EOF"))
+}
+
+// Ensure that the correct number of pieces are generated when hashing files.
+func TestNumPieces(t *testing.T) {
+	for _, _case := range []struct {
+		PieceLength int64
+		Files       []FileInfo
+		NumPieces   int
+	}{
+		{256 * 1024, []FileInfo{{Length: 1024*1024 + -1}}, 4},
+		{256 * 1024, []FileInfo{{Length: 1024 * 1024}}, 4},
+		{256 * 1024, []FileInfo{{Length: 1024*1024 + 1}}, 5},
+		{5, []FileInfo{{Length: 1}, {Length: 12}}, 3},
+		{5, []FileInfo{{Length: 4}, {Length: 12}}, 4},
+	} {
+		info := Info{
+			Files:       _case.Files,
+			PieceLength: _case.PieceLength,
+		}
+		err := info.GeneratePieces(func(fi FileInfo) (io.ReadCloser, error) {
+			return io.NopCloser(missinggo.ZeroReader), nil
+		})
+		qt.Check(t, qt.IsNil(err))
+		qt.Check(t, qt.Equals(info.NumPieces(), _case.NumPieces))
+	}
+}
+
+func touchFile(path string) (err error) {
+	f, err := os.Create(path)
+	if err != nil {
+		return
+	}
+	err = f.Close()
+	return
+}
+
+func TestBuildFromFilePathOrder(t *testing.T) {
+	td := t.TempDir()
+	qt.Assert(t, qt.IsNil(touchFile(filepath.Join(td, "b"))))
+	qt.Assert(t, qt.IsNil(touchFile(filepath.Join(td, "a"))))
+	info := Info{
+		PieceLength: 1,
+	}
+	qt.Assert(t, qt.IsNil(info.BuildFromFilePath(td)))
+	qt.Check(t, qt.DeepEquals(info.Files, []FileInfo{{
+		Path: []string{"a"},
+	}, {
+		Path: []string{"b"},
+	}}))
+}
+
+func testUnmarshal(t *testing.T, input string, expected *MetaInfo) {
+	var actual MetaInfo
+	err := bencode.Unmarshal([]byte(input), &actual)
+	if expected == nil {
+		qt.Check(t, qt.IsNotNil(err))
+		return
+	}
+	qt.Check(t, qt.IsNil(err))
+	qt.Check(t, qt.DeepEquals(actual, *expected))
+}
+
+func TestUnmarshal(t *testing.T) {
+	testUnmarshal(t, `de`, &MetaInfo{})
+	testUnmarshal(t, `d4:infoe`, nil)
+	testUnmarshal(t, `d4:infoabce`, nil)
+	testUnmarshal(t, `d4:infodee`, &MetaInfo{InfoBytes: []byte("de")})
+}
+
+func TestMetainfoWithListURLList(t *testing.T) {
+	mi, err := LoadFromFile("testdata/SKODAOCTAVIA336x280_archive.torrent")
+	qt.Assert(t, qt.IsNil(err))
+	qt.Check(t, qt.HasLen(mi.UrlList, 3))
+	qt.Assert(t, qt.ContentEquals(mi.Magnet(nil, nil).String(),
+		strings.Join([]string{
+			"magnet:?xt=urn:btih:d4b197dff199aad447a9a352e31528adbbd97922",
+			"tr=http%3A%2F%2Fbt1.archive.org%3A6969%2Fannounce",
+			"tr=http%3A%2F%2Fbt2.archive.org%3A6969%2Fannounce",
+			"ws=https%3A%2F%2Farchive.org%2Fdownload%2F",
+			"ws=http%3A%2F%2Fia601600.us.archive.org%2F26%2Fitems%2F",
+			"ws=http%3A%2F%2Fia801600.us.archive.org%2F26%2Fitems%2F",
+		}, "&")))
+}
+
+func TestMetainfoWithStringURLList(t *testing.T) {
+	mi, err := LoadFromFile("testdata/flat-url-list.torrent")
+	qt.Assert(t, qt.IsNil(err))
+	qt.Check(t, qt.HasLen(mi.UrlList, 1))
+	qt.Assert(t, qt.ContentEquals(mi.Magnet(nil, nil).String(),
+		strings.Join([]string{
+			"magnet:?xt=urn:btih:9da24e606e4ed9c7b91c1772fb5bf98f82bd9687",
+			"tr=http%3A%2F%2Fbt1.archive.org%3A6969%2Fannounce",
+			"tr=http%3A%2F%2Fbt2.archive.org%3A6969%2Fannounce",
+			"ws=https%3A%2F%2Farchive.org%2Fdownload%2F",
+		}, "&")))
+}
+
+// https://github.com/anacrolix/torrent/issues/247
+//
+// The decoder buffer wasn't cleared before starting the next dict item after
+// a syntax error on a field with the ignore_unmarshal_type_error tag.
+func TestStringCreationDate(t *testing.T) {
+	var mi MetaInfo
+	qt.Check(t, qt.IsNil(bencode.Unmarshal([]byte("d13:creation date23:29.03.2018 22:18:14 UTC4:infodee"), &mi)))
+}
+
+// See https://github.com/anacrolix/torrent/issues/843.
+func TestUnmarshalEmptyStringNodes(t *testing.T) {
+	var mi MetaInfo
+	err := bencode.Unmarshal([]byte("d5:nodes0:e"), &mi)
+	qt.Assert(t, qt.IsNil(err))
+}
+
+func TestUnmarshalV2Metainfo(t *testing.T) {
+	mi, err := LoadFromFile("../testdata/bittorrent-v2-test.torrent")
+	qt.Assert(t, qt.IsNil(err))
+	info, err := mi.UnmarshalInfo()
+	qt.Assert(t, qt.IsNil(err))
+	spew.Dump(info)
+	qt.Check(t, qt.Not(qt.Equals(info.NumPieces(), 0)))
+	err = ValidatePieceLayers(mi.PieceLayers, &info.FileTree, info.PieceLength)
+	qt.Check(t, qt.IsNil(err))
+}

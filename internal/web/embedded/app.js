@@ -540,6 +540,8 @@ function getTorrentMetaString(t) {
     metaString = `<span style="color: #33d17a; font-weight: 500;">${ICONS.zap || ''}Packaging BitTorrent swarm for DHT...</span>`;
   } else if (isMeta) {
     metaString = 'Downloading metadata from peers...';
+  } else if (t.state === 'failed' && t.status_message) {
+    metaString += ` • <span style="color: #ed333b; font-weight: 500;" title="${escapeHtml(t.status_message)}">⚠️ ${escapeHtml(t.status_message)}</span>`;
   } else {
     if (isVerifying) {
       const vProg = (t.verify_progress !== undefined && t.verify_progress > 0) ? ` (${t.verify_progress.toFixed(0)}% checked)` : '';

@@ -98,3 +98,4 @@ require (
 )
 
 replace github.com/bh90210/soul => ./third_party/soul
+replace github.com/anacrolix/torrent => ./third_party/torrent

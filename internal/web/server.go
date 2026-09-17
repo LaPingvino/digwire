@@ -50,6 +50,7 @@ func NewServer(cfg *config.Config, engine *engine.Engine, search *search.Manager
 func (s *Server) routes() {
 	// API Endpoints
 	s.mux.HandleFunc("GET /api/torrents", s.handleGetTorrents)
+	s.mux.HandleFunc("GET /api/debug/client-status", s.handleClientStatus)
 	s.mux.HandleFunc("POST /api/torrents/add", s.handleAddTorrent)
 	s.mux.HandleFunc("POST /api/torrents/add-folder", s.handleAddFolderGroup)
 	s.mux.HandleFunc("POST /api/torrents/add-group", s.handleAddFolderGroup)
@@ -119,6 +120,11 @@ func (s *Server) handleGetTorrents(w http.ResponseWriter, r *http.Request) {
 	}
 	torrents := s.engine.GetTorrents()
 	_ = json.NewEncoder(w).Encode(torrents)
+}
+
+func (s *Server) handleClientStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	s.engine.WriteClientStatus(w)
 }
 
 type addRequest struct {

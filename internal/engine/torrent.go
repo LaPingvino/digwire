@@ -257,6 +257,8 @@ type rateTracker struct {
 	savedCompletedBytes int64
 	skippedFiles        map[int]bool
 	magnetURI           string
+	writeErrHooked      bool
+	writeErr            atomic.Pointer[string]
 }
 
 func (tr *rateTracker) setVerifyProgress(pct float64) {
@@ -602,12 +604,7 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 		pieceCompletion = storage.NewMapPieceCompletion()
 	}
 
-	storageOpts := storage.NewFileClientOpts{
-		ClientBaseDir:   cfg.DownloadDir,
-		PieceCompletion: pieceCompletion,
-		UsePartFiles:    g.Some(false),
-	}
-	tConfig.DefaultStorage = storage.NewFileOpts(storageOpts)
+	tConfig.DefaultStorage = storage.NewFileOpts(newFileClientOpts(cfg.DownloadDir, pieceCompletion))
 
 	client, err := torrent.NewClient(tConfig)
 	if err != nil && tConfig.ListenPort != 0 {
@@ -1430,6 +1427,11 @@ func (e *Engine) monitorLoop() {
 				if !exists {
 					// Ignore temporary probing/inspecting torrents
 					continue
+				}
+
+				if !tracker.writeErrHooked {
+					tracker.writeErrHooked = true
+					t.SetOnWriteChunkError(e.onWriteChunkError(t, tracker))
 				}
 
 				stats := t.Stats()
@@ -3076,6 +3078,7 @@ func (e *Engine) Resume(infoHashHex string) error {
 			}
 			if tr != nil {
 				tr.isPaused = false
+				tr.writeErr.Store(nil)
 				if tr.isSeeding {
 					t.DisallowDataDownload()
 					if isGermanMode {
@@ -3411,6 +3414,8 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 				} else {
 					state = "seeding"
 				}
+			} else if tracker.writeErr.Load() != nil {
+				state = "failed"
 			} else {
 				state = "downloading"
 			}
@@ -3625,6 +3630,7 @@ func (e *Engine) GetTorrents() []TorrentStatus {
 			Platform:            platform,
 			Thumbnail:           thumbnail,
 			SoulseekSharedCount: slskShared,
+			StatusMessage:       writeErrStatus(tracker),
 		})
 	}
 
@@ -4940,6 +4946,42 @@ func (e *Engine) IsGermanyMode() bool {
 		return false
 	}
 	return e.cfg.GermanyMode
+}
+
+// onWriteChunkError replaces anacrolix's default handler, which silently disables data download
+// and leaves the torrent looking stuck. The error is logged and surfaced as a failed state until
+// the user resumes.
+func (e *Engine) onWriteChunkError(t *torrent.Torrent, tr *rateTracker) func(error) {
+	return func(err error) {
+		msg := "Disk write error: " + err.Error()
+		if tr.writeErr.Swap(&msg) == nil {
+			log.Printf("⚠️ %s (%s): %v; downloading paused until resumed", t.Name(), t.InfoHash().HexString(), err)
+		}
+		t.DisallowDataDownload()
+	}
+}
+
+func writeErrStatus(tr *rateTracker) string {
+	if msg := tr.writeErr.Load(); msg != nil && !tr.isPaused {
+		return *msg
+	}
+	return ""
+}
+
+func newFileClientOpts(baseDir string, pieceCompletion storage.PieceCompletion) storage.NewFileClientOpts {
+	return storage.NewFileClientOpts{
+		ClientBaseDir:   baseDir,
+		PieceCompletion: pieceCompletion,
+		UsePartFiles:    g.Some(false),
+	}
+}
+
+// WriteClientStatus dumps the underlying BitTorrent client's internal state
+// (piece states, per-peer request/choke state) for diagnosing stalled transfers.
+func (e *Engine) WriteClientStatus(w io.Writer) {
+	if e.client != nil {
+		e.client.WriteStatus(w)
+	}
 }
 
 func (e *Engine) Close() {
