@@ -197,3 +197,81 @@ func TestAttachAlternateSwarmSharesFiles(t *testing.T) {
 		t.Fatalf("attached swarm not persisted: %+v", saved)
 	}
 }
+
+func TestRemovingTorrentDropsAttachedSwarms(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config.Config{DownloadDir: filepath.Join(tempDir, "downloads")}
+	cfg.SetConfigPath(filepath.Join(tempDir, "config.yaml"))
+	eng, err := NewEngine(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Close()
+
+	root := filepath.Join(tempDir, "src", "Release")
+	writeRandomFile(t, filepath.Join(root, "movie.mkv"), 4*testPieceLen)
+	add := func(info *metainfo.Info) string {
+		infoBytes, err := bencode.Marshal(info)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tor, _, err := eng.client.AddTorrentSpec(torrent.TorrentSpecFromMetaInfo(&metainfo.MetaInfo{InfoBytes: infoBytes}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.ToLower(tor.InfoHash().HexString())
+	}
+	ourHash := add(buildV1Info(t, root, testPieceLen))
+	altHash := add(buildV1Info(t, filepath.Join(tempDir, "src"), testPieceLen))
+	eng.mu.Lock()
+	eng.initTracker(ourHash)
+	eng.initTracker(altHash)
+	eng.rateMap[altHash].siblingHash = ourHash
+	eng.mu.Unlock()
+
+	if err := eng.Remove(ourHash, false); err != nil {
+		t.Fatal(err)
+	}
+	eng.mu.RLock()
+	defer eng.mu.RUnlock()
+	if tor, tr := eng.findUserTorrent(altHash); tor != nil || tr != nil {
+		t.Fatalf("attached swarm survived removal of its torrent")
+	}
+}
+
+func TestRemovingAttachedSwarmKeepsSharedFiles(t *testing.T) {
+	tempDir := t.TempDir()
+	downloadDir := filepath.Join(tempDir, "downloads")
+	cfg := &config.Config{DownloadDir: downloadDir}
+	cfg.SetConfigPath(filepath.Join(tempDir, "config.yaml"))
+	eng, err := NewEngine(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Close()
+
+	// Same release name as the original, so deleting "its" files would hit the original's folder.
+	root := filepath.Join(downloadDir, "Release")
+	moviePath := filepath.Join(root, "movie.mkv")
+	writeRandomFile(t, moviePath, 4*testPieceLen)
+	infoBytes, err := bencode.Marshal(buildV1Info(t, root, 2*testPieceLen))
+	if err != nil {
+		t.Fatal(err)
+	}
+	alt, _, err := eng.client.AddTorrentSpec(torrent.TorrentSpecFromMetaInfo(&metainfo.MetaInfo{InfoBytes: infoBytes}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	altHash := strings.ToLower(alt.InfoHash().HexString())
+	eng.mu.Lock()
+	eng.initTracker(altHash)
+	eng.rateMap[altHash].siblingHash = "0123456789abcdef0123456789abcdef01234567"
+	eng.mu.Unlock()
+
+	if err := eng.Remove(altHash, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(moviePath); err != nil {
+		t.Fatalf("removing an attached swarm with files deleted the shared data: %v", err)
+	}
+}

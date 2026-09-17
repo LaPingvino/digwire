@@ -52,7 +52,7 @@ type alternateCandidate struct {
 
 const (
 	maxAlternateProbes   = 8
-	alternateProbeTimout = 10 * time.Second
+	alternateProbeTimeout = 10 * time.Second
 )
 
 // matchFilesByPieceHashes pairs files of two torrents whose v1 piece hashes prove identical
@@ -188,7 +188,7 @@ func (e *Engine) probeMetaInfo(ctx context.Context, magnetURI string) (*metainfo
 	case <-t.GotInfo():
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-time.After(alternateProbeTimout):
+	case <-time.After(alternateProbeTimeout):
 		return nil, fmt.Errorf("metadata timeout")
 	}
 	mi := t.Metainfo()

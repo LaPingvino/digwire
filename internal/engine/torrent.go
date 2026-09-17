@@ -3134,12 +3134,17 @@ func (e *Engine) Remove(infoHashHex string, deleteFiles bool) error {
 		hex := t.InfoHash().HexString()
 		if strings.EqualFold(hex, infoHashHex) {
 			name := t.Name()
+			// An attached swarm writes into another torrent's files, which are not its to delete.
+			if tr := e.rateMap[strings.ToLower(hex)]; tr != nil && tr.siblingHash != "" {
+				deleteFiles = false
+			}
 			t.Drop()
 			for k := range e.rateMap {
 				if strings.EqualFold(k, hex) {
 					delete(e.rateMap, k)
 				}
 			}
+			e.removeAttachedSwarmsLocked(hex)
 			for k := range e.webSeedsMap {
 				if strings.EqualFold(k, hex) {
 					delete(e.webSeedsMap, k)
@@ -3185,6 +3190,23 @@ func (e *Engine) Remove(infoHashHex string, deleteFiles bool) error {
 	}
 
 	return fmt.Errorf("torrent or download not found: %s", infoHashHex)
+}
+
+// removeAttachedSwarmsLocked drops alternate swarms attached to a removed torrent; without it
+// they would keep downloading into its path on their own.
+func (e *Engine) removeAttachedSwarmsLocked(siblingHex string) {
+	for hash, tr := range e.rateMap {
+		if !strings.EqualFold(tr.siblingHash, siblingHex) {
+			continue
+		}
+		if t, _ := e.findUserTorrent(hash); t != nil {
+			t.Drop()
+		}
+		delete(e.rateMap, hash)
+		delete(e.webSeedsMap, hash)
+		delete(e.savedTorrentsMap, hash)
+		_ = os.Remove(e.getTorrentCacheFilePath(hash))
+	}
 }
 
 func scanMediaTaskFiles(destPath, defaultTitle string, totalBytes, completedBytes int64, isComplete bool) []TorrentFileDetail {
