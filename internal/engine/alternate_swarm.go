@@ -354,7 +354,7 @@ func (e *Engine) mappedFileStorage(fileMap map[string]string) storage.ClientImpl
 // AttachAlternateSwarm adds a verified alternate swarm on top of a torrent's existing files. Both
 // torrents then download into and seed from the same data, and pieces completed by one are
 // re-verified in the other.
-func (e *Engine) AttachAlternateSwarm(infoHashHex, alternateHashHex string) (string, error) {
+func (e *Engine) AttachAlternateSwarm(infoHashHex, alternateHashHex string, onVerified ...func()) (string, error) {
 	ourHash := strings.ToLower(infoHashHex)
 	altHash := strings.ToLower(alternateHashHex)
 
@@ -416,7 +416,7 @@ func (e *Engine) AttachAlternateSwarm(infoHashHex, alternateHashHex string) (str
 	e.mu.Unlock()
 
 	e.saveTorrentMetainfo(newTor)
-	e.ConsolidateAndVerifyForce(newTor, true)
+	e.ConsolidateAndVerifyForce(newTor, true, onVerified...)
 	return newHash, nil
 }
 

@@ -151,17 +151,22 @@ func TestAttachAlternateSwarmSharesFiles(t *testing.T) {
 	eng.mu.Unlock()
 	verifyNow(t, eng, ours)
 
-	altHash, err := eng.AttachAlternateSwarm(ourHash, altMI.HashInfoBytes().HexString())
+	attached := make(chan struct{})
+	altHash, err := eng.AttachAlternateSwarm(ourHash, altMI.HashInfoBytes().HexString(), func() { close(attached) })
 	if err != nil {
 		t.Fatal(err)
+	}
+	select {
+	case <-attached:
+	case <-time.After(30 * time.Second):
+		t.Fatal("attached swarm verification did not finish")
 	}
 	eng.mu.RLock()
 	alt, _ := eng.findUserTorrent(altHash)
 	eng.mu.RUnlock()
-	// Attaching verifies the existing data in the background.
-	waitFor(t, "attached swarm to verify existing data", func() bool {
-		return alt.BytesCompleted() == 2*altInfo.PieceLength && !eng.rateMap[altHash].isVerifying.Load()
-	})
+	if got, want := alt.BytesCompleted(), 2*altInfo.PieceLength; got != want {
+		t.Fatalf("attached swarm verified %d bytes of existing data, want %d", got, want)
+	}
 	if _, err := os.Stat(filepath.Join(downloadDir, "Other Release")); !os.IsNotExist(err) {
 		t.Fatalf("attached swarm created its own copy instead of sharing files: %v", err)
 	}
@@ -170,15 +175,17 @@ func TestAttachAlternateSwarmSharesFiles(t *testing.T) {
 	if err := os.WriteFile(ourPath, movie, 0644); err != nil {
 		t.Fatal(err)
 	}
-	verifyNow(t, eng, alt)
-	if alt.BytesCompleted() != alt.Length() {
-		t.Fatalf("attached swarm has %d of %d bytes", alt.BytesCompleted(), alt.Length())
-	}
+	// A hash the client started on the old contents can still land after ours, so retry the way
+	// the periodic sync does.
+	waitFor(t, "attached swarm to verify the new data", func() bool {
+		verifyNow(t, eng, alt)
+		return alt.BytesCompleted() == alt.Length()
+	})
 	eng.mu.RLock()
 	altTr := eng.rateMap[altHash]
 	eng.mu.RUnlock()
-	eng.syncSiblingPieces(alt, altTr, ours)
 	waitFor(t, "original torrent to pick up sibling pieces", func() bool {
+		eng.syncSiblingPieces(alt, altTr, ours)
 		return ours.BytesCompleted() == ours.Length()
 	})
 
