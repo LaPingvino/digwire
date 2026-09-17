@@ -1138,6 +1138,7 @@ func (e *Engine) loadSession() {
 						// Seeding on the session's word: confirm by hashing.
 						e.ConsolidateAndVerifyForce(tor, true)
 					} else {
+						e.indexLocalTorrent(tor)
 						e.mu.RLock()
 						if tr := e.rateMap[strings.ToLower(tor.InfoHash().HexString())]; tr != nil {
 							tr.verifyPending.Store(false)
