@@ -9,6 +9,7 @@ let currentSourceFilter = 'all';
 let currentSortBy = 'relevance';
 let currentProtocolFilter = 'all';
 let protocolPollTimer = null;
+let altSwarmState = { hash: null, loading: false, swarms: null, error: null };
 
 // Details Modal state
 let currentDetailData = null;
@@ -156,6 +157,113 @@ function getBEP52UpgradeBadgeHtml(t) {
   if (!isCompletedV1) return '';
 
   return `<button class="btn btn-primary" style="padding: 2px 7px; font-size: 10.5px; border-radius: 9999px; display: inline-flex; align-items: center; gap: 3px; background: linear-gradient(135deg, #1c71d8, #9141ac); font-weight: 500; cursor: pointer; border: none; box-shadow: 0 1px 3px rgba(0,0,0,0.2);" title="Upgrade completed v1 download to BitTorrent v2 (BEP 52) Hybrid Seeding" onclick="event.stopPropagation(); upgradeToBEP52('${t.info_hash}', this)">⚡ Upgrade v2</button>`;
+}
+
+// Plain BitTorrent v1 downloads (not web, media or folder tasks) can look for another swarm
+// carrying the same files, ideally a hybrid / v2 one.
+function canSearchAlternateSwarms(t) {
+  if (!t || !t.info_hash || t.info_hash.length !== 40 || t.platform || t.is_media) return false;
+  if (!t.magnet_uri || !t.magnet_uri.startsWith('magnet:')) return false;
+  const proto = (t.protocol_version || (t.is_hybrid ? 'hybrid' : (t.info_hash_v2 ? 'v2' : 'v1'))).toLowerCase();
+  return proto === 'v1';
+}
+
+function getAltSwarmBadgeHtml(t) {
+  if (!canSearchAlternateSwarms(t) || t.progress >= 100 || t.state === 'seeding' || t.state === 'completed' || t.state === 'metadata') return '';
+  return `<button class="btn" style="padding: 2px 7px; font-size: 10.5px; border-radius: 9999px; display: inline-flex; align-items: center; gap: 3px; cursor: pointer;" title="Look for a hybrid / v2 (or other) swarm with the same files to help finish this download" onclick="event.stopPropagation(); openAlternateSwarmSearch('${t.info_hash}')">🔎 Other swarms</button>`;
+}
+
+async function openAlternateSwarmSearch(hash) {
+  await openDetailsModal(hash);
+  findAlternateSwarms(hash);
+}
+
+async function findAlternateSwarms(hash) {
+  altSwarmState = { hash, loading: true, swarms: null, error: null };
+  if (currentDetailData && currentDetailData.info_hash === hash) switchDetailTab(currentDetailTab);
+  try {
+    const res = await fetch(`/api/torrents/${hash}/alternate-swarms`);
+    const data = await res.json();
+    if (altSwarmState.hash !== hash) return;
+    altSwarmState = res.ok
+      ? { hash, loading: false, swarms: data.swarms || [], error: null }
+      : { hash, loading: false, swarms: null, error: data.error || 'Search failed' };
+  } catch (err) {
+    if (altSwarmState.hash !== hash) return;
+    altSwarmState = { hash, loading: false, swarms: null, error: err.message };
+  }
+  if (currentDetailData && currentDetailData.info_hash === hash && currentDetailTab === 'overview') switchDetailTab('overview');
+}
+
+async function attachAlternateSwarm(hash, altHash, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Attaching...'; }
+  try {
+    const res = await fetch(`/api/torrents/${hash}/alternate-swarms/${altHash}/attach`, { method: 'POST' });
+    const data = await res.json();
+    if (res.ok && data.status === 'ok') {
+      showToast('Swarm attached — it now downloads into and seeds from the same files.', 'accent', 5000);
+      if (altSwarmState.hash === hash && altSwarmState.swarms) {
+        altSwarmState.swarms.forEach(sw => { if (sw.info_hash === altHash) sw.attached = true; });
+      }
+      fetchTorrents();
+      if (currentDetailData && currentDetailData.info_hash === hash) switchDetailTab(currentDetailTab);
+    } else {
+      if (btn) { btn.disabled = false; btn.textContent = 'Attach'; }
+      showToast(`Attaching swarm failed: ${data.error || 'Unknown error'}`, 'error', 5000);
+    }
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Attach'; }
+    showToast(`Attaching swarm failed: ${err.message}`, 'error', 5000);
+  }
+}
+
+function getAltSwarmSectionHtml(d) {
+  if (!canSearchAlternateSwarms(d)) return '';
+  const st = altSwarmState.hash === d.info_hash ? altSwarmState : { loading: false, swarms: null, error: null };
+  let body = '';
+  if (st.loading) {
+    body = `<div style="font-size: 12px; color: var(--adw-dim-label); margin-top: 6px;">Searching indexers and comparing piece hashes... this can take a minute.</div>`;
+  } else if (st.error) {
+    body = `<div style="font-size: 12px; color: #ed333b; margin-top: 6px;">${escapeHtml(st.error)}</div>`;
+  } else if (st.swarms && st.swarms.length === 0) {
+    body = `<div style="font-size: 12px; color: var(--adw-dim-label); margin-top: 6px;">No other swarm with provably identical files found. Matching needs the same piece size, so differently packed releases can't be compared.</div>`;
+  } else if (st.swarms) {
+    body = st.swarms.map(sw => {
+      const seeds = sw.seeders >= 0 ? `${sw.seeders} seeds` : '? seeds';
+      const action = sw.attached
+        ? `<span style="font-size: 11px; color: var(--adw-success); font-weight: 600;">✓ Attached</span>`
+        : `<button class="btn btn-primary" style="padding: 3px 10px; font-size: 11px; white-space: nowrap;" onclick="attachAlternateSwarm('${d.info_hash}', '${sw.info_hash}', this)">Attach</button>`;
+      return `
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--adw-border);">
+          <div style="min-width: 0;">
+            <div style="font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(sw.name)}">
+              ${getSearchProtocolBadge(sw)} ${escapeHtml(sw.name)}
+            </div>
+            <div style="font-size: 11px; color: var(--adw-dim-label);">
+              ${sw.matched_files} matching file${sw.matched_files !== 1 ? 's' : ''} (${formatBytes(sw.matched_bytes)}) • ${seeds}${sw.provider ? ` • ${escapeHtml(sw.provider)}` : ''}
+            </div>
+          </div>
+          ${action}
+        </div>
+      `;
+    }).join('');
+  }
+  return `
+    <div class="swarm-suggestion-banner" style="grid-column: 1 / -1; margin-bottom: 8px; display: block;">
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+        <div>
+          🔎 <strong>Other swarms with these files</strong>
+          <div style="font-size: 11.5px; color: var(--adw-dim-label); margin-top: 2px;">
+            Find hybrid / v2 (or other) releases whose piece hashes prove identical content, and let them feed the same files.
+          </div>
+        </div>
+        <button class="btn" style="padding: 4px 12px; font-size: 11.5px; white-space: nowrap;" ${st.loading ? 'disabled' : ''} onclick="findAlternateSwarms('${d.info_hash}')">
+          ${st.swarms || st.error ? 'Search again' : 'Search'}
+        </button>
+      </div>
+      ${body}
+    </div>
+  `;
 }
 
 function copyFileMagnet(parentName, piecesRoot, filePath, btn) {
@@ -659,7 +767,7 @@ function createTorrentCardElement(t) {
       <div style="display: flex; gap: 6px; align-items: center; flex-shrink: 0;">
         ${platformBadge}
         ${getProtocolBadge(t)}
-        ${getBEP52UpgradeBadgeHtml(t)}
+        ${getBEP52UpgradeBadgeHtml(t)}${getAltSwarmBadgeHtml(t)}
         ${getQualifierBadge(t.qualifier)}
         <span class="torrent-badge ${isCardOffline ? 'badge-peer_offline' : `badge-${t.state}`}" aria-label="Status: ${t.state}">${isCardOffline ? '💤 peer offline' : t.state}</span>
       </div>
@@ -701,7 +809,7 @@ function updateTorrentCardElement(cardEl, t) {
   const badgeContainer = cardEl.querySelector('.card-header > div:last-child');
   const platformBadge = getPlatformBadge(t.platform);
   const protocolBadge = getProtocolBadge(t);
-  const upgradeBadge = getBEP52UpgradeBadgeHtml(t);
+  const upgradeBadge = getBEP52UpgradeBadgeHtml(t) + getAltSwarmBadgeHtml(t);
   const qualifierBadge = getQualifierBadge(t.qualifier);
   const isCardOffline = t.state === 'peer_offline' || (t.state === 'failed' && t.status_message && (t.status_message.toLowerCase().includes('offline') || t.status_message.toLowerCase().includes('unreachable')));
   const stateBadgeClass = isCardOffline ? 'badge-peer_offline' : `badge-${t.state}`;
@@ -1241,6 +1349,7 @@ function switchDetailTab(tab) {
       <div class="detail-grid">
         ${suggHtml}
         ${bep52UpgradeBanner}
+        ${getAltSwarmSectionHtml(currentDetailData)}
 
         <span class="detail-label">Name:</span>
         <span class="detail-val" style="font-weight: 600;">${currentDetailData.name}</span>

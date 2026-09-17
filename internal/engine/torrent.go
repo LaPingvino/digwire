@@ -49,6 +49,9 @@ type SavedTorrent struct {
 	TotalBytes     int64    `json:"total_bytes,omitempty"`
 	CompletedBytes int64    `json:"completed_bytes,omitempty"`
 	SkippedFiles   []int    `json:"skipped_files,omitempty"`
+	// FileMap and SiblingOf describe an alternate swarm attached to another torrent's files.
+	FileMap   map[string]string `json:"file_map,omitempty"`
+	SiblingOf string            `json:"sibling_of,omitempty"`
 }
 
 type SavedHTTPTask struct {
@@ -259,6 +262,10 @@ type rateTracker struct {
 	magnetURI           string
 	writeErrHooked      bool
 	writeErr            atomic.Pointer[string]
+	fileMap             map[string]string
+	siblingHash         string
+	siblingSyncing      atomic.Bool
+	lastSiblingSync     time.Time
 }
 
 func (tr *rateTracker) setVerifyProgress(pct float64) {
@@ -277,6 +284,7 @@ func (tr *rateTracker) getVerifyProgress() float64 {
 
 type Engine struct {
 	mu                       sync.RWMutex
+	alternateSwarms          map[string]map[string]alternateCandidate
 	client                   *torrent.Client
 	pieceComp                storage.PieceCompletion
 	httpManager              *HTTPManager
@@ -734,6 +742,8 @@ func (e *Engine) saveSessionLocked() {
 			TotalBytes:     totalBytes,
 			CompletedBytes: completedBytes,
 			SkippedFiles:   skipped,
+			FileMap:        tr.fileMap,
+			SiblingOf:      tr.siblingHash,
 		}
 	}
 
@@ -946,6 +956,9 @@ func (e *Engine) loadSession() {
 					if customDir != "" {
 						spec.Storage = storage.NewFile(customDir)
 					}
+					if len(item.FileMap) > 0 {
+						spec.Storage = e.mappedFileStorage(item.FileMap)
+					}
 					if addedT, _, err := e.client.AddTorrentSpec(spec); err == nil {
 						t = addedT
 						hash = t.InfoHash().HexString()
@@ -963,6 +976,9 @@ func (e *Engine) loadSession() {
 			if specErr == nil && spec != nil {
 				if customDir != "" {
 					spec.Storage = storage.NewFile(customDir)
+				}
+				if len(item.FileMap) > 0 {
+					spec.Storage = e.mappedFileStorage(item.FileMap)
 				}
 				if addedT, _, err := e.client.AddTorrentSpec(spec); err == nil {
 					t = addedT
@@ -1042,6 +1058,8 @@ func (e *Engine) loadSession() {
 			peakSeeders:         peakS,
 			peakPeers:           peakP,
 			skippedFiles:        skippedMap,
+			fileMap:             item.FileMap,
+			siblingHash:         item.SiblingOf,
 		}
 
 		if len(item.WebSeeds) > 0 {
@@ -1073,7 +1091,7 @@ func (e *Engine) loadSession() {
 			} else {
 				t.AllowDataDownload()
 				if t.Info() != nil {
-					t.DownloadAll()
+					downloadWanted(t, skippedMap)
 				}
 				if isGermanMode {
 					t.DisallowDataUpload()
@@ -1430,6 +1448,13 @@ func (e *Engine) monitorLoop() {
 				}
 
 				// Periodically sample swarm presence into DHT indexer (every 60 seconds)
+				if tracker.siblingHash != "" && now.Sub(tracker.lastSiblingSync) >= 15*time.Second {
+					tracker.lastSiblingSync = now
+					if sibling, _ := e.findUserTorrent(tracker.siblingHash); sibling != nil {
+						e.syncSiblingPieces(t, tracker, sibling)
+					}
+				}
+
 				if now.Sub(tracker.lastSampleTime) >= 60*time.Second {
 					tracker.lastSampleTime = now
 					if e.dhtIndexer != nil {
@@ -2726,7 +2751,7 @@ func (e *Engine) ConsolidateAndVerifyForce(tor *torrent.Torrent, force bool, onC
 				}
 				if !isPaused {
 					tor.AllowDataDownload()
-					tor.DownloadAll()
+					downloadWanted(tor, skippedOf(tr))
 					if isGermanMode {
 						tor.DisallowDataUpload()
 					} else {
@@ -2801,7 +2826,7 @@ func (e *Engine) ConsolidateAndVerifyForce(tor *torrent.Torrent, force bool, onC
 				// Has missing pieces and not paused: resume downloading
 				tor.AllowDataDownload()
 				if tor.Info() != nil {
-					tor.DownloadAll()
+					downloadWanted(tor, tr.skippedFiles)
 				}
 				if isGermanMode {
 					tor.DisallowDataUpload()
@@ -2825,7 +2850,7 @@ func (e *Engine) ConsolidateAndVerifyForce(tor *torrent.Torrent, force bool, onC
 			} else {
 				tor.AllowDataDownload()
 				if tor.Info() != nil {
-					tor.DownloadAll()
+					downloadWanted(tor, nil)
 				}
 				if isGermanMode {
 					tor.DisallowDataUpload()
@@ -3012,7 +3037,7 @@ func (e *Engine) Resume(infoHashHex string) error {
 				} else {
 					t.AllowDataDownload()
 					if t.Info() != nil {
-						t.DownloadAll()
+						downloadWanted(t, tr.skippedFiles)
 					}
 					if isGermanMode {
 						t.DisallowDataUpload()
@@ -3023,7 +3048,7 @@ func (e *Engine) Resume(infoHashHex string) error {
 			} else {
 				t.AllowDataDownload()
 				if t.Info() != nil {
-					t.DownloadAll()
+					downloadWanted(t, nil)
 				}
 				if isGermanMode {
 					t.DisallowDataUpload()
@@ -4866,6 +4891,27 @@ func (e *Engine) IsGermanyMode() bool {
 		return false
 	}
 	return e.cfg.GermanyMode
+}
+
+// downloadWanted requests every file except those the user (or an attached swarm) skipped;
+// DownloadAll alone would re-enable skipped files.
+func downloadWanted(t *torrent.Torrent, skipped map[int]bool) {
+	t.DownloadAll()
+	if len(skipped) == 0 {
+		return
+	}
+	for idx, f := range t.Files() {
+		if skipped[idx] {
+			f.Cancel()
+		}
+	}
+}
+
+func skippedOf(tr *rateTracker) map[int]bool {
+	if tr == nil {
+		return nil
+	}
+	return tr.skippedFiles
 }
 
 // onWriteChunkError replaces anacrolix's default handler, which silently disables data download

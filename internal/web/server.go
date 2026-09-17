@@ -70,6 +70,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/torrents/{hash}/upgrade-to-swarm", s.handleUpgradeToSwarm)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/upgrade-v2", s.handleUpgradeToBEP52)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/find-swarm", s.handleTriggerFindSwarm)
+	s.mux.HandleFunc("GET /api/torrents/{hash}/alternate-swarms", s.handleFindAlternateSwarms)
+	s.mux.HandleFunc("POST /api/torrents/{hash}/alternate-swarms/{alt}/attach", s.handleAttachAlternateSwarm)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/verify", s.handleVerifyTorrent)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/pause", s.handlePauseTorrent)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/resume", s.handleResumeTorrent)
@@ -609,6 +611,30 @@ func (s *Server) handleUpgradeToBEP52(w http.ResponseWriter, r *http.Request) {
 		"magnet_uri_v1": variants.V1Only,
 		"magnet_uri_v2": variants.V2Only,
 	})
+}
+
+func (s *Server) handleFindAlternateSwarms(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	swarms, err := s.engine.FindAlternateSwarms(ctx, r.PathValue("hash"))
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"swarms": swarms})
+}
+
+func (s *Server) handleAttachAlternateSwarm(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	newHash, err := s.engine.AttachAlternateSwarm(r.PathValue("hash"), r.PathValue("alt"))
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "info_hash": newHash})
 }
 
 func (s *Server) handleTriggerFindSwarm(w http.ResponseWriter, r *http.Request) {

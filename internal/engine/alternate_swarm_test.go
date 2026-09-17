@@ -1,0 +1,192 @@
+package engine
+
+import (
+	"crypto/rand"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/anacrolix/torrent"
+	"github.com/anacrolix/torrent/bencode"
+	"github.com/anacrolix/torrent/metainfo"
+
+	"digwire/internal/config"
+)
+
+const testPieceLen = 16384
+
+func writeRandomFile(t *testing.T, path string, size int) []byte {
+	t.Helper()
+	data := make([]byte, size)
+	_, _ = rand.Read(data)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func buildV1Info(t *testing.T, root string, pieceLen int64) *metainfo.Info {
+	t.Helper()
+	info := &metainfo.Info{PieceLength: pieceLen}
+	if err := info.BuildFromFilePath(root); err != nil {
+		t.Fatal(err)
+	}
+	return info
+}
+
+func unmarshalInfo(t *testing.T, mi *metainfo.MetaInfo) *metainfo.Info {
+	t.Helper()
+	info, err := mi.UnmarshalInfo()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &info
+}
+
+func TestMatchFilesByPieceHashesAgainstHybrid(t *testing.T) {
+	dir := t.TempDir()
+	movie := writeRandomFile(t, filepath.Join(dir, "Release", "a.mkv"), 6*testPieceLen+123)
+	writeRandomFile(t, filepath.Join(dir, "Release", "b.nfo"), 700)
+
+	hybridMI, err := BuildBEP52MetaInfo(filepath.Join(dir, "Release"), true, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hybrid := unmarshalInfo(t, hybridMI)
+	if !hybrid.HasV1() || !hybrid.HasV2() {
+		t.Fatalf("expected a hybrid torrent")
+	}
+	v1 := buildV1Info(t, filepath.Join(dir, "Release"), hybrid.PieceLength)
+
+	matches := matchFilesByPieceHashes(v1, hybrid)
+	if len(matches) != 1 || v1.UpvertedFiles()[matches[0].oursIndex].Length != int64(len(movie)) {
+		t.Fatalf("expected the movie to match, got %+v", matches)
+	}
+
+	// Different content of the same length must not match.
+	movie[3*testPieceLen] ^= 0xff
+	if err := os.WriteFile(filepath.Join(dir, "Release", "a.mkv"), movie, 0644); err != nil {
+		t.Fatal(err)
+	}
+	changed := buildV1Info(t, filepath.Join(dir, "Release"), hybrid.PieceLength)
+	if matches := matchFilesByPieceHashes(changed, hybrid); len(matches) != 0 {
+		t.Fatalf("modified file matched: %+v", matches)
+	}
+}
+
+func verifyNow(t *testing.T, eng *Engine, tor *torrent.Torrent) {
+	t.Helper()
+	done := make(chan struct{})
+	eng.ConsolidateAndVerifyForce(tor, true, func() { close(done) })
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("verification did not finish")
+	}
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestAttachAlternateSwarmSharesFiles(t *testing.T) {
+	tempDir := t.TempDir()
+	downloadDir := filepath.Join(tempDir, "downloads")
+	cfg := &config.Config{DownloadDir: downloadDir}
+	cfg.SetConfigPath(filepath.Join(tempDir, "config.yaml"))
+	eng, err := NewEngine(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Close()
+
+	// The alternate release names things differently but holds the same movie.
+	altRoot := filepath.Join(tempDir, "elsewhere", "Other Release")
+	movie := writeRandomFile(t, filepath.Join(altRoot, "movie.mkv"), 6*testPieceLen)
+	altMI, err := BuildBEP52MetaInfo(altRoot, true, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	altInfo := unmarshalInfo(t, altMI)
+
+	// Our v1 download: same movie, only its first two pieces downloaded so far.
+	ourPath := filepath.Join(downloadDir, "Release", "Movie.mkv")
+	writeRandomFile(t, ourPath, len(movie))
+	if err := os.WriteFile(ourPath, movie, 0644); err != nil {
+		t.Fatal(err)
+	}
+	ourInfo := buildV1Info(t, filepath.Join(downloadDir, "Release"), altInfo.PieceLength)
+	partial := make([]byte, len(movie))
+	copy(partial, movie[:2*altInfo.PieceLength])
+	if err := os.WriteFile(ourPath, partial, 0644); err != nil {
+		t.Fatal(err)
+	}
+	infoBytes, err := bencode.Marshal(ourInfo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ours, _, err := eng.client.AddTorrentSpec(torrent.TorrentSpecFromMetaInfo(&metainfo.MetaInfo{InfoBytes: infoBytes}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ourHash := strings.ToLower(ours.InfoHash().HexString())
+	eng.mu.Lock()
+	eng.initTracker(ourHash)
+	eng.rateMap[ourHash].isPaused = true
+	eng.alternateSwarms = map[string]map[string]alternateCandidate{
+		ourHash: {strings.ToLower(altMI.HashInfoBytes().HexString()): {mi: altMI}},
+	}
+	eng.mu.Unlock()
+	verifyNow(t, eng, ours)
+
+	altHash, err := eng.AttachAlternateSwarm(ourHash, altMI.HashInfoBytes().HexString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.mu.RLock()
+	alt, _ := eng.findUserTorrent(altHash)
+	eng.mu.RUnlock()
+	// Attaching verifies the existing data in the background.
+	waitFor(t, "attached swarm to verify existing data", func() bool {
+		return alt.BytesCompleted() == 2*altInfo.PieceLength && !eng.rateMap[altHash].isVerifying.Load()
+	})
+	if _, err := os.Stat(filepath.Join(downloadDir, "Other Release")); !os.IsNotExist(err) {
+		t.Fatalf("attached swarm created its own copy instead of sharing files: %v", err)
+	}
+
+	// Data arriving through the attached swarm is picked up by the original torrent.
+	if err := os.WriteFile(ourPath, movie, 0644); err != nil {
+		t.Fatal(err)
+	}
+	verifyNow(t, eng, alt)
+	if alt.BytesCompleted() != alt.Length() {
+		t.Fatalf("attached swarm has %d of %d bytes", alt.BytesCompleted(), alt.Length())
+	}
+	eng.mu.RLock()
+	altTr := eng.rateMap[altHash]
+	eng.mu.RUnlock()
+	eng.syncSiblingPieces(alt, altTr, ours)
+	waitFor(t, "original torrent to pick up sibling pieces", func() bool {
+		return ours.BytesCompleted() == ours.Length()
+	})
+
+	eng.mu.Lock()
+	eng.saveSessionLocked()
+	saved := eng.savedTorrentsMap[altHash]
+	eng.mu.Unlock()
+	if saved.SiblingOf != ourHash || saved.FileMap["movie.mkv"] != filepath.Join("Release", "Movie.mkv") {
+		t.Fatalf("attached swarm not persisted: %+v", saved)
+	}
+}
