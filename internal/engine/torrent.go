@@ -991,15 +991,11 @@ func (e *Engine) loadSession() {
 			if bComp > savedCompleted {
 				savedCompleted = bComp
 			}
-			onDisk := e.checkExistingLocalFileSize(t)
-			if onDisk > savedCompleted {
-				savedCompleted = onDisk
-			}
 			if tLen > 0 {
 				if item.TotalBytes == 0 {
 					item.TotalBytes = tLen
 				}
-				if onDisk >= tLen || savedCompleted >= tLen {
+				if savedCompleted >= tLen {
 					isPlausiblePureSeed = true
 					savedCompleted = tLen
 				}
@@ -1110,92 +1106,21 @@ func (e *Engine) loadSession() {
 			}(t, item.WebSeeds)
 		} else if t.Info() == nil {
 			// Pending metadata: resolve in background, then immediately pick up if already complete or adopt remnants
-			go func(tor *torrent.Torrent, seeds []string, wasPaused bool) {
+			go func(tor *torrent.Torrent, seeds []string) {
 				<-tor.GotInfo()
 				if tor.Info() == nil {
 					return
 				}
-				e.saveTorrentMetainfo(tor)
-				tLen := tor.Length()
-				onDisk := e.checkExistingLocalFileSize(tor)
-
-				e.mu.Lock()
-				tr := e.rateMap[tor.InfoHash().HexString()]
-				isGer := e.cfg != nil && e.cfg.GermanyMode
-
-				if tLen > 0 && onDisk >= tLen {
-					e.markTorrentPiecesComplete(tor)
-					if tr != nil {
-						tr.savedTotalBytes = tLen
-						tr.savedCompletedBytes = tLen
-						tr.isSeeding = !isGer
-						tr.isVerifying.Store(false)
-						tr.setVerifyProgress(0)
-					}
-					tor.DisallowDataDownload()
-					if isGer || wasPaused {
-						tor.DisallowDataUpload()
-					} else {
-						tor.AllowDataUpload()
-					}
-					e.saveSessionLocked()
-					e.mu.Unlock()
-
-					if len(seeds) > 0 {
-						clean := SanitizeWebSeeds(seeds, tor.Info().IsDir())
-						if len(clean) > 0 {
-							tor.AddWebSeeds(clean)
-						}
-					}
-					return
-				}
-
-				// Adopt remnants
-				e.AdoptExistingLocalProgress(tor)
-				onDisk = e.checkExistingLocalFileSize(tor)
-				if tLen > 0 && onDisk >= tLen {
-					e.markTorrentPiecesComplete(tor)
-					if tr != nil {
-						tr.savedTotalBytes = tLen
-						tr.savedCompletedBytes = tLen
-						tr.isSeeding = !isGer
-					}
-					tor.DisallowDataDownload()
-					if isGer || wasPaused {
-						tor.DisallowDataUpload()
-					} else {
-						tor.AllowDataUpload()
-					}
-					e.saveSessionLocked()
-					e.mu.Unlock()
-					return
-				}
-
-				if tr != nil {
-					tr.savedTotalBytes = tLen
-					if onDisk > tr.savedCompletedBytes {
-						tr.savedCompletedBytes = onDisk
-					}
-				}
-				if !wasPaused {
-					tor.AllowDataDownload()
-					tor.DownloadAll()
-					if isGer {
-						tor.DisallowDataUpload()
-					} else {
-						tor.AllowDataUpload()
-					}
-				}
-				e.saveSessionLocked()
-				e.mu.Unlock()
-
 				if len(seeds) > 0 {
 					clean := SanitizeWebSeeds(seeds, tor.Info().IsDir())
 					if len(clean) > 0 {
 						tor.AddWebSeeds(clean)
 					}
 				}
-			}(t, item.WebSeeds, item.IsPaused)
+				// Completion is decided by hashed piece state, never by file sizes on disk: files are
+				// preallocated to full length long before their data is complete.
+				e.ConsolidateAndVerify(tor)
+			}(t, item.WebSeeds)
 		} else {
 			// Incomplete torrent with metadata already loaded: consolidate and adopt
 			e.ConsolidateAndVerify(t, func() {
@@ -2763,7 +2688,7 @@ func (e *Engine) ConsolidateAndVerifyForce(tor *torrent.Torrent, force bool, onC
 
 		// If NOT force verifying, check if files on disk are already complete or empty
 		if !force {
-			if tLen > 0 && (onDisk >= tLen || bComp >= tLen || (tr != nil && tr.savedCompletedBytes >= tLen)) {
+			if tLen > 0 && (bComp >= tLen || (tr != nil && tr.savedCompletedBytes >= tLen)) {
 				// Already 100% complete! Mark pieces complete immediately with ZERO hash delay
 				e.markTorrentPiecesComplete(tor)
 				if tr != nil {
@@ -2828,9 +2753,6 @@ func (e *Engine) ConsolidateAndVerifyForce(tor *torrent.Torrent, force bool, onC
 			}
 			tr.isVerifying.Store(true)
 			tr.setVerifyProgress(0)
-			if onDisk > tr.savedCompletedBytes {
-				tr.savedCompletedBytes = onDisk
-			}
 			if tLen > 0 && tr.savedTotalBytes == 0 {
 				tr.savedTotalBytes = tLen
 			}
@@ -4225,9 +4147,7 @@ func (e *Engine) GetTorrentDetails(infoHashHex string) (*TorrentDetails, error) 
 					fLen := tf.Length()
 					fComp := tf.BytesCompleted()
 					fullPath := filepath.Join(e.cfg.DownloadDir, tf.Path())
-					if fi, err := os.Stat(fullPath); err == nil && !fi.IsDir() && fi.Size() >= fLen && fLen > 0 {
-						fComp = fLen
-					} else if totalBytes > 0 && completedBytes >= totalBytes && fLen > 0 {
+					if totalBytes > 0 && completedBytes >= totalBytes && fLen > 0 {
 						fComp = fLen
 					}
 					var fProg float64
