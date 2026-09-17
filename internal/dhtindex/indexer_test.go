@@ -210,3 +210,41 @@ func TestBEP52StorageAndPiecesRootSearch(t *testing.T) {
 	}
 }
 
+// Databases created before BEP 52 support lack the v2 columns; opening one must migrate it rather
+// than fail (which silently disabled the whole index).
+func TestInitSchemaMigratesPreBEP52Database(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "dht_index.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`
+	CREATE TABLE dht_records (
+		info_hash TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		size_bytes INTEGER DEFAULT 0,
+		num_files INTEGER DEFAULT 0,
+		discovered_at INTEGER NOT NULL,
+		files_json TEXT DEFAULT '[]',
+		activity_json TEXT DEFAULT '{}',
+		last_seeders INTEGER DEFAULT 0,
+		last_peers INTEGER DEFAULT 0,
+		last_seen_healthy INTEGER DEFAULT 0
+	);
+	INSERT INTO dht_records (info_hash, name, discovered_at) VALUES ('0123456789abcdef0123456789abcdef01234567', 'old', 1);
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := initSchema(db); err != nil {
+		t.Fatalf("initSchema on pre-BEP 52 database: %v", err)
+	}
+	var proto string
+	if err := db.QueryRow(`SELECT protocol_version FROM dht_records`).Scan(&proto); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO dht_files (info_hash, file_path) VALUES ('x', 'y')`); err != nil {
+		t.Fatalf("dht_files table missing after migration: %v", err)
+	}
+}
+

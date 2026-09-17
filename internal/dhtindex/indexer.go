@@ -76,7 +76,7 @@ func tokenize(s string) []string {
 }
 
 func initSchema(db *sql.DB) error {
-	schema := `
+	tables := `
 	CREATE TABLE IF NOT EXISTS dht_records (
 		info_hash TEXT PRIMARY KEY,
 		name TEXT NOT NULL,
@@ -92,9 +92,6 @@ func initSchema(db *sql.DB) error {
 		protocol_version TEXT DEFAULT 'v1',
 		pieces_roots_json TEXT DEFAULT '[]'
 	);
-	CREATE INDEX IF NOT EXISTS idx_dht_name ON dht_records(name);
-	CREATE INDEX IF NOT EXISTS idx_dht_discovered ON dht_records(discovered_at DESC);
-	CREATE INDEX IF NOT EXISTS idx_dht_v2 ON dht_records(info_hash_v2);
 
 	CREATE TABLE IF NOT EXISTS dht_files (
 		info_hash TEXT NOT NULL,
@@ -103,18 +100,26 @@ func initSchema(db *sql.DB) error {
 		pieces_root TEXT DEFAULT '',
 		PRIMARY KEY(info_hash, file_path)
 	);
-	CREATE INDEX IF NOT EXISTS idx_dht_files_root ON dht_files(pieces_root);
-	CREATE INDEX IF NOT EXISTS idx_dht_files_path ON dht_files(file_path);
 	`
-	if _, err := db.Exec(schema); err != nil {
+	if _, err := db.Exec(tables); err != nil {
 		return err
 	}
 
-	// Safely ensure new columns exist for upgraded schemas
+	// Add columns missing from databases created before BEP 52 support. This must run before the
+	// indexes below, one of which is on a new column.
 	_, _ = db.Exec("ALTER TABLE dht_records ADD COLUMN info_hash_v2 TEXT DEFAULT '';")
 	_, _ = db.Exec("ALTER TABLE dht_records ADD COLUMN protocol_version TEXT DEFAULT 'v1';")
 	_, _ = db.Exec("ALTER TABLE dht_records ADD COLUMN pieces_roots_json TEXT DEFAULT '[]';")
-	return nil
+
+	indexes := `
+	CREATE INDEX IF NOT EXISTS idx_dht_name ON dht_records(name);
+	CREATE INDEX IF NOT EXISTS idx_dht_discovered ON dht_records(discovered_at DESC);
+	CREATE INDEX IF NOT EXISTS idx_dht_v2 ON dht_records(info_hash_v2);
+	CREATE INDEX IF NOT EXISTS idx_dht_files_root ON dht_files(pieces_root);
+	CREATE INDEX IF NOT EXISTS idx_dht_files_path ON dht_files(file_path);
+	`
+	_, err := db.Exec(indexes)
+	return err
 }
 
 func NewIndexer(client *torrent.Client) (*Indexer, error) {
@@ -538,6 +543,10 @@ func (idx *Indexer) QueueCrawl(infoHashHex string) {
 	select {
 	case idx.crawlQueue <- infoHashHex:
 	default:
+		// Queue full: forget it so a later request can queue it again.
+		idx.mu.Lock()
+		delete(idx.seenCrawl, infoHashHex)
+		idx.mu.Unlock()
 	}
 }
 
