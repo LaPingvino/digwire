@@ -486,8 +486,24 @@ func (p Piece) availability() int {
 // For v2 torrents, files are aligned to pieces so there should always only be a single file for a
 // given piece.
 func (p Piece) mustGetOnlyFile() *File {
-	panicif.NotEq(p.numFiles(), 1)
+	panicif.NotEq(p.numDataFiles(), 1)
+	for i := p.beginFile(); i < p.endFile(); i++ {
+		if f := (*p.t.files)[i]; f.length != 0 {
+			return f
+		}
+	}
 	return (*p.t.files)[p.beginFile()]
+}
+
+// numDataFiles counts the files of this piece that hold data. Empty files take up no bytes, so
+// several of them can share a piece boundary with the file that does; they are not part of it.
+func (p Piece) numDataFiles() (n int) {
+	for i := p.beginFile(); i < p.endFile(); i++ {
+		if (*p.t.files)[i].length != 0 {
+			n++
+		}
+	}
+	return
 }
 
 // Sets the v2 piece hash, queuing initial piece checks if appropriate.
@@ -517,7 +533,7 @@ func (p Piece) haveHash() bool {
 }
 
 func (p Piece) hasPieceLayer() bool {
-	return p.numFiles() == 1 && p.mustGetOnlyFile().length > p.t.info.PieceLength
+	return p.numDataFiles() == 1 && p.mustGetOnlyFile().length > p.t.info.PieceLength
 }
 
 // TODO: This looks inefficient. It will rehash everytime it is called. The hashes should be

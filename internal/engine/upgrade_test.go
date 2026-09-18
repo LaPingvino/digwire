@@ -1,0 +1,42 @@
+package engine
+
+import (
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+// A release holding an empty file (a 0-byte .nfo, say) must convert to hybrid and keep working:
+// the empty file shares the last piece's boundary, which used to panic deep in the client and
+// leave its lock held, freezing the whole app.
+func TestUpgradeToBEP52WithEmptyFile(t *testing.T) {
+	eng, downloadDir := newTestEngine(t)
+	show := filepath.Join(downloadDir, "Show")
+	writeRandomFile(t, filepath.Join(show, "a.mkv"), 40*testPieceLen)
+	writeRandomFile(t, filepath.Join(show, "b.nfo"), 0)
+
+	v1 := addLocalTorrent(t, eng, v1MetaInfo(t, show, "Show", testPieceLen))
+	waitFor(t, "v1 complete", func() bool { return v1.BytesCompleted() == v1.Length() })
+
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := eng.UpgradeToBEP52(v1.InfoHash().HexString())
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("upgrade failed: %v", err)
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("upgrade did not finish in 60s")
+	}
+	// The API must stay responsive right after.
+	ok := make(chan struct{})
+	go func() { eng.GetTorrents(); close(ok) }()
+	select {
+	case <-ok:
+	case <-time.After(20 * time.Second):
+		t.Fatal("GetTorrents blocked after the upgrade")
+	}
+}
