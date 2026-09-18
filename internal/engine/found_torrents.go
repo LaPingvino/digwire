@@ -25,9 +25,9 @@ type FoundTorrent struct {
 	// Status is "complete", "partial" or "missing", by what lies in the download folder.
 	Status string `json:"status"`
 	// Source is "download" for a file that came with a download, "cache" for kept metadata.
-	Source string `json:"source"`
-	Path   string `json:"path"`
-	FoundAt int64 `json:"found_at"`
+	Source  string `json:"source"`
+	Path    string `json:"path"`
+	FoundAt int64  `json:"found_at"`
 }
 
 const (
