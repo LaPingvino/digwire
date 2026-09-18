@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"crypto/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -205,3 +206,42 @@ func TestSingleFileDirectoryHybridKeepsDirectory(t *testing.T) {
 	}
 }
 
+// BEP 52 forbids a pieces root on an empty file; releases often ship one (a 0-byte .nfo).
+func TestBuildBEP52WithEmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "Release")
+	if err := os.MkdirAll(root, 0755); err != nil {
+		t.Fatal(err)
+	}
+	data := make([]byte, 40000)
+	if _, err := rand.Read(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "movie.mkv"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "info.nfo"), nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, hybrid := range []bool{false, true} {
+		mi, err := BuildBEP52MetaInfo(root, hybrid, "", nil)
+		if err != nil {
+			t.Fatalf("hybrid=%v: %v", hybrid, err)
+		}
+		info, err := mi.UnmarshalInfo()
+		if err != nil {
+			t.Fatalf("hybrid=%v: %v", hybrid, err)
+		}
+		for _, f := range info.UpvertedFiles() {
+			if f.Length == 0 && f.PiecesRoot.Ok {
+				t.Fatalf("hybrid=%v: empty file %v has a pieces root", hybrid, f.BestPath())
+			}
+		}
+		// The client rejects a torrent whose file tree breaks the spec.
+		eng, _ := newTestEngine(t)
+		if _, err := eng.SeedMetaInfo(mi, dir); err != nil {
+			t.Fatalf("hybrid=%v: seeding rejected: %v", hybrid, err)
+		}
+	}
+}

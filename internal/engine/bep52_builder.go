@@ -164,11 +164,12 @@ func BuildBEP52MetaInfo(sourcePath string, isHybrid bool, comment string, tracke
 			}
 		}
 
-		// Insert into FileTree
-		insertFileTree(&rootFileTree, rec.pathList, metainfo.FileTreeFile{
-			Length:     rec.size,
-			PiecesRoot: string(piecesRoot[:]),
-		})
+		// Insert into FileTree. BEP 52 gives an empty file no pieces root at all.
+		entry := metainfo.FileTreeFile{Length: rec.size}
+		if rec.size > 0 {
+			entry.PiecesRoot = string(piecesRoot[:])
+		}
+		insertFileTree(&rootFileTree, rec.pathList, entry)
 	}
 
 	info := metainfo.Info{

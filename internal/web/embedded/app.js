@@ -147,8 +147,15 @@ function getProtocolBadge(t) {
   return badges;
 }
 
+// Hashing a large torrent takes minutes; the list refreshes meanwhile, so the button's progress
+// has to live here rather than on the element.
+const upgradingToV2 = new Set();
+
 function getBEP52UpgradeBadgeHtml(t) {
   if (!t) return '';
+  if (upgradingToV2.has(t.info_hash)) {
+    return `<button class="btn" style="padding: 2px 7px; font-size: 10.5px; border-radius: 9999px; font-weight: 500;" disabled title="Hashing every file with SHA-256 to build the v2 swarm. This takes a while for large torrents.">⏳ Hashing for v2...</button>`;
+  }
   const proto = (t.protocol_version || (t.is_hybrid ? 'hybrid' : (t.info_hash_v2 ? 'v2' : 'v1'))).toLowerCase();
   const isCompletedV1 = proto === 'v1' && 
     ((t.progress >= 100 || t.state === 'seeding' || t.state === 'completed') || 
@@ -2042,6 +2049,8 @@ function copyCreatedSplitMagnet(type) {
 }
 
 async function upgradeToBEP52(hash, triggerBtn) {
+  if (upgradingToV2.has(hash)) return;
+  upgradingToV2.add(hash);
   const modalBtn = document.getElementById('btn-upgrade-bep52');
   const btn = triggerBtn || modalBtn;
   let originalHtml = '';
@@ -2050,13 +2059,15 @@ async function upgradeToBEP52(hash, triggerBtn) {
     originalHtml = btn.innerHTML;
     btn.textContent = "Hashing...";
   }
-  showToast("Calculating SHA-256 Merkle trees & upgrading to BEP 52 Hybrid...", "info", 4000);
+  showToast("Calculating SHA-256 Merkle trees & upgrading to BEP 52 Hybrid... this can take minutes for a large torrent.", "info", 6000);
+  fetchTorrents();
 
   try {
     const res = await fetch(`/api/torrents/${hash}/upgrade-v2`, {
       method: 'POST'
     });
     const data = await res.json();
+    upgradingToV2.delete(hash);
     if (res.ok && data.status === 'ok') {
       showToast("Successfully upgraded to BEP 52 Hybrid seeding! Seeding to both v1 & v2 swarms.", "accent", 5000);
       const newHash = data.info_hash || hash;
@@ -2070,14 +2081,17 @@ async function upgradeToBEP52(hash, triggerBtn) {
         btn.disabled = false;
         btn.innerHTML = originalHtml || "🚀 Start v2 Hybrid Seeding";
       }
-      showToast(`BEP 52 Upgrade failed: ${data.error || 'Unknown error'}`, "error", 4000);
+      showToast(`BEP 52 Upgrade failed: ${data.error || 'Unknown error'}`, "error", 8000);
+      fetchTorrents();
     }
   } catch (err) {
+    upgradingToV2.delete(hash);
     if (btn) {
       btn.disabled = false;
       btn.innerHTML = originalHtml || "🚀 Start v2 Hybrid Seeding";
     }
-    showToast(`BEP 52 Upgrade error: ${err.message}`, "error", 4000);
+    showToast(`BEP 52 Upgrade error: ${err.message}`, "error", 8000);
+    fetchTorrents();
   }
 }
 
