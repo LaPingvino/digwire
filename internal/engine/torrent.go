@@ -26,6 +26,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"digwire/internal/appdir"
 	"digwire/internal/config"
 	"digwire/internal/dhtindex"
 	"digwire/internal/search"
@@ -388,11 +389,7 @@ func (e *Engine) getSessionFilePath() string {
 	if e != nil && e.cfg != nil && e.cfg.GetConfigPath() != "" {
 		return filepath.Join(filepath.Dir(e.cfg.GetConfigPath()), "session.json")
 	}
-	configDir, err := os.UserConfigDir()
-	if err != nil {
-		configDir = "."
-	}
-	return filepath.Join(configDir, "digwire", "session.json")
+	return filepath.Join(appdir.Dir(), "session.json")
 }
 
 func (e *Engine) getTorrentsCacheDir() string {
@@ -401,11 +398,7 @@ func (e *Engine) getTorrentsCacheDir() string {
 		_ = os.MkdirAll(dir, 0755)
 		return dir
 	}
-	configDir, err := os.UserConfigDir()
-	if err != nil {
-		configDir = "."
-	}
-	dir := filepath.Join(configDir, "digwire", "torrents")
+	dir := filepath.Join(appdir.Dir(), "torrents")
 	_ = os.MkdirAll(dir, 0755)
 	return dir
 }
@@ -609,9 +602,8 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 	if cfg != nil && cfg.GetConfigPath() != "" {
 		pieceCompDir = filepath.Dir(cfg.GetConfigPath())
 	} else {
-		configDir, _ := os.UserConfigDir()
-		if configDir != "" {
-			pieceCompDir = filepath.Join(configDir, "digwire")
+		if dir := appdir.Dir(); dir != "" {
+			pieceCompDir = dir
 		} else {
 			pieceCompDir = cfg.DownloadDir
 		}
@@ -1362,12 +1354,7 @@ func (e *Engine) checkpointDatabases() {
 	if e.cfg != nil && e.cfg.GetConfigPath() != "" {
 		configDir = filepath.Dir(e.cfg.GetConfigPath())
 	} else {
-		userCfg, _ := os.UserConfigDir()
-		if userCfg != "" {
-			configDir = filepath.Join(userCfg, "digwire")
-		} else {
-			configDir = "."
-		}
+		configDir = appdir.Dir()
 	}
 
 	for _, dbName := range []string{".torrent.db", "dht_index.sqlite"} {

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"database/sql"
+	"digwire/internal/appdir"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -123,11 +124,7 @@ func initSchema(db *sql.DB) error {
 }
 
 func NewIndexer(client *torrent.Client) (*Indexer, error) {
-	configDir, err := os.UserConfigDir()
-	if err != nil {
-		configDir = "."
-	}
-	appDir := filepath.Join(configDir, "digwire")
+	appDir := appdir.Dir()
 	_ = os.MkdirAll(appDir, 0755)
 
 	sqlitePath := filepath.Join(appDir, "dht_index.sqlite")
@@ -668,9 +665,8 @@ func (idx *Indexer) crawlerWorker() {
 				if info != nil {
 					mi := t.Metainfo()
 					// Cache .torrent file to disk for instant zero-latency retrieval
-					configDir, _ := os.UserConfigDir()
-					if configDir != "" {
-						tDir := filepath.Join(configDir, "digwire", "torrents")
+					{
+						tDir := filepath.Join(appdir.Dir(), "torrents")
 						_ = os.MkdirAll(tDir, 0755)
 						tPath := filepath.Join(tDir, strings.ToLower(hashHex)+".torrent")
 						if f, err := os.Create(tPath); err == nil {

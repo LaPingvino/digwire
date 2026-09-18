@@ -844,7 +844,11 @@ func (s *Server) handleSaveConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The path is not part of the JSON, so keep the one the config was loaded from: otherwise
+	// saving falls back to the default location instead of the file in use.
+	configPath := s.cfg.GetConfigPath()
 	*s.cfg = newCfg
+	s.cfg.SetConfigPath(configPath)
 	_ = s.cfg.Save()
 	s.search.UpdateProviders(s.cfg)
 	s.engine.SetGermanyMode(s.cfg.GermanyMode)
@@ -906,7 +910,11 @@ func (s *Server) handleSaveConfigYAML(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The path is not part of the JSON, so keep the one the config was loaded from: otherwise
+	// saving falls back to the default location instead of the file in use.
+	configPath := s.cfg.GetConfigPath()
 	*s.cfg = newCfg
+	s.cfg.SetConfigPath(configPath)
 	_ = s.cfg.Save()
 	s.search.UpdateProviders(s.cfg)
 	s.engine.SetGermanyMode(s.cfg.GermanyMode)
