@@ -198,3 +198,15 @@ func TestSameNameTorrentsShareFilesSafely(t *testing.T) {
 		}
 	}
 }
+
+func writeMetaInfoFile(t *testing.T, path string, mi *metainfo.MetaInfo) {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := mi.Write(f); err != nil {
+		t.Fatal(err)
+	}
+}

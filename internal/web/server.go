@@ -71,6 +71,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/torrents/{hash}/upgrade-to-swarm", s.handleUpgradeToSwarm)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/upgrade-v2", s.handleUpgradeToBEP52)
 	s.mux.HandleFunc("GET /api/health", s.handleHealth)
+	s.mux.HandleFunc("GET /api/found-torrents", s.handleFoundTorrents)
+	s.mux.HandleFunc("POST /api/found-torrents/{hash}/add", s.handleAddFoundTorrent)
+	s.mux.HandleFunc("POST /api/found-torrents/{hash}/dismiss", s.handleDismissFoundTorrent)
+	s.mux.HandleFunc("POST /api/found-torrents/restore", s.handleRestoreFoundTorrents)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/find-swarm", s.handleTriggerFindSwarm)
 	s.mux.HandleFunc("GET /api/torrents/{hash}/alternate-swarms", s.handleFindAlternateSwarms)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/alternate-swarms/{alt}/attach", s.handleAttachAlternateSwarm)
@@ -621,6 +625,40 @@ func (s *Server) recoverPanics(next http.Handler) http.Handler {
 		}()
 		next.ServeHTTP(w, r)
 	})
+}
+
+// handleFoundTorrents lists .torrent files lying around that the user never added. They are only
+// ever offered here; nothing is started without them asking.
+func (s *Server) handleFoundTorrents(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	found := s.engine.FoundTorrents()
+	if found == nil {
+		found = []engine.FoundTorrent{}
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"found": found})
+}
+
+func (s *Server) handleAddFoundTorrent(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	hash, err := s.engine.AddFoundTorrent(r.PathValue("hash"))
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "info_hash": hash})
+}
+
+func (s *Server) handleDismissFoundTorrent(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	s.engine.DismissFoundTorrent(r.PathValue("hash"))
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleRestoreFoundTorrents(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	s.engine.RestoreFoundTorrents()
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 // handleHealth answers without touching the engine's lock, so it still reports when the engine is

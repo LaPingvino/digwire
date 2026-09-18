@@ -901,12 +901,48 @@ function updateTorrentCardElement(cardEl, t) {
 }
 
 // Torrent Rendering with Keyed In-Place DOM Diffing & Focus Persistence
+let torrentFilterText = '';
+let listMode = 'cards';
+
+function setTorrentFilter(value) {
+  torrentFilterText = (value || '').trim().toLowerCase();
+  renderTorrents();
+  renderFoundPanel();
+}
+
+function matchesTorrentFilter(name) {
+  if (!torrentFilterText) return true;
+  return (name || '').toLowerCase().includes(torrentFilterText);
+}
+
+function applyListMode() {
+  const container = document.getElementById('torrent-list-container');
+  if (container) container.classList.toggle('compact', listMode === 'compact');
+  const btn = document.getElementById('btn-list-mode');
+  if (btn) {
+    const toRows = listMode === 'cards';
+    btn.textContent = toRows ? '☰ Rows' : '▤ Cards';
+    btn.title = toRows ? 'Show one line per torrent' : 'Show full cards';
+  }
+}
+
+function toggleListMode() {
+  listMode = listMode === 'cards' ? 'compact' : 'cards';
+  try { localStorage.setItem('digwire-list-mode', listMode); } catch (err) { /* private mode */ }
+  applyListMode();
+}
+
+function restoreListMode() {
+  try { listMode = localStorage.getItem('digwire-list-mode') === 'compact' ? 'compact' : 'cards'; } catch (err) { /* private mode */ }
+  applyListMode();
+}
+
 function renderTorrents() {
   const container = document.getElementById('torrent-list-container');
   const emptyState = document.getElementById('torrents-empty');
   if (!container || !emptyState) return;
 
-  let filtered = [...torrentsData];
+  let filtered = torrentsData.filter(t => matchesTorrentFilter(t.name));
   if (currentFilter === 'downloading') {
     filtered = filtered.filter(t => 
       t.state === 'downloading' || 
@@ -4665,6 +4701,99 @@ window.addEventListener('keydown', (e) => {
 });
 
 // Initialize on page load
+// Found torrents: .torrent files lying around that nobody added. They are offered here, with the
+// action that fits what is already on disk, and never started on their own.
+let foundTorrents = [];
+let foundPanelOpen = false;
+
+async function pollFoundTorrents() {
+  try {
+    const res = await fetch('/api/found-torrents', { cache: 'no-store' });
+    const data = await res.json();
+    foundTorrents = Array.isArray(data.found) ? data.found : [];
+  } catch (err) {
+    foundTorrents = [];
+  }
+  renderFoundPanel();
+}
+
+function foundActionLabel(f) {
+  if (f.status === 'complete') return 'Start seeding';
+  if (f.status === 'partial') return 'Resume';
+  return 'Download';
+}
+
+function foundStatusLabel(f) {
+  if (f.status === 'complete') return 'all files on disk';
+  if (f.status === 'partial') return `${formatBytes(f.local_bytes)} of ${formatBytes(f.total_bytes)} on disk`;
+  return 'nothing downloaded yet';
+}
+
+function toggleFoundPanel() {
+  foundPanelOpen = !foundPanelOpen;
+  renderFoundPanel();
+}
+
+function renderFoundPanel() {
+  const host = document.getElementById('found-panel-container');
+  if (!host) return;
+  const list = foundTorrents.filter(f => matchesTorrentFilter(f.name));
+  if (list.length === 0) {
+    host.innerHTML = '';
+    return;
+  }
+  const ready = list.filter(f => f.status !== 'missing').length;
+  const summary = `${list.length} torrent${list.length === 1 ? '' : 's'} found that you have not added${ready > 0 ? `, ${ready} with data already on disk` : ''}`;
+  let rows = '';
+  if (foundPanelOpen) {
+    rows = list.map(f => `
+      <div class="found-row">
+        <span class="found-name" title="${escapeHtml(f.path)}">${escapeHtml(f.name)}</span>
+        <span class="found-status ${f.status}">${escapeHtml(foundStatusLabel(f))}</span>
+        <span style="font-size: 11px; color: var(--adw-dim-label); white-space: nowrap;">${formatBytes(f.total_bytes)} · ${f.num_files} file${f.num_files === 1 ? '' : 's'}${f.source === 'download' ? ' · came with a download' : ''}</span>
+        <button class="btn btn-primary" style="padding: 2px 10px; font-size: 11px; white-space: nowrap;" onclick="addFoundTorrent('${f.info_hash}', this)">${foundActionLabel(f)}</button>
+        <button class="btn" style="padding: 2px 8px; font-size: 11px;" title="Do not offer this one again" onclick="dismissFoundTorrent('${f.info_hash}')">Hide</button>
+      </div>`).join('');
+  }
+  host.innerHTML = `
+    <div class="found-panel">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="font-size: 12.5px;">📥 <strong>${escapeHtml(summary)}</strong></span>
+        <span style="flex: 1;"></span>
+        <button class="btn" style="padding: 2px 10px; font-size: 11.5px;" onclick="toggleFoundPanel()">${foundPanelOpen ? 'Hide' : 'Show'}</button>
+      </div>
+      ${rows}
+    </div>`;
+}
+
+async function addFoundTorrent(hash, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Starting...'; }
+  try {
+    const res = await fetch(`/api/found-torrents/${hash}/add`, { method: 'POST' });
+    const data = await res.json();
+    if (res.ok && data.status === 'ok') {
+      showToast('Added. Its files are being checked before it starts.', 'accent', 4000);
+      foundTorrents = foundTorrents.filter(f => f.info_hash !== hash);
+      renderFoundPanel();
+      fetchTorrents();
+    } else {
+      if (btn) { btn.disabled = false; btn.textContent = 'Retry'; }
+      showToast(`Could not add it: ${data.error || 'unknown error'}`, 'error', 6000);
+    }
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Retry'; }
+    showToast(`Could not add it: ${err.message}`, 'error', 6000);
+  }
+}
+
+async function dismissFoundTorrent(hash) {
+  try {
+    await fetch(`/api/found-torrents/${hash}/dismiss`, { method: 'POST' });
+  } catch (err) { /* it comes back on the next poll */ }
+  foundTorrents = foundTorrents.filter(f => f.info_hash !== hash);
+  renderFoundPanel();
+}
+
 // The health endpoint answers even when the engine is stuck, which is exactly when the interface
 // needs to say so: the rest of the app then quietly stops updating.
 let lastHealth = { panics: 0, stalled_seconds: 0 };
@@ -4711,8 +4840,11 @@ function formatDuration(seconds) {
 
 window.addEventListener('DOMContentLoaded', () => {
   initEventStream();
+  restoreListMode();
   pollHealth();
   setInterval(pollHealth, 10000);
+  pollFoundTorrents();
+  setInterval(pollFoundTorrents, 60000);
   // Immediate initial load so UI populates instantly without waiting for SSE tick
   fetch('/api/torrents').then(r => r.json()).then(data => {
     if (data && Array.isArray(data)) {

@@ -213,8 +213,18 @@ func main() {
 			}
 			return
 		}
-		log.Printf("Digwire is already running in another process. Exiting duplicate instance.\n")
-		return
+		// The lock is held by something that does not answer: a frozen or half-dead instance.
+		// Take it over rather than leaving the user without their downloads.
+		log.Printf("Digwire holds the instance lock but does not respond; taking over...\n")
+		takenOver, pid, err := TakeOverLock(lockPath, 8*time.Second)
+		if err != nil {
+			log.Printf("Could not take over from the running Digwire (pid %d): %v\n", pid, err)
+			return
+		}
+		if pid > 0 {
+			log.Printf("Replaced the unresponsive Digwire instance (pid %d).\n", pid)
+		}
+		appLock = takenOver
 	}
 	defer appLock.Release()
 

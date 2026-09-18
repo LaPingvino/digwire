@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -45,6 +46,12 @@ func AcquireAppLock(lockPath string) (*AppLock, error) {
 		return nil, fmt.Errorf("instance lock already held: %w", err)
 	}
 	return &AppLock{file: f}, nil
+}
+
+// TakeOverLock is not supported on Windows yet: the lock is released when the holder exits.
+func TakeOverLock(lockPath string, wait time.Duration) (*AppLock, int, error) {
+	lock, err := AcquireAppLock(lockPath)
+	return lock, 0, err
 }
 
 func (al *AppLock) Release() {

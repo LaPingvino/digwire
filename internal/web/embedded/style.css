@@ -1288,3 +1288,93 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 }
 
 
+
+/* Compact list: one line per torrent, for long lists */
+.torrent-list.compact {
+  gap: 2px;
+}
+
+.torrent-list.compact .torrent-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-areas: "header progress actions";
+  align-items: center;
+  gap: 10px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.torrent-list.compact .card-header {
+  grid-area: header;
+  min-width: 0;
+}
+
+.torrent-list.compact .torrent-title {
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.torrent-list.compact .progress-bar-container {
+  grid-area: progress;
+  width: 110px;
+  height: 5px;
+  margin: 0;
+}
+
+.torrent-list.compact .card-footer {
+  display: contents;
+}
+
+.torrent-list.compact .card-actions {
+  grid-area: actions;
+}
+
+.torrent-list.compact .card-thumbnail,
+.torrent-list.compact .torrent-meta,
+.torrent-list.compact .swarm-suggestion-banner {
+  display: none;
+}
+
+/* Found torrents: offered, never started on their own */
+.found-panel {
+  border: 1px solid var(--adw-border);
+  border-radius: var(--adw-radius);
+  background-color: var(--adw-card-bg);
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
+.found-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-top: 1px solid var(--adw-border);
+}
+
+.found-row:first-of-type {
+  border-top: none;
+}
+
+.found-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12.5px;
+}
+
+.found-status {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 9999px;
+  white-space: nowrap;
+}
+
+.found-status.complete { background: rgba(51, 209, 122, 0.18); color: #33d17a; }
+.found-status.partial { background: rgba(229, 165, 10, 0.18); color: #e5a50a; }
+.found-status.missing { background: rgba(154, 153, 150, 0.18); color: var(--adw-dim-label); }

@@ -14,7 +14,9 @@ import (
 	"github.com/anacrolix/torrent/metainfo"
 )
 
-func TestSessionAutoRecoveryFromCache(t *testing.T) {
+// A lost session must not turn Digwire's metadata cache into the user's torrent list: those
+// torrents are offered as found instead, with what of them is on disk.
+func TestLostSessionOffersCachedTorrentsInsteadOfStartingThem(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "digwire_session_rec_*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
@@ -59,7 +61,6 @@ func TestSessionAutoRecoveryFromCache(t *testing.T) {
 	sessionPath := filepath.Join(tempDir, "session.json")
 	_ = os.WriteFile(sessionPath, []byte(""), 0644)
 
-	// Start engine - it should auto-recover the torrent from cache!
 	eng, err := NewEngine(cfg)
 	if err != nil {
 		t.Fatalf("failed to create engine: %v", err)
@@ -68,20 +69,22 @@ func TestSessionAutoRecoveryFromCache(t *testing.T) {
 
 	eng.WaitForSession(5 * time.Second)
 
-	torrents := eng.GetTorrents()
-	if len(torrents) == 0 {
-		t.Fatalf("expected auto-recovery to load at least 1 torrent from cache, got 0")
+	if torrents := eng.GetTorrents(); len(torrents) != 0 {
+		t.Fatalf("cached metadata was started as %d torrent(s) without being asked", len(torrents))
 	}
 
-	found := false
-	for _, tor := range torrents {
-		if strings.EqualFold(tor.InfoHash, hash) {
-			found = true
-			break
+	var offered *FoundTorrent
+	for _, f := range eng.FoundTorrents() {
+		if strings.EqualFold(f.InfoHash, hash) {
+			entry := f
+			offered = &entry
 		}
 	}
-	if !found {
-		t.Fatalf("expected recovered torrent with hash %s in torrent list", hash)
+	if offered == nil {
+		t.Fatalf("cached torrent %s is not offered as found", hash)
+	}
+	if offered.Status != "complete" {
+		t.Fatalf("found torrent status %q, want complete: its file is on disk", offered.Status)
 	}
 
 	// Verify that saveSessionLocked writes atomic .tmp and backup .bak

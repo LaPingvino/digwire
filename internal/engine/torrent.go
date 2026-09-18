@@ -122,6 +122,8 @@ type SessionState struct {
 	HTTPTasks   []SavedHTTPTask   `json:"http_tasks,omitempty"`
 	MediaTasks  []SavedMediaTask  `json:"media_tasks,omitempty"`
 	FolderTasks []SavedFolderTask `json:"folder_tasks,omitempty"`
+	// DismissedFound are found torrents the user chose not to see offered again.
+	DismissedFound map[string]int64 `json:"dismissed_found,omitempty"`
 }
 
 type TorrentStatus struct {
@@ -316,6 +318,7 @@ type Engine struct {
 	verifySem                chan struct{}
 	sessionLoaded            chan struct{}
 	health                   *Health
+	dismissedFound           map[string]int64
 	closeOnce                sync.Once
 }
 
@@ -859,7 +862,7 @@ func (e *Engine) saveSessionLocked() {
 		}
 	}
 
-	data, err := json.MarshalIndent(SessionState{Torrents: list, HTTPTasks: httpList, MediaTasks: mediaList, FolderTasks: folderList}, "", "  ")
+	data, err := json.MarshalIndent(SessionState{Torrents: list, HTTPTasks: httpList, MediaTasks: mediaList, FolderTasks: folderList, DismissedFound: e.dismissedFound}, "", "  ")
 	if err == nil && len(data) > 0 {
 		tmpPath := filePath + ".tmp"
 		bakPath := filePath + ".bak"
@@ -907,31 +910,11 @@ func (e *Engine) loadSession() {
 		}
 	}
 
-	// 2. If still no torrents in state, auto-recover from cached .torrent files in torrents cache directory!
-	if len(state.Torrents) == 0 {
-		cacheDir := e.getTorrentsCacheDir()
-		if entries, err := os.ReadDir(cacheDir); err == nil {
-			for _, entry := range entries {
-				if !entry.IsDir() && strings.HasSuffix(strings.ToLower(entry.Name()), ".torrent") {
-					tPath := filepath.Join(cacheDir, entry.Name())
-					if mi, err := metainfo.LoadFromFile(tPath); err == nil && mi != nil {
-						h := mi.HashInfoBytes().HexString()
-						if h != "" {
-							name := strings.TrimSuffix(entry.Name(), ".torrent")
-							if info, iErr := mi.UnmarshalInfo(); iErr == nil && info.BestName() != "" {
-								name = info.BestName()
-							}
-							state.Torrents = append(state.Torrents, SavedTorrent{
-								InfoHash:  h,
-								Name:      name,
-								MagnetURI: fmt.Sprintf("magnet:?xt=urn:btih:%s&dn=%s", h, url.QueryEscape(name)),
-								AddedAt:   time.Now().Unix(),
-							})
-						}
-					}
-				}
-			}
-		}
+	// Cached .torrent files are metadata, not the user's list: a torrent nobody added is offered
+	// through FoundTorrents instead of being started behind their back.
+	e.dismissedFound = state.DismissedFound
+	if e.dismissedFound == nil {
+		e.dismissedFound = make(map[string]int64)
 	}
 
 	mediaDestDirs := make(map[string]string)

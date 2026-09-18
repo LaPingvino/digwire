@@ -68,6 +68,12 @@
     
     <!-- Torrents List View -->
     <section id="view-torrents" role="tabpanel" aria-labelledby="tab-torrents">
+      <div id="found-panel-container"></div>
+      <div id="list-toolbar" style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+        <input id="torrent-filter" type="search" placeholder="Filter by name..." aria-label="Filter torrents by name"
+               oninput="setTorrentFilter(this.value)" style="flex: 1; min-width: 0; padding: 5px 10px; font-size: 12.5px; border-radius: 8px; border: 1px solid var(--adw-border); background: var(--adw-card-bg); color: inherit;">
+        <button class="btn" id="btn-list-mode" onclick="toggleListMode()" aria-label="Switch between cards and compact rows"></button>
+      </div>
       <div class="torrent-list" id="torrent-list-container" role="feed" aria-label="Torrent Transfers List">
         <!-- Rendered dynamically -->
       </div>
