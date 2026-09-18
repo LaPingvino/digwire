@@ -755,6 +755,7 @@ function createTorrentCardElement(t) {
     `;
   }
 
+  const actionsHtml = getCardActionsHtml(t);
   const div = document.createElement('div');
   div.className = 'torrent-card';
   div.dataset.hash = t.info_hash;
@@ -793,10 +794,12 @@ function createTorrentCardElement(t) {
     <div class="card-footer">
       <div class="torrent-meta">${metaString}</div>
       <div class="card-actions">
-        ${getCardActionsHtml(t)}
+        ${actionsHtml}
       </div>
     </div>
   `;
+  const actionsEl = div.querySelector('.card-actions');
+  if (actionsEl) actionsEl._renderedHtml = actionsHtml;
   return div;
 }
 
@@ -876,7 +879,9 @@ function updateTorrentCardElement(cardEl, t) {
   // Update card actions
   const actionsEl = cardEl.querySelector('.card-actions');
   const newActionsHtml = getCardActionsHtml(t);
-  if (actionsEl && actionsEl.innerHTML.replace(/\s+/g, ' ') !== newActionsHtml.replace(/\s+/g, ' ')) {
+  // Compare against what was rendered last time, not against the browser's own serialization of
+  // it: those never match exactly, so the buttons were rebuilt every second, losing focus.
+  if (actionsEl && actionsEl._renderedHtml !== newActionsHtml) {
     const activeEl = document.activeElement;
     let focusedBtnIdx = -1;
     if (activeEl && actionsEl.contains(activeEl)) {
@@ -884,10 +889,13 @@ function updateTorrentCardElement(cardEl, t) {
       focusedBtnIdx = btns.indexOf(activeEl);
     }
     actionsEl.innerHTML = newActionsHtml;
+    actionsEl._renderedHtml = newActionsHtml;
     if (focusedBtnIdx >= 0) {
       const newBtns = Array.from(actionsEl.querySelectorAll('button'));
       const targetBtn = newBtns[focusedBtnIdx] || newBtns[0];
-      if (targetBtn) targetBtn.focus();
+      // preventScroll: the list refreshes about once a second, and re-focusing normally scrolls
+      // the card back into view, dragging the list out from under anyone scrolling it.
+      if (targetBtn) targetBtn.focus({ preventScroll: true });
     }
   }
 }
@@ -979,11 +987,11 @@ function renderTorrents() {
       const targetCard = container.querySelector(`[data-hash="${focusedCardHash}"]`);
       if (targetCard) {
         if (focusedSubIndex === -1) {
-          targetCard.focus();
+          targetCard.focus({ preventScroll: true });
         } else {
           const btns = Array.from(targetCard.querySelectorAll('button'));
           const btn = btns[focusedSubIndex] || targetCard;
-          btn.focus();
+          btn.focus({ preventScroll: true });
         }
       }
     }
