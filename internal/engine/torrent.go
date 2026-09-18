@@ -314,6 +314,7 @@ type Engine struct {
 	stopMonitor              chan struct{}
 	verifySem                chan struct{}
 	sessionLoaded            chan struct{}
+	health                   *Health
 	closeOnce                sync.Once
 }
 
@@ -649,6 +650,7 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 		webSeedsMap:      make(map[string][]string),
 		savedTorrentsMap: make(map[string]SavedTorrent),
 		stopMonitor:      make(chan struct{}),
+		health:           newHealth(),
 		verifySem:        make(chan struct{}, 2),
 		sessionLoaded:    make(chan struct{}),
 	}
@@ -1387,6 +1389,7 @@ func (e *Engine) monitorLoop() {
 		case <-walTicker.C:
 			e.checkpointDatabases()
 		case now := <-ticker.C:
+			e.health.Tick()
 			e.mu.Lock()
 			torrents := e.client.Torrents()
 			for _, t := range torrents {

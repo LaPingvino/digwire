@@ -4657,8 +4657,54 @@ window.addEventListener('keydown', (e) => {
 });
 
 // Initialize on page load
+// The health endpoint answers even when the engine is stuck, which is exactly when the interface
+// needs to say so: the rest of the app then quietly stops updating.
+let lastHealth = { panics: 0, stalled_seconds: 0 };
+
+async function pollHealth() {
+  try {
+    const res = await fetch('/api/health', { cache: 'no-store' });
+    lastHealth = await res.json();
+  } catch (err) {
+    lastHealth = { ...lastHealth, unreachable: true };
+  }
+  renderHealthBanner();
+}
+
+function renderHealthBanner() {
+  const h = lastHealth || {};
+  const bar = document.getElementById('health-banner');
+  if (!bar) return;
+  const problems = [];
+  if (h.panics > 0) {
+    const what = h.last_panic ? `${h.last_panic.where}: ${h.last_panic.message}` : 'see the log';
+    problems.push(`${h.panics} internal error${h.panics === 1 ? '' : 's'} (${what})`);
+  }
+  if (h.stalled_seconds > 0) {
+    problems.push(`the engine has not responded for ${formatDuration(h.stalled_seconds)} — a restart is needed`);
+  }
+  if (problems.length === 0) {
+    bar.style.display = 'none';
+    bar.innerHTML = '';
+    return;
+  }
+  bar.style.display = 'block';
+  bar.innerHTML = `<div style="background: rgba(237, 51, 59, 0.14); border: 1px solid rgba(237, 51, 59, 0.5); color: #ed333b; border-radius: 10px; padding: 8px 12px; margin-bottom: 10px; font-size: 12px;">
+      <strong>⚠️ Something is going wrong.</strong> ${escapeHtml(problems.join(' · '))}.
+      <span style="color: var(--adw-dim-label);">The full details are in the log: ~/.cache/digwire/digwire.log</span>
+    </div>`;
+}
+
+function formatDuration(seconds) {
+  if (seconds < 90) return `${Math.round(seconds)}s`;
+  if (seconds < 5400) return `${Math.round(seconds / 60)} min`;
+  return `${Math.round(seconds / 3600)} h`;
+}
+
 window.addEventListener('DOMContentLoaded', () => {
   initEventStream();
+  pollHealth();
+  setInterval(pollHealth, 10000);
   // Immediate initial load so UI populates instantly without waiting for SSE tick
   fetch('/api/torrents').then(r => r.json()).then(data => {
     if (data && Array.isArray(data)) {

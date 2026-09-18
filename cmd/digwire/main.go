@@ -218,6 +218,9 @@ func main() {
 	}
 	defer appLock.Release()
 
+	if logFile := setupLogFile(); logFile != nil {
+		defer logFile.Close()
+	}
 	log.Println("⚡ Starting Digwire BitTorrent Client...")
 	registerMimeTypes()
 

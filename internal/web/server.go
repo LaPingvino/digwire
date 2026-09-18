@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -69,6 +70,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/torrents/{hash}/webseeds", s.handleAddWebSeed)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/upgrade-to-swarm", s.handleUpgradeToSwarm)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/upgrade-v2", s.handleUpgradeToBEP52)
+	s.mux.HandleFunc("GET /api/health", s.handleHealth)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/find-swarm", s.handleTriggerFindSwarm)
 	s.mux.HandleFunc("GET /api/torrents/{hash}/alternate-swarms", s.handleFindAlternateSwarms)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/alternate-swarms/{alt}/attach", s.handleAttachAlternateSwarm)
@@ -598,6 +600,38 @@ func (s *Server) handleUpgradeToSwarm(w http.ResponseWriter, r *http.Request) {
 		"status":    "ok",
 		"info_hash": t.InfoHash().HexString(),
 	})
+}
+
+// recoverPanics keeps a failing request from taking the process with it, and makes sure it is
+// counted and logged with its stack instead of vanishing into the http package's own recovery.
+// The interface shows the count, since a panic from inside the torrent client can leave its lock
+// held, and from then on only a restart helps.
+func (s *Server) recoverPanics(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				if s.engine != nil {
+					s.engine.Health().RecordPanic(r.Method+" "+r.URL.Path, rec, debug.Stack())
+				}
+				defer func() { _ = recover() }() // The response may already be on its way out.
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "internal error; see the Digwire log"})
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// handleHealth answers without touching the engine's lock, so it still reports when the engine is
+// stuck holding it.
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	var rep engine.HealthReport
+	if s.engine != nil {
+		rep = s.engine.Health().Report()
+	}
+	_ = json.NewEncoder(w).Encode(rep)
 }
 
 func (s *Server) handleUpgradeToBEP52(w http.ResponseWriter, r *http.Request) {
@@ -1143,7 +1177,7 @@ func (s *Server) Start() error {
 	addr := fmt.Sprintf("0.0.0.0:%d", s.cfg.WebPort)
 	s.server = &http.Server{
 		Addr:    addr,
-		Handler: s.mux,
+		Handler: s.recoverPanics(s.mux),
 	}
 	return s.server.ListenAndServe()
 }
