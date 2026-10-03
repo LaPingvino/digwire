@@ -10,6 +10,11 @@ on:
         description: 'Tag name (e.g. v0.1.0)'
         required: false
         default: ''
+      publish:
+        description: 'Create/update the GitHub release (otherwise build artifacts only)'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write
@@ -28,7 +33,8 @@ jobs:
             goarch: amd64
             ext: ''
             archive_type: tar.gz
-          - os: ubuntu-latest
+          # native arm64 runner, so the AppImage can be built for aarch64
+          - os: ubuntu-24.04-arm
             goos: linux
             goarch: arm64
             ext: ''
@@ -126,20 +132,47 @@ jobs:
           fi
 
       - name: Build Windows Setup Installer (NSIS)
-        if: matrix.goos == 'windows' && matrix.goarch == 'amd64'
+        if: matrix.goos == 'windows'
         shell: bash
         run: |
           sudo apt-get update && sudo apt-get install -y nsis
           TAG="${{ steps.vars.outputs.tag }}"
           CLEAN_TAG="${{ steps.vars.outputs.clean_tag }}"
-          
+          # the x64 installer keeps its name; arm64 gets its own
+          SUFFIX=""
+          if [ "${{ matrix.goarch }}" != "amd64" ]; then SUFFIX="-${{ matrix.goarch }}"; fi
+
           mkdir -p release_out
           makensis -DPRODUCT_VERSION="${CLEAN_TAG}" \
                    -DSOURCE_DIR="${GITHUB_WORKSPACE}/dist_pkg" \
                    -DICON_PATH="${GITHUB_WORKSPACE}/assets/digwire.ico" \
-                   -DOUTFILE="${GITHUB_WORKSPACE}/release_out/Digwire-${TAG}-Setup.exe" \
+                   -DOUTFILE="${GITHUB_WORKSPACE}/release_out/Digwire-${TAG}${SUFFIX}-Setup.exe" \
                    scripts/installer.nsi
           ls -lh release_out/
+
+      - name: Build AppImage, .deb and .rpm (Linux)
+        if: matrix.goos == 'linux' && (matrix.goarch == 'amd64' || matrix.goarch == 'arm64')
+        shell: bash
+        run: |
+          sudo apt-get update && sudo apt-get install -y libfuse2 || true
+          TAG="${{ steps.vars.outputs.tag }}"
+          mkdir -p release_out build/linux
+          cp dist_pkg/digwire build/linux/digwire
+          packaging/build-appimage.sh build/linux/digwire "$TAG" release_out
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          for format in deb rpm; do
+            VERSION="${{ steps.vars.outputs.clean_tag }}" ARCH="${{ matrix.goarch }}" \
+              "$(go env GOPATH)/bin/nfpm" package -f packaging/nfpm.yaml -p "$format" -t release_out/
+          done
+          ls -lh release_out/
+
+      - name: Build Digwire.app (macOS)
+        if: matrix.goos == 'darwin'
+        shell: bash
+        run: |
+          TAG="${{ steps.vars.outputs.tag }}"
+          packaging/build-macos-app.sh dist_pkg/digwire "${{ steps.vars.outputs.clean_tag }}" \
+            "release_out/digwire-${TAG}-macos-${{ matrix.goarch }}-app.zip"
 
       - name: Package Archive
         id: pack
@@ -173,6 +206,8 @@ jobs:
   publish:
     name: Create GitHub Release
     needs: build
+    # tag pushes publish; a manual run only when asked to
+    if: github.ref_type == 'tag' || inputs.publish
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
