@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"log"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"sync/atomic"
@@ -12,10 +13,12 @@ import (
 // Health reports whether the engine is still working. Nothing here takes the engine lock: its
 // whole point is to answer while the engine is stuck holding it.
 type Health struct {
-	panics    atomic.Int64
-	lastPanic atomic.Pointer[PanicRecord]
-	lastTick  atomic.Int64 // Unix seconds of the last monitor loop pass.
-	started   atomic.Int64
+	panics       atomic.Int64
+	lastPanic    atomic.Pointer[PanicRecord]
+	lastTick     atomic.Int64 // Unix seconds of the last monitor loop pass.
+	started      atomic.Int64
+	shuttingDown atomic.Bool
+	lastDump     atomic.Int64
 }
 
 // PanicRecord is one internal failure, kept for the interface to show and the log to explain.
@@ -30,11 +33,17 @@ type HealthReport struct {
 	Panics         int64        `json:"panics"`
 	LastPanic      *PanicRecord `json:"last_panic,omitempty"`
 	StalledSeconds int64        `json:"stalled_seconds"`
+	ShuttingDown   bool         `json:"shutting_down,omitempty"`
 }
 
-// engineStallSeconds is how long the once-a-second monitor loop may miss before the engine counts
-// as stuck. Verification and hashing keep it waiting on the lock, so this is generous.
-const engineStallSeconds = 45
+const (
+	// engineStallSeconds is how long the once-a-second monitor loop may miss before the engine
+	// counts as stuck. Verification and hashing keep it waiting on the lock, so this is generous.
+	engineStallSeconds = 45
+	// minDumpInterval keeps a stuck engine from filling the log with stack dumps.
+	minDumpInterval = 5 * time.Minute
+	maxDumpBytes    = 4 << 20
+)
 
 func newHealth() *Health {
 	h := &Health{}
@@ -67,12 +76,65 @@ func (h *Health) Report() HealthReport {
 	if h == nil {
 		return HealthReport{}
 	}
-	rep := HealthReport{Panics: h.panics.Load(), LastPanic: h.lastPanic.Load()}
+	rep := HealthReport{Panics: h.panics.Load(), LastPanic: h.lastPanic.Load(), ShuttingDown: h.shuttingDown.Load()}
 	// A torrent client that never started ticking is not stalled, it is young.
 	if since := time.Now().Unix() - h.lastTick.Load(); since > engineStallSeconds {
 		rep.StalledSeconds = since
 	}
 	return rep
+}
+
+// DumpGoroutines writes every goroutine's stack to the log. It is what explains a freeze: the
+// stacks name whoever holds the lock everything else is waiting for. Writing them to the log
+// matters because a desktop launcher throws stderr away, where a SIGQUIT dump would go.
+func (h *Health) DumpGoroutines(reason string) {
+	if h == nil {
+		return
+	}
+	now := time.Now()
+	if last := h.lastDump.Load(); last != 0 && now.Sub(time.Unix(last, 0)) < minDumpInterval {
+		return
+	}
+	h.lastDump.Store(now.Unix())
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) || len(buf) >= maxDumpBytes {
+			buf = buf[:n]
+			break
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+	log.Printf("🧵 Goroutine dump (%s), %d goroutines:\n%s", reason, runtime.NumGoroutine(), buf)
+}
+
+// BeginShutdown marks the engine as on its way out, so a monitor loop that has stopped ticking is
+// not reported as a failure.
+func (h *Health) BeginShutdown() {
+	if h != nil {
+		h.shuttingDown.Store(true)
+	}
+}
+
+// watchForStall dumps the stacks once the monitor loop stops coming around, so the next freeze
+// explains itself instead of leaving only a frozen window.
+func (e *Engine) watchForStall() {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-e.stopMonitor:
+			return
+		case <-ticker.C:
+			h := e.Health()
+			if h == nil || h.shuttingDown.Load() {
+				continue
+			}
+			if rep := h.Report(); rep.StalledSeconds > 0 {
+				h.DumpGoroutines(fmt.Sprintf("engine has not ticked for %ds", rep.StalledSeconds))
+			}
+		}
+	}
 }
 
 // Health gives access to the engine's failure counters.

@@ -666,6 +666,7 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 	close(e.sessionLoaded)
 
 	go e.monitorLoop()
+	go e.watchForStall()
 	return e, nil
 }
 
@@ -5005,6 +5006,7 @@ func (e *Engine) WriteClientStatus(w io.Writer) {
 
 func (e *Engine) Close() {
 	e.closeOnce.Do(func() {
+		e.health.BeginShutdown()
 		e.mu.Lock()
 		e.saveSessionLocked()
 		e.mu.Unlock()

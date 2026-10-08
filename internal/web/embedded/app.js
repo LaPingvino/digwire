@@ -4817,8 +4817,8 @@ function renderHealthBanner() {
     const what = h.last_panic ? `${h.last_panic.where}: ${h.last_panic.message}` : 'see the log';
     problems.push(`${h.panics} internal error${h.panics === 1 ? '' : 's'} (${what})`);
   }
-  if (h.stalled_seconds > 0) {
-    problems.push(`the engine has not responded for ${formatDuration(h.stalled_seconds)} — a restart is needed`);
+  if (h.stalled_seconds > 0 && !h.shutting_down) {
+    problems.push(`the engine has not responded for ${formatDuration(h.stalled_seconds)} — a restart is needed. Its stacks are in the log`);
   }
   if (problems.length === 0) {
     bar.style.display = 'none';

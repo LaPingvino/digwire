@@ -1,7 +1,11 @@
 package engine
 
 import (
+	"bytes"
+	"log"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -60,5 +64,35 @@ func TestHealthReportsStalledEngine(t *testing.T) {
 	eng.Health().Tick()
 	if rep := eng.Health().Report(); rep.StalledSeconds != 0 {
 		t.Fatalf("engine still reported stalled after a tick: %+v", rep)
+	}
+}
+
+// A freeze must explain itself: the watchdog writes the stacks to the log once the monitor loop
+// stops coming around, and says nothing while the engine is simply shutting down.
+func TestStallWatchdogDumpsOnce(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	h := newHealth()
+	h.SetLastTickForTest(time.Now().Add(-5 * time.Minute))
+	if rep := h.Report(); rep.StalledSeconds < 240 {
+		t.Fatalf("stalled engine reported %ds", rep.StalledSeconds)
+	}
+	h.DumpGoroutines("test")
+	if !strings.Contains(buf.String(), "Goroutine dump (test)") || !strings.Contains(buf.String(), "TestStallWatchdogDumpsOnce") {
+		t.Fatalf("dump missing from the log: %q", buf.String()[:min(len(buf.String()), 200)])
+	}
+
+	// A second dump right away would only flood the log.
+	buf.Reset()
+	h.DumpGoroutines("again")
+	if buf.Len() != 0 {
+		t.Fatalf("dumped twice in a row: %q", buf.String())
+	}
+
+	h.BeginShutdown()
+	if rep := h.Report(); !rep.ShuttingDown {
+		t.Fatal("report does not say the engine is shutting down")
 	}
 }

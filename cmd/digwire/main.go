@@ -302,6 +302,15 @@ func main() {
 		}()
 	}
 
+	// SIGUSR1 writes every goroutine's stack to the log, for looking inside a sluggish instance.
+	dumpChan := make(chan os.Signal, 1)
+	signal.Notify(dumpChan, syscall.SIGUSR1)
+	go func() {
+		for range dumpChan {
+			eng.Health().DumpGoroutines("asked for by signal")
+		}
+	}()
+
 	// Graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -309,6 +318,19 @@ func main() {
 	<-sigChan
 	log.Println("\n🛑 Shutting down Digwire...")
 	_ = srv.Close()
-	eng.Close()
-	log.Println("Bye!")
+
+	// Quitting must not hang: if the engine cannot finish, say what it is waiting on and go.
+	closed := make(chan struct{})
+	go func() {
+		eng.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+		log.Println("Bye!")
+	case <-time.After(20 * time.Second):
+		eng.Health().DumpGoroutines("shutdown did not finish within 20s")
+		log.Println("Shutdown is stuck; quitting anyway. The stacks above say what it was waiting on.")
+		os.Exit(1)
+	}
 }
