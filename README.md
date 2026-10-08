@@ -2,6 +2,10 @@
 
 > Modern, lightweight BitTorrent & Hybrid Multi-Source client written in Go with a native GNOME Libadwaita / Fragments look and feel.
 
+> **This repository is Digwire's source code.** The `PKGBUILD` in the root builds the Arch package
+> from it; the application itself lives in `cmd/digwire` and `internal/`. See `CLAUDE.md` for the
+> build, test and install workflow.
+
 ---
 
 ## ✨ Features
