@@ -303,13 +303,15 @@ func main() {
 	}
 
 	// SIGUSR1 writes every goroutine's stack to the log, for looking inside a sluggish instance.
-	dumpChan := make(chan os.Signal, 1)
-	signal.Notify(dumpChan, syscall.SIGUSR1)
-	go func() {
-		for range dumpChan {
-			eng.Health().DumpGoroutines("asked for by signal")
-		}
-	}()
+	if sigs := dumpSignals(); len(sigs) > 0 {
+		dumpChan := make(chan os.Signal, 1)
+		signal.Notify(dumpChan, sigs...)
+		go func() {
+			for range dumpChan {
+				eng.Health().DumpGoroutines("asked for by signal")
+			}
+		}()
+	}
 
 	// Graceful shutdown
 	sigChan := make(chan os.Signal, 1)
