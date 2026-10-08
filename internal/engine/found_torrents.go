@@ -12,9 +12,9 @@ import (
 	"github.com/anacrolix/torrent/metainfo"
 )
 
-// FoundTorrent is a .torrent Digwire knows of but the user never added: metadata left over from a
-// search or a swarm probe, or a file that came along inside a download. It is only ever offered,
-// never started on its own.
+// FoundTorrent is a .torrent the user never added but which concerns them: one that came along
+// inside a download, or kept metadata whose data turns out to be on their disk. It is only ever
+// offered, never started on its own.
 type FoundTorrent struct {
 	InfoHash        string `json:"info_hash"`
 	Name            string `json:"name"`
@@ -94,6 +94,12 @@ func (e *Engine) FoundTorrents() []FoundTorrent {
 			entry.Status = "partial"
 		default:
 			entry.Status = "missing"
+		}
+		// Kept metadata is Digwire's own bookkeeping: everything a search or a swarm probe ever
+		// resolved, which is not a list of anything the user wants. Only offer it when its data is
+		// actually on their disk. A .torrent that came with a download is always worth showing.
+		if source == "cache" && entry.Status == "missing" {
+			return
 		}
 		found = append(found, entry)
 	}

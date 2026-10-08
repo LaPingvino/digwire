@@ -52,6 +52,16 @@ func TestFoundTorrentsAreOfferedNotStarted(t *testing.T) {
 		t.Fatal("a found torrent was started without being asked")
 	}
 
+	// Metadata Digwire kept from a search is not a list of the user's business: a cached torrent
+	// whose data is nowhere on disk must not be offered.
+	cached := v1MetaInfo(t, elsewhere, "Something A Search Turned Up", testPieceLen)
+	writeMetaInfoFile(t, filepath.Join(eng.getTorrentsCacheDir(), strings.ToLower(cached.HashInfoBytes().HexString())+".torrent"), cached)
+	for _, f := range eng.FoundTorrents() {
+		if f.Name == "Something A Search Turned Up" {
+			t.Fatal("cached search metadata with no local data is offered as found")
+		}
+	}
+
 	// Adding one is an explicit act, and then it is no longer offered.
 	hash, err := eng.AddFoundTorrent(byName["Some Release"].InfoHash)
 	if err != nil {
