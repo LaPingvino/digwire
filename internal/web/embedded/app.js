@@ -4726,6 +4726,7 @@ function foundActionLabel(f) {
 function foundStatusLabel(f) {
   if (f.status === 'complete') return 'all files on disk';
   if (f.status === 'partial') return `${formatBytes(f.local_bytes)} of ${formatBytes(f.total_bytes)} on disk`;
+  if (f.leftover) return 'made here, files gone';
   return 'nothing downloaded yet';
 }
 
@@ -4743,7 +4744,8 @@ function renderFoundPanel() {
     return;
   }
   const ready = list.filter(f => f.status !== 'missing').length;
-  const summary = `${list.length} torrent${list.length === 1 ? '' : 's'} found that you have not added${ready > 0 ? `, ${ready} with data already on disk` : ''}`;
+  const leftovers = list.filter(f => f.leftover).length;
+  const summary = `${list.length} torrent${list.length === 1 ? '' : 's'} found that you have not added${ready > 0 ? `, ${ready} with data already on disk` : ''}${leftovers > 0 ? `, ${leftovers} left over from downloads that are gone` : ''}`;
   let rows = '';
   if (foundPanelOpen) {
     rows = list.map(f => `
@@ -4752,6 +4754,7 @@ function renderFoundPanel() {
         <span class="found-status ${f.status}">${escapeHtml(foundStatusLabel(f))}</span>
         <span style="font-size: 11px; color: var(--adw-dim-label); white-space: nowrap;">${formatBytes(f.total_bytes)} · ${f.num_files} file${f.num_files === 1 ? '' : 's'}${f.source === 'download' ? ' · came with a download' : ''}</span>
         <button class="btn btn-primary" style="padding: 2px 10px; font-size: 11px; white-space: nowrap;" onclick="addFoundTorrent('${f.info_hash}', this)">${foundActionLabel(f)}</button>
+        ${f.leftover ? `<button class="btn" style="padding: 2px 8px; font-size: 11px;" title="Delete this .torrent file: Digwire made it and its files are gone, so there is nothing to seed and nobody to get it from" onclick="deleteFoundTorrentFile('${f.info_hash}')">Delete file</button>` : ''}
         <button class="btn" style="padding: 2px 8px; font-size: 11px;" title="Do not offer this one again" onclick="dismissFoundTorrent('${f.info_hash}')">Hide</button>
       </div>`).join('');
   }
@@ -4760,6 +4763,7 @@ function renderFoundPanel() {
       <div style="display: flex; align-items: center; gap: 8px;">
         <span style="font-size: 12.5px;">📥 <strong>${escapeHtml(summary)}</strong></span>
         <span style="flex: 1;"></span>
+        ${leftovers > 0 ? `<button class="btn" style="padding: 2px 10px; font-size: 11.5px;" title="Delete the .torrent files Digwire made for downloads whose files are gone" onclick="cleanupFoundTorrents(this)">Clean up ${leftovers}</button>` : ''}
         <button class="btn" style="padding: 2px 10px; font-size: 11.5px;" onclick="toggleFoundPanel()">${foundPanelOpen ? 'Hide' : 'Show'}</button>
       </div>
       ${rows}
@@ -4784,6 +4788,30 @@ async function addFoundTorrent(hash, btn) {
     if (btn) { btn.disabled = false; btn.textContent = 'Retry'; }
     showToast(`Could not add it: ${err.message}`, 'error', 6000);
   }
+}
+
+async function deleteFoundTorrentFile(hash) {
+  try {
+    const res = await fetch(`/api/found-torrents/${hash}/delete-file`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || 'unknown error');
+    foundTorrents = foundTorrents.filter(f => f.info_hash !== hash);
+    renderFoundPanel();
+  } catch (err) {
+    showToast(`Could not delete the file: ${err.message}`, 'error', 6000);
+  }
+}
+
+async function cleanupFoundTorrents(btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Cleaning...'; }
+  try {
+    const res = await fetch('/api/found-torrents/cleanup', { method: 'POST' });
+    const data = await res.json();
+    showToast(`Deleted ${data.removed} leftover .torrent file${data.removed === 1 ? '' : 's'}.`, 'accent', 4000);
+  } catch (err) {
+    showToast(`Cleaning up failed: ${err.message}`, 'error', 6000);
+  }
+  pollFoundTorrents();
 }
 
 async function dismissFoundTorrent(hash) {

@@ -95,3 +95,53 @@ func TestFoundTorrentsAreOfferedNotStarted(t *testing.T) {
 		t.Fatal("restoring did not bring the dismissed torrent back")
 	}
 }
+
+// A torrent Digwire made for a download whose files are gone is junk: nothing to seed, nobody to
+// get it from. It is marked as such and can be deleted.
+func TestLeftoverTorrentsCanBeCleanedUp(t *testing.T) {
+	eng, downloadDir := newTestEngine(t)
+	source := filepath.Join(t.TempDir(), "Gone Album")
+	writeRandomFile(t, filepath.Join(source, "track.flac"), 5*testPieceLen)
+	mi, err := BuildBEP52MetaInfo(source, true, "Created by Digwire from Soulseek", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leftoverPath := filepath.Join(downloadDir, "Gone Album.torrent")
+	writeMetaInfoFile(t, leftoverPath, mi)
+
+	// One that came from elsewhere, also without data: not ours to delete.
+	theirs := filepath.Join(t.TempDir(), "Someone Elses")
+	writeRandomFile(t, filepath.Join(theirs, "film.mkv"), 4*testPieceLen)
+	writeMetaInfoFile(t, filepath.Join(downloadDir, "theirs.torrent"), v1MetaInfo(t, theirs, "Someone Elses", testPieceLen))
+
+	var leftover, other *FoundTorrent
+	for _, f := range eng.FoundTorrents() {
+		entry := f
+		if entry.Name == "Gone Album" {
+			leftover = &entry
+		}
+		if entry.Name == "Someone Elses" {
+			other = &entry
+		}
+	}
+	if leftover == nil || !leftover.MadeHere || !leftover.Leftover {
+		t.Fatalf("our own leftover not recognised: %+v", leftover)
+	}
+	if other == nil || other.MadeHere || other.Leftover {
+		t.Fatalf("a torrent from elsewhere was called a leftover: %+v", other)
+	}
+
+	removed, err := eng.DeleteLeftoverTorrentFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed %d files, want 1", removed)
+	}
+	if _, err := os.Stat(leftoverPath); !os.IsNotExist(err) {
+		t.Fatalf("leftover file still there (err=%v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(downloadDir, "theirs.torrent")); err != nil {
+		t.Fatalf("someone else's torrent file was deleted: %v", err)
+	}
+}

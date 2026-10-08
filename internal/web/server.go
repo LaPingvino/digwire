@@ -75,6 +75,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/found-torrents/{hash}/add", s.handleAddFoundTorrent)
 	s.mux.HandleFunc("POST /api/found-torrents/{hash}/dismiss", s.handleDismissFoundTorrent)
 	s.mux.HandleFunc("POST /api/found-torrents/restore", s.handleRestoreFoundTorrents)
+	s.mux.HandleFunc("POST /api/found-torrents/{hash}/delete-file", s.handleDeleteFoundTorrentFile)
+	s.mux.HandleFunc("POST /api/found-torrents/cleanup", s.handleCleanupFoundTorrents)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/find-swarm", s.handleTriggerFindSwarm)
 	s.mux.HandleFunc("GET /api/torrents/{hash}/alternate-swarms", s.handleFindAlternateSwarms)
 	s.mux.HandleFunc("POST /api/torrents/{hash}/alternate-swarms/{alt}/attach", s.handleAttachAlternateSwarm)
@@ -653,6 +655,26 @@ func (s *Server) handleDismissFoundTorrent(w http.ResponseWriter, r *http.Reques
 	w.Header().Set("Content-Type", "application/json")
 	s.engine.DismissFoundTorrent(r.PathValue("hash"))
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleDeleteFoundTorrentFile(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if err := s.engine.DeleteFoundTorrentFile(r.PathValue("hash")); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleCleanupFoundTorrents(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	removed, err := s.engine.DeleteLeftoverTorrentFiles()
+	resp := map[string]any{"status": "ok", "removed": removed}
+	if err != nil {
+		resp["error"] = err.Error()
+	}
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (s *Server) handleRestoreFoundTorrents(w http.ResponseWriter, r *http.Request) {

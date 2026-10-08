@@ -28,6 +28,11 @@ type FoundTorrent struct {
 	Source  string `json:"source"`
 	Path    string `json:"path"`
 	FoundAt int64  `json:"found_at"`
+	// MadeHere marks a torrent Digwire itself created, e.g. from a Soulseek or media download.
+	MadeHere bool `json:"made_here"`
+	// Leftover is one of those whose files are gone: nothing to seed and nobody to get it from,
+	// so the .torrent is only clutter.
+	Leftover bool `json:"leftover"`
 }
 
 const (
@@ -75,6 +80,7 @@ func (e *Engine) FoundTorrents() []FoundTorrent {
 		}
 		seen[hash] = true
 		entry := FoundTorrent{
+			MadeHere:        madeHere(mi),
 			InfoHash:        hash,
 			Name:            info.BestName(),
 			TotalBytes:      info.TotalLength(),
@@ -101,6 +107,7 @@ func (e *Engine) FoundTorrents() []FoundTorrent {
 		if source == "cache" && entry.Status == "missing" {
 			return
 		}
+		entry.Leftover = entry.MadeHere && entry.Status == "missing"
 		found = append(found, entry)
 	}
 
@@ -142,6 +149,46 @@ func (e *Engine) FoundTorrents() []FoundTorrent {
 		return found[i].TotalBytes > found[j].TotalBytes
 	})
 	return found
+}
+
+// madeHere reports whether Digwire created this torrent itself, which it records in the metadata.
+func madeHere(mi *metainfo.MetaInfo) bool {
+	return strings.Contains(strings.ToLower(mi.CreatedBy+" "+mi.Comment), "digwire")
+}
+
+// DeleteFoundTorrentFile removes a found .torrent file from disk. Only files this listing offered
+// are touched, and only when the user asks: it is their folder.
+func (e *Engine) DeleteFoundTorrentFile(infoHashHex string) error {
+	hash := strings.ToLower(strings.TrimSpace(infoHashHex))
+	for _, f := range e.FoundTorrents() {
+		if f.InfoHash == hash {
+			if err := os.Remove(f.Path); err != nil {
+				return fmt.Errorf("removing %s: %w", filepath.Base(f.Path), err)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("no torrent file found for %s", infoHashHex)
+}
+
+// DeleteLeftoverTorrentFiles removes every .torrent Digwire made whose files are gone, and reports
+// how many went.
+func (e *Engine) DeleteLeftoverTorrentFiles() (int, error) {
+	removed := 0
+	var firstErr error
+	for _, f := range e.FoundTorrents() {
+		if !f.Leftover {
+			continue
+		}
+		if err := os.Remove(f.Path); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		removed++
+	}
+	return removed, firstErr
 }
 
 // localBytesOf reports how much of a torrent's content is in the download folder already. It goes
