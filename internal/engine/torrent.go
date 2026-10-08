@@ -1347,6 +1347,13 @@ func (e *Engine) checkpointDatabases() {
 	}
 }
 
+// swarmSample is one torrent's swarm presence, recorded into the DHT index after the engine lock
+// has been let go.
+type swarmSample struct {
+	hash, name     string
+	seeders, peers int
+}
+
 func (e *Engine) monitorLoop() {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
@@ -1361,6 +1368,7 @@ func (e *Engine) monitorLoop() {
 			e.checkpointDatabases()
 		case now := <-ticker.C:
 			e.health.Tick()
+			var samples []swarmSample
 			e.mu.Lock()
 			torrents := e.client.Torrents()
 			for _, t := range torrents {
@@ -1470,11 +1478,17 @@ func (e *Engine) monitorLoop() {
 						if dhtPeers < dhtSeeders {
 							dhtPeers = dhtSeeders
 						}
-						e.dhtIndexer.RecordSwarmActivity(hash, tracker.displayName, dhtSeeders, dhtPeers)
+						// Recorded after this pass: writing to the index means SQLite and the
+						// index's own lock, neither of which belongs under the engine lock.
+						samples = append(samples, swarmSample{hash, tracker.displayName, dhtSeeders, dhtPeers})
 					}
 				}
 			}
 			e.mu.Unlock()
+
+			for _, sample := range samples {
+				e.dhtIndexer.RecordSwarmActivity(sample.hash, sample.name, sample.seeders, sample.peers)
+			}
 
 			// Update HTTP task stats
 			e.httpManager.UpdateStats(now)

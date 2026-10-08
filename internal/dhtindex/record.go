@@ -86,3 +86,20 @@ func mergeRoots(existing, added []string) []string {
 	}
 	return existing
 }
+
+// clone copies a record deeply enough that the cache and whoever reads it never share a slice:
+// records are handed out and merged from several goroutines at once.
+func clone(rec *DHTRecord) *DHTRecord {
+	if rec == nil {
+		return nil
+	}
+	out := *rec
+	out.Files = append([]string(nil), rec.Files...)
+	out.PiecesRoots = append([]string(nil), rec.PiecesRoots...)
+	out.FileEntries = append([]DHTFileEntry(nil), rec.FileEntries...)
+	if rec.Activity != nil {
+		activity := *rec.Activity
+		out.Activity = &activity
+	}
+	return &out
+}

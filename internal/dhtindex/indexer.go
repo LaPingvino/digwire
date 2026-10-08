@@ -320,13 +320,15 @@ func (idx *Indexer) GetRecord(infoHashHex string) *DHTRecord {
 
 	idx.mu.RLock()
 	if rec, ok := idx.cache[hash]; ok {
+		out := clone(rec)
 		idx.mu.RUnlock()
-		return rec
+		return out
 	}
 	for _, rec := range idx.cache {
 		if strings.EqualFold(rec.InfoHashV2, hash) {
+			out := clone(rec)
 			idx.mu.RUnlock()
-			return rec
+			return out
 		}
 	}
 	idx.mu.RUnlock()
@@ -360,7 +362,7 @@ func (idx *Indexer) GetRecord(infoHashHex string) *DHTRecord {
 	rec.FileEntries = idx.loadFileEntries(rec.InfoHash)
 
 	idx.mu.Lock()
-	idx.putCacheLocked(&rec)
+	idx.putCacheLocked(clone(&rec))
 	idx.mu.Unlock()
 
 	return &rec
@@ -440,10 +442,11 @@ func (idx *Indexer) RecordSwarmActivity(infoHashHex string, name string, seeders
 		rec.Name = name
 	}
 	rec.Activity.RecordSample(seeders, peers)
+	saved := clone(rec)
 	idx.putCacheLocked(rec)
 	idx.mu.Unlock()
 
-	idx.saveRecordToSQLite(rec)
+	idx.saveRecordToSQLite(saved)
 }
 
 // AddRecord adds or updates a record and persists to SQLite and bounded cache
@@ -485,17 +488,18 @@ func (idx *Indexer) AddRecord(rec *DHTRecord) {
 		if len(rec.FileEntries) > 0 && existing.SizeBytes == 0 {
 			existing.SizeBytes = rec.SizeBytes
 		}
-		saved := *existing
+		saved := clone(existing)
 		// Entries not in this call are already stored; only write what it brings.
-		saved.FileEntries = rec.FileEntries
+		saved.FileEntries = append([]DHTFileEntry(nil), rec.FileEntries...)
 		idx.mu.Unlock()
-		idx.saveRecordToSQLite(&saved)
+		idx.saveRecordToSQLite(saved)
 		return
 	}
-	idx.putCacheLocked(rec)
+	saved := clone(rec)
+	idx.putCacheLocked(clone(rec))
 	idx.mu.Unlock()
 
-	idx.saveRecordToSQLite(rec)
+	idx.saveRecordToSQLite(saved)
 }
 
 func (idx *Indexer) saveRecordToSQLite(rec *DHTRecord) {
@@ -562,6 +566,16 @@ func (idx *Indexer) QueueCrawl(infoHashHex string) {
 		return
 	}
 
+	// The checker reaches back into the engine and takes its lock, so it must be called with this
+	// index unlocked: the engine calls into the index while holding that same lock, and the two
+	// orders together deadlocked everything.
+	idx.mu.RLock()
+	checker := idx.isUserTorrent
+	idx.mu.RUnlock()
+	if checker != nil && checker(infoHashHex) {
+		return
+	}
+
 	idx.mu.Lock()
 	if len(idx.seenCrawl) >= maxSeenCrawl {
 		// Prune seen crawl set
@@ -572,11 +586,6 @@ func (idx *Indexer) QueueCrawl(infoHashHex string) {
 		return
 	}
 	idx.seenCrawl[infoHashHex] = true
-
-	if idx.isUserTorrent != nil && idx.isUserTorrent(infoHashHex) {
-		idx.mu.Unlock()
-		return
-	}
 	idx.mu.Unlock()
 
 	select {
