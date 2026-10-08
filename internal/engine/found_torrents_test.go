@@ -145,3 +145,38 @@ func TestLeftoverTorrentsCanBeCleanedUp(t *testing.T) {
 		t.Fatalf("someone else's torrent file was deleted: %v", err)
 	}
 }
+
+// The v1 release of something now seeded as hybrid holds the very same files. Saying so makes the
+// offer honest: adding it serves that older swarm as well, from the files already on disk.
+func TestFoundTorrentIsRecognisedAsAnotherReleaseOfALocalTorrent(t *testing.T) {
+	eng, downloadDir := newTestEngine(t)
+	show := filepath.Join(downloadDir, "Release")
+	writeRandomFile(t, filepath.Join(show, "movie.mkv"), 7*testPieceLen)
+
+	hybridMI, err := BuildBEP52MetaInfo(show, true, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hybrid := addLocalTorrent(t, eng, hybridMI)
+	waitFor(t, "hybrid to complete", func() bool { return hybrid.BytesCompleted() == hybrid.Length() })
+
+	// The older v1 of the same content, still lying around as a .torrent.
+	writeMetaInfoFile(t, filepath.Join(downloadDir, "old-v1.torrent"), v1MetaInfo(t, show, "Release", testPieceLen))
+
+	var entry *FoundTorrent
+	for _, f := range eng.FoundTorrents() {
+		found := f
+		if found.Name == "Release" {
+			entry = &found
+		}
+	}
+	if entry == nil {
+		t.Fatal("the v1 release is not offered")
+	}
+	if entry.Status != "complete" {
+		t.Fatalf("status %q, want complete", entry.Status)
+	}
+	if entry.SameAsHash != strings.ToLower(hybrid.InfoHash().HexString()) {
+		t.Fatalf("same_as_hash %q, want the local hybrid %s", entry.SameAsHash, hybrid.InfoHash().HexString())
+	}
+}

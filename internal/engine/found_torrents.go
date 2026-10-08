@@ -33,6 +33,11 @@ type FoundTorrent struct {
 	// Leftover is one of those whose files are gone: nothing to seed and nobody to get it from,
 	// so the .torrent is only clutter.
 	Leftover bool `json:"leftover"`
+	// SameAs names a torrent already in the list holding the very same files, typically the v1
+	// release of something now seeded as hybrid. Adding it serves that older swarm as well, from
+	// the files that are already there.
+	SameAs     string `json:"same_as,omitempty"`
+	SameAsHash string `json:"same_as_hash,omitempty"`
 }
 
 const (
@@ -57,6 +62,28 @@ func (e *Engine) FoundTorrents() []FoundTorrent {
 	dismissed := make(map[string]bool, len(e.dismissedFound))
 	for hash := range e.dismissedFound {
 		dismissed[hash] = true
+	}
+	e.mu.RUnlock()
+
+	// Which local torrent holds each file, so a found torrent can be recognised as another release
+	// of something already here.
+	owners := make(map[string]string) // Absolute file path -> torrent hash.
+	names := make(map[string]string)  // Torrent hash -> display name.
+	e.mu.RLock()
+	for _, t := range e.client.Torrents() {
+		hash := strings.ToLower(t.InfoHash().HexString())
+		tr := e.rateMap[hash]
+		if tr == nil || t.Info() == nil {
+			continue
+		}
+		for _, fi := range t.Info().UpvertedFiles() {
+			if fi.Length == 0 {
+				continue
+			}
+			path := filepath.Clean(filepath.Join(e.cfg.DownloadDir, storedFilePath(t.Info(), fi, tr.fileMap)))
+			owners[path] = hash
+			names[hash] = t.Name()
+		}
 	}
 	e.mu.RUnlock()
 
@@ -108,6 +135,11 @@ func (e *Engine) FoundTorrents() []FoundTorrent {
 			return
 		}
 		entry.Leftover = entry.MadeHere && entry.Status == "missing"
+		if entry.Status == "complete" {
+			if owner, ok := sameLocalTorrent(&info, e.cfg.DownloadDir, owners); ok {
+				entry.SameAs, entry.SameAsHash = names[owner], owner
+			}
+		}
 		found = append(found, entry)
 	}
 
@@ -149,6 +181,23 @@ func (e *Engine) FoundTorrents() []FoundTorrent {
 		return found[i].TotalBytes > found[j].TotalBytes
 	})
 	return found
+}
+
+// sameLocalTorrent reports the torrent that holds every file of info, if one torrent holds them
+// all: then this is another release of the same content, not a separate download.
+func sameLocalTorrent(info *metainfo.Info, downloadDir string, owners map[string]string) (string, bool) {
+	owner := ""
+	for _, fi := range info.UpvertedFiles() {
+		if fi.Length == 0 {
+			continue
+		}
+		hash, ok := owners[filepath.Clean(filepath.Join(downloadDir, storedFilePath(info, fi, nil)))]
+		if !ok || (owner != "" && hash != owner) {
+			return "", false // Not here, or spread over several torrents.
+		}
+		owner = hash
+	}
+	return owner, owner != ""
 }
 
 // madeHere reports whether Digwire created this torrent itself, which it records in the metadata.

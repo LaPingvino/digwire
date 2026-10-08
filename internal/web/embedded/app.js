@@ -4718,13 +4718,13 @@ async function pollFoundTorrents() {
 }
 
 function foundActionLabel(f) {
-  if (f.status === 'complete') return 'Start seeding';
+  if (f.status === 'complete') return f.same_as ? 'Seed this swarm too' : 'Start seeding';
   if (f.status === 'partial') return 'Resume';
   return 'Download';
 }
 
 function foundStatusLabel(f) {
-  if (f.status === 'complete') return 'all files on disk';
+  if (f.status === 'complete') return f.same_as ? `same files as "${f.same_as}"` : 'all files on disk';
   if (f.status === 'partial') return `${formatBytes(f.local_bytes)} of ${formatBytes(f.total_bytes)} on disk`;
   if (f.leftover) return 'made here, files gone';
   return 'nothing downloaded yet';
