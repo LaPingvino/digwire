@@ -43,6 +43,8 @@ type FoundTorrent struct {
 const (
 	maxFoundTorrentScan  = 500
 	maxFoundTorrentDepth = 6
+	// How many of a found torrent's files are hashed to tell real data from preallocated size.
+	maxFilesHashedPerFound = 3
 )
 
 // FoundTorrents lists .torrent files that are not among the user's torrents, with what of each is
@@ -69,6 +71,7 @@ func (e *Engine) FoundTorrents() []FoundTorrent {
 	// of something already here.
 	owners := make(map[string]string) // Absolute file path -> torrent hash.
 	names := make(map[string]string)  // Torrent hash -> display name.
+	whole := make(map[string]bool)    // Torrent hash -> all of it verified.
 	e.mu.RLock()
 	for _, t := range e.client.Torrents() {
 		hash := strings.ToLower(t.InfoHash().HexString())
@@ -83,6 +86,7 @@ func (e *Engine) FoundTorrents() []FoundTorrent {
 			path := filepath.Clean(filepath.Join(e.cfg.DownloadDir, storedFilePath(t.Info(), fi, tr.fileMap)))
 			owners[path] = hash
 			names[hash] = t.Name()
+			whole[hash] = t.BytesCompleted() >= t.Length()
 		}
 	}
 	e.mu.RUnlock()
@@ -120,8 +124,11 @@ func (e *Engine) FoundTorrents() []FoundTorrent {
 			entry.FoundAt = st.ModTime().Unix()
 		}
 		entry.LocalBytes = e.localBytesOf(&info)
+		if owner, ok := sameLocalTorrent(&info, e.cfg.DownloadDir, owners); ok {
+			entry.SameAs, entry.SameAsHash = names[owner], owner
+		}
 		switch {
-		case entry.TotalBytes > 0 && entry.LocalBytes >= entry.TotalBytes:
+		case entry.TotalBytes > 0 && entry.LocalBytes >= entry.TotalBytes && e.filesHoldTheirData(mi, &info, entry.SameAsHash, whole):
 			entry.Status = "complete"
 		case entry.LocalBytes > 0:
 			entry.Status = "partial"
@@ -135,10 +142,8 @@ func (e *Engine) FoundTorrents() []FoundTorrent {
 			return
 		}
 		entry.Leftover = entry.MadeHere && entry.Status == "missing"
-		if entry.Status == "complete" {
-			if owner, ok := sameLocalTorrent(&info, e.cfg.DownloadDir, owners); ok {
-				entry.SameAs, entry.SameAsHash = names[owner], owner
-			}
+		if entry.Status != "complete" {
+			entry.SameAs, entry.SameAsHash = "", "" // Only worth saying when it could be seeded.
 		}
 		found = append(found, entry)
 	}
@@ -238,6 +243,31 @@ func (e *Engine) DeleteLeftoverTorrentFiles() (int, error) {
 		removed++
 	}
 	return removed, firstErr
+}
+
+// filesHoldTheirData checks that files of full size really contain the data: storage preallocates
+// them to their final length long before it arrives. A file belonging to a local torrent is judged
+// by that torrent's own verification; otherwise a few pieces are hashed.
+func (e *Engine) filesHoldTheirData(mi *metainfo.MetaInfo, info *metainfo.Info, ownerHash string, whole map[string]bool) bool {
+	if ownerHash != "" {
+		return whole[ownerHash]
+	}
+	files := info.UpvertedFiles()
+	sort.SliceStable(files, func(i, j int) bool { return files[i].Length > files[j].Length })
+	checked := 0
+	for _, fi := range files {
+		if fi.Length == 0 || checked >= maxFilesHashedPerFound {
+			break
+		}
+		path := filepath.Join(e.cfg.DownloadDir, storedFilePath(info, fi, nil))
+		ld := localData{path: path, length: fi.Length, have: func(off, n int64) bool { return true }}
+		if n, ok := verifyFileBySampling(ld, mi, info, fi); ok {
+			checked++
+		} else if n > 0 {
+			return false // It hashed, and the data is not what this torrent describes.
+		}
+	}
+	return true
 }
 
 // localBytesOf reports how much of a torrent's content is in the download folder already. It goes

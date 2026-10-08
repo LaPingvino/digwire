@@ -4705,6 +4705,7 @@ window.addEventListener('keydown', (e) => {
 // action that fits what is already on disk, and never started on their own.
 let foundTorrents = [];
 let foundPanelOpen = false;
+let showOtherReleases = false;
 
 async function pollFoundTorrents() {
   try {
@@ -4735,17 +4736,28 @@ function toggleFoundPanel() {
   renderFoundPanel();
 }
 
+function toggleOtherReleases() {
+  showOtherReleases = !showOtherReleases;
+  renderFoundPanel();
+}
+
 function renderFoundPanel() {
   const host = document.getElementById('found-panel-container');
   if (!host) return;
-  const list = foundTorrents.filter(f => matchesTorrentFilter(f.name));
-  if (list.length === 0) {
+  const all = foundTorrents.filter(f => matchesTorrentFilter(f.name));
+  // Another release of something already here -- typically the v1 of a torrent now seeded as
+  // hybrid -- is not news, so it waits behind a line of its own.
+  const others = all.filter(f => f.same_as);
+  const list = showOtherReleases ? all : all.filter(f => !f.same_as);
+  if (all.length === 0) {
     host.innerHTML = '';
     return;
   }
   const ready = list.filter(f => f.status !== 'missing').length;
   const leftovers = list.filter(f => f.leftover).length;
-  const summary = `${list.length} torrent${list.length === 1 ? '' : 's'} found that you have not added${ready > 0 ? `, ${ready} with data already on disk` : ''}${leftovers > 0 ? `, ${leftovers} left over from downloads that are gone` : ''}`;
+  const summary = list.length === 0
+    ? `${others.length} older release${others.length === 1 ? '' : 's'} of torrents you already seed`
+    : `${list.length} torrent${list.length === 1 ? '' : 's'} found that you have not added${ready > 0 ? `, ${ready} with data already on disk` : ''}${leftovers > 0 ? `, ${leftovers} left over from downloads that are gone` : ''}`;
   let rows = '';
   if (foundPanelOpen) {
     rows = list.map(f => `
@@ -4767,6 +4779,10 @@ function renderFoundPanel() {
         <button class="btn" style="padding: 2px 10px; font-size: 11.5px;" onclick="toggleFoundPanel()">${foundPanelOpen ? 'Hide' : 'Show'}</button>
       </div>
       ${rows}
+      ${others.length > 0 && foundPanelOpen ? `<div style="margin-top: 6px; font-size: 11.5px; color: var(--adw-dim-label);">
+        ${others.length} older release${others.length === 1 ? '' : 's'} of torrents you already seed
+        <button class="btn" style="padding: 1px 8px; font-size: 11px; margin-left: 6px;" onclick="toggleOtherReleases()">${showOtherReleases ? 'Hide' : 'Show'}</button>
+      </div>` : ''}
     </div>`;
 }
 
